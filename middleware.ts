@@ -9,6 +9,7 @@ const PUBLIC_ROUTE_PREFIXES = [
   "/verify",
   "/api/auth/",
   "/api/verify/",
+  "/api/trigger-deploy",
 ];
 
 const STATIC_ROUTE_PREFIXES = [
