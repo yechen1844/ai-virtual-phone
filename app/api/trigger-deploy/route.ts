@@ -19,9 +19,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "VERCEL_TOKEN not set" }, { status: 500 });
     }
 
-    const projectId = "prj_ot3QDTmg0mPeTIHPe4TkGttGuPMY";
+    const projectId = "prj_ro0G3ySfkENs12dDBk04K72Wuk1S";
     const response = await fetch(
-      `https://api.vercel.com/v13/deployments?projectId=${projectId}&forceNew=1`,
+      `https://api.vercel.com/v13/deployments?projectId=${projectId}&forceNew=1&skipAutoDetectionConfirmation=1`,
       {
         method: "POST",
         headers: {
@@ -31,6 +31,12 @@ export async function POST(req: NextRequest) {
         body: JSON.stringify({
           name: "ai-virtual-phone",
           target: "production",
+          projectSettings: {
+            framework: "nextjs",
+            buildCommand: "npm run build",
+            installCommand: "npm install",
+            outputDirectory: ".next",
+          },
           gitSource: {
             type: "github",
             org: "yechen1844",
