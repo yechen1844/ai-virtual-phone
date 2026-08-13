@@ -1,0 +1,3 @@
+pure-webhook-test-2026-08-13
+This file was pushed to test if GitHub Webhook alone (without manual API call) triggers Vercel deployment.
+If you can see this at /auto-deploy-test.txt, the webhook auto-deploy works independently!
