@@ -89,6 +89,12 @@ function clearGestureListeners() {
     document.removeEventListener("click", onUserGesture, true);
 }
 
+/** 幂等挂上触摸监听：同函数同参数重复 addEventListener 不会叠加，可安全反复调用 */
+function ensureGestureListeners() {
+    document.addEventListener("touchstart", onUserGesture, { capture: true, once: false });
+    document.addEventListener("click", onUserGesture, { capture: true, once: false });
+}
+
 function clearRetryTimer() {
     if (_retryTimer !== null) {
         window.clearTimeout(_retryTimer);
@@ -101,7 +107,7 @@ function scheduleRetry() {
     _retryTimer = window.setTimeout(() => {
         _retryTimer = null;
         retryPlay();
-    }, 1500);
+    }, 3000);
 }
 
 function maybeShowGestureHint() {
@@ -118,9 +124,11 @@ function retryPlay() {
     _keepAliveAudio.play()
         .then(() => {
             clearRetryTimer();
-            clearGestureListeners();
         })
         .catch(() => {
+            // 不在这里移除触摸监听（旧逻辑在成功后 clear，导致音频被系统打断后
+            // 触摸监听已消失，之后再怎么点都无法恢复播放）。
+            ensureGestureListeners();
             scheduleRetry();
             maybeShowGestureHint();
         });
@@ -138,6 +146,7 @@ async function startKeepAlive() {
     // 音频优先：play 需要用户手势上下文，绝不能排在 wakeLock 的异步等待之后，
     // 否则 await 期间手势窗口已经过去，首次播放必然失败。
     ensureAudioCreated();
+    ensureGestureListeners();
     retryPlay();
 
     // Wake Lock（切后台会被浏览器自动释放，回前台再取）
@@ -148,10 +157,6 @@ async function startKeepAlive() {
             _wakeLock = sentinel;
         }
     } catch {}
-
-    // 播放被 autoplay 策略拒绝时：挂手势监听，等下一次触摸（retryPlay 成功后会自动移除）
-    document.addEventListener("touchstart", onUserGesture, { capture: true, once: false });
-    document.addEventListener("click", onUserGesture, { capture: true, once: false });
 }
 
 function stopKeepAlive() {
