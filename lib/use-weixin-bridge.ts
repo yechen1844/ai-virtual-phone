@@ -26,80 +26,85 @@ function broadcastStatus() {
     window.dispatchEvent(new CustomEvent("weixin-status-changed"));
 }
 
-// ── 保活：Wake Lock + 静音音频 ───────────────────────────────
+// ── 保活：Wake Lock + WebAudio 微弱噪声 ───────────────────────
+// 用 AudioContext 持续循环播放微弱噪声（loop），获得系统"正在播放音频"状态：
+// - AudioContext 一旦 resume 成功（running），切后台不会被系统暂停，比 HTMLAudioElement 稳定
+// - 配合 MediaSession 声明，系统媒体管理/通知栏会显示"float 后台保活"播放条
 let _wakeLock: WakeLockSentinel | null = null;
-let _keepAliveAudio: HTMLAudioElement | null = null;
+let _keepAliveCtx: AudioContext | null = null;
+let _keepAliveSource: AudioBufferSourceNode | null = null;
+let _keepAliveGain: GainNode | null = null;
+let _keepAliveSourceStarted = false;
 
 let _keepAliveWanted = false; // 标记：想要保活但还没获得用户手势
 let _suspendedForCall = false; // 标记：因语音/视频通话临时暂停了保活
 let _gestureHintShown = false; // 提示"点一下屏幕"只弹一次
 let _retryTimer: number | null = null; // 音频播放失败后的周期重试
 
-function ensureAudioCreated() {
-    if (_keepAliveAudio) return;
-    const audio = new Audio();
-    // 生成 1 秒静音 WAV
-    const sampleRate = 8000;
-    const samples = sampleRate;
-    const buf = new ArrayBuffer(44 + samples * 2);
-    const view = new DataView(buf);
-    const writeStr = (off: number, s: string) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
-    writeStr(0, "RIFF");
-    view.setUint32(4, 36 + samples * 2, true);
-    writeStr(8, "WAVE");
-    writeStr(12, "fmt ");
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * 2, true);
-    view.setUint16(32, 2, true);
-    view.setUint16(34, 16, true);
-    writeStr(36, "data");
-    view.setUint32(40, samples * 2, true);
-    // ±32 LSB 微噪声（约 -54dB，人耳不可闻）：纯零波形会被 Chrome 判为"无声页面"，
-    // 安卓后台 5 分钟后定时器被强节流（轮询延迟拉到分钟级）；有能量的音频
-    // 可获得 "playing audio" 豁免。振幅太低（如 ±1）个别安卓 ROM 会当静音丢弃。
-    for (let i = 0; i < samples; i++) {
-        view.setInt16(44 + i * 2, i % 2 === 0 ? 32 : -32, true);
+function createKeepAliveAudio(): boolean {
+    if (_keepAliveCtx) return true;
+    try {
+        const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+        if (!Ctor) return false;
+        const ctx = new Ctor();
+        const gain = ctx.createGain();
+        gain.gain.value = 0.05; // 极轻（人耳几乎不可闻），但足以让系统判定"有音频输出"
+        gain.connect(ctx.destination);
+        _keepAliveCtx = ctx;
+        _keepAliveGain = gain;
+        // 声明媒体会话：让系统媒体管理/通知栏能显示"float 正在播放"。
+        // 不设 MediaSession metadata 时，即使媒体在播，系统也可能不显示播放条。
+        try {
+            if ("mediaSession" in navigator) {
+                navigator.mediaSession.metadata = new MediaMetadata({
+                    title: "float",
+                    artist: "float",
+                    album: "后台保活",
+                });
+                navigator.mediaSession.setActionHandler("play", () => { if (_keepAliveWanted && !_suspendedForCall) retryPlay(); });
+                navigator.mediaSession.setActionHandler("pause", () => { suspendKeepAliveSource(); });
+                navigator.mediaSession.setActionHandler("stop", () => { suspendKeepAliveSource(); });
+            }
+        } catch {}
+        return true;
+    } catch {
+        return false;
     }
-    const blob = new Blob([buf], { type: "audio/wav" });
-    audio.src = URL.createObjectURL(blob);
-    audio.loop = true;
-    // 0.08（约 -22dB）几乎无声但足以让 Chrome 判定为"audible"（有声音输出）。
-    // 系统媒体管理能否显示播放条，取决于媒体会话声明（MediaSession）+ audible；
-    // 太低的音量会被部分安卓 ROM 当作静音而不计入媒体会话。
-    audio.volume = 0.08;
-    // 挂进 DOM：个别安卓 ROM/浏览器只认"页面里真实存在"的媒体元素，
-    // 游离的 new Audio() 对象可能不被计入媒体会话。绝对定位移出可视区，不占布局。
+}
+
+/** 生成并启动一个循环播放的微弱噪声缓冲（AudioBufferSourceNode） */
+function startKeepAliveSource() {
+    if (!_keepAliveCtx || !_keepAliveGain || _keepAliveSource) return;
     try {
-        audio.style.position = "fixed";
-        audio.style.left = "-9999px";
-        audio.style.width = "1px";
-        audio.style.height = "1px";
-        audio.setAttribute("aria-hidden", "true");
-        audio.setAttribute("data-keepalive", "1");
-        document.body.appendChild(audio);
-    } catch {}
-    // 声明媒体会话：让系统媒体管理/通知栏能显示"float 正在播放"。
-    // 不设 MediaSession metadata 时，即使音频在播（无声），系统也可能不显示播放条，
-    // 用户会误以为"没有播放"。
-    try {
-        if ("mediaSession" in navigator) {
-            navigator.mediaSession.metadata = new MediaMetadata({
-                title: "float",
-                artist: "float",
-                album: "后台保活",
-            });
-            navigator.mediaSession.setActionHandler("play", () => { if (_keepAliveWanted && !_suspendedForCall) retryPlay(); });
-            navigator.mediaSession.setActionHandler("pause", () => { try { _keepAliveAudio?.pause(); } catch {} });
-            navigator.mediaSession.setActionHandler("stop", () => { try { _keepAliveAudio?.pause(); } catch {} });
+        const ctx = _keepAliveCtx;
+        const len = Math.max(1, Math.floor(ctx.sampleRate * 0.5));
+        const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < len; i++) {
+            data[i] = (Math.random() * 2 - 1) * 0.02; // ±0.02 振幅（约 -34dB）
         }
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        src.loop = true;
+        src.connect(_keepAliveGain);
+        src.start(0);
+        _keepAliveSource = src;
+        _keepAliveSourceStarted = true;
+    } catch {
+        _keepAliveSource = null;
+        _keepAliveSourceStarted = false;
+    }
+}
+
+function suspendKeepAliveSource() {
+    try {
+        _keepAliveSource?.stop();
     } catch {}
-    // 被系统打断/抢占后（来电、其他 App 出声、焦点被抢）自动续播
-    audio.addEventListener("pause", () => { if (_keepAliveWanted && !_suspendedForCall) retryPlay(); });
-    audio.addEventListener("ended", () => { if (_keepAliveWanted && !_suspendedForCall) retryPlay(); });
-    _keepAliveAudio = audio;
+    _keepAliveSource = null;
+    _keepAliveSourceStarted = false;
+    try {
+        if (_keepAliveCtx && _keepAliveCtx.state === "running") void _keepAliveCtx.suspend();
+    } catch {}
 }
 
 function clearGestureListeners() {
@@ -141,42 +146,48 @@ function broadcastKeepAliveStatus(status: string) {
     window.dispatchEvent(new CustomEvent("weixin-keepalive-status", { detail: status }));
 }
 
+/** 尝试启动/恢复保活音频（AudioContext.resume 需要用户手势）；成功返回 true */
+async function playKeepAliveAudio(): Promise<boolean> {
+    if (!_keepAliveCtx) return false;
+    try {
+        if (_keepAliveCtx.state === "suspended" || _keepAliveCtx.state === "interrupted") {
+            await _keepAliveCtx.resume();
+        }
+        if (!_keepAliveSourceStarted) startKeepAliveSource();
+        return _keepAliveCtx.state === "running";
+    } catch {
+        return false;
+    }
+}
+
 /** 尝试播放保活音频；失败则等手势 + 周期重试 */
 function retryPlay() {
-    if (!_keepAliveWanted || _suspendedForCall || !_keepAliveAudio) return;
-    const audio = _keepAliveAudio;
-    // play() 在部分环境（blob 音频未就绪、系统音频焦点被占等）可能永远不 settle，
-    // 导致"无提示、无重试"的假死。加 2s 超时兜底：超时按失败处理，走等手势+重试。
-    let settled = false;
-    const settle = (fn: () => void) => { if (!settled) { settled = true; fn(); } };
-    const timeout = window.setTimeout(() => {
-        settle(() => {
+    if (!_keepAliveWanted || _suspendedForCall || !_keepAliveCtx) return;
+    playKeepAliveAudio()
+        .then((ok) => {
+            if (ok) {
+                clearRetryTimer();
+                broadcastKeepAliveStatus("运行中");
+            } else {
+                // 不在这里移除触摸监听（旧逻辑在成功后 clear，导致音频被系统打断后
+                // 触摸监听已消失，之后再怎么点都无法恢复播放）。
+                ensureGestureListeners();
+                scheduleRetry();
+                maybeShowGestureHint();
+                broadcastKeepAliveStatus("等待触摸启动");
+            }
+        })
+        .catch(() => {
             ensureGestureListeners();
             scheduleRetry();
             maybeShowGestureHint();
             broadcastKeepAliveStatus("等待触摸启动");
         });
-    }, 2000);
-    audio.play()
-        .then(() => settle(() => {
-            window.clearTimeout(timeout);
-            clearRetryTimer();
-            broadcastKeepAliveStatus("运行中");
-        }))
-        .catch(() => settle(() => {
-            window.clearTimeout(timeout);
-            // 不在这里移除触摸监听（旧逻辑在成功后 clear，导致音频被系统打断后
-            // 触摸监听已消失，之后再怎么点都无法恢复播放）。
-            ensureGestureListeners();
-            scheduleRetry();
-            maybeShowGestureHint();
-            broadcastKeepAliveStatus("等待触摸启动");
-        }));
 }
 
 /** 用户触摸时尝试播放（浏览器要求音频必须在用户手势中启动） */
 function onUserGesture() {
-    if (!_keepAliveWanted || !_keepAliveAudio) return;
+    if (!_keepAliveWanted || !_keepAliveCtx) return;
     retryPlay();
 }
 
@@ -184,9 +195,9 @@ async function startKeepAlive() {
     _keepAliveWanted = true;
     broadcastKeepAliveStatus("启动中");
 
-    // 音频优先：play 需要用户手势上下文，绝不能排在 wakeLock 的异步等待之后，
-    // 否则 await 期间手势窗口已经过去，首次播放必然失败。
-    ensureAudioCreated();
+    // 音频优先：resume 需要用户手势上下文，绝不能排在 wakeLock 的异步等待之后，
+    // 否则 await 期间手势窗口已经过去，首次启动必然失败。
+    createKeepAliveAudio();
     ensureGestureListeners();
     retryPlay();
 
@@ -204,12 +215,9 @@ function stopKeepAlive() {
     _keepAliveWanted = false;
     _suspendedForCall = false;
     clearRetryTimer();
+    suspendKeepAliveSource();
     _wakeLock?.release().catch(() => {});
     _wakeLock = null;
-    if (_keepAliveAudio) {
-        _keepAliveAudio.pause();
-        _keepAliveAudio.currentTime = 0;
-    }
     clearGestureListeners();
     _gestureHintShown = false;
     // 释放媒体会话声明，让系统媒体管理不再显示 float
@@ -227,11 +235,9 @@ export function suspendKeepAliveForCall() {
     if (!_keepAliveWanted) return;
     _suspendedForCall = true;
     clearRetryTimer();
+    suspendKeepAliveSource();
     _wakeLock?.release().catch(() => {});
     _wakeLock = null;
-    if (_keepAliveAudio) {
-        try { _keepAliveAudio.pause(); } catch {}
-    }
     clearGestureListeners();
 }
 
