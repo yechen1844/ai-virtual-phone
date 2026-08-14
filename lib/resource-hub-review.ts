@@ -157,9 +157,28 @@ export async function setAutoApprove(enabled: boolean): Promise<void> {
 }
 
 /** 通过并上架（合并 PR），并强刷索引的 CDN 缓存让新资源尽快可见。 */
+/**
+ * 审完顺手删掉 PR 的头分支（submit/claim 这类机器人开的临时分支）。
+ * GitHub 的"自动删分支"只覆盖合并的 PR，关闭的不管；这里统一兜底。
+ * 尽力而为：分支已删/权限不够都不影响审核结果本身。
+ */
+async function deletePrHeadBranch(prNumber: number): Promise<void> {
+    try {
+        const { token, owner, repo } = getReviewAuth();
+        const pr = await gh<{ head?: { ref?: string; repo?: { full_name?: string } } }>(
+            token, "GET", `/repos/${owner}/${repo}/pulls/${prNumber}`);
+        const ref = pr.head?.ref || "";
+        // 只删本仓库内、机器人临时分支形态的头分支；跨仓 PR / main 一律不碰
+        if (pr.head?.repo?.full_name !== `${owner}/${repo}`) return;
+        if (!/^(submit|claim)\//.test(ref)) return;
+        await gh(token, "DELETE", `/repos/${owner}/${repo}/git/refs/heads/${ref.split("/").map(encodeURIComponent).join("/")}`);
+    } catch { /* 尽力而为 */ }
+}
+
 export async function approveShareSubmission(prNumber: number): Promise<void> {
     const { token, owner, repo } = getReviewAuth();
     await gh(token, "PUT", `/repos/${owner}/${repo}/pulls/${prNumber}/merge`, { merge_method: "merge" });
+    await deletePrHeadBranch(prNumber);
     // 索引由资源仓库的 Actions 在合并后重建（约 1 分钟），这里先把 CDN 缓存清掉
     setTimeout(() => purgeShareIndexCache(loadResourceHubSource()), 90_000);
     purgeShareIndexCache(loadResourceHubSource());
@@ -204,6 +223,7 @@ export async function rejectShareSubmission(prNumber: number, reason?: string): 
         await gh(token, "POST", `/repos/${owner}/${repo}/issues/${prNumber}/comments`, { body: `审核未通过：${trimmed}` });
     }
     await gh(token, "PATCH", `/repos/${owner}/${repo}/pulls/${prNumber}`, { state: "closed" });
+    await deletePrHeadBranch(prNumber);
 }
 
 // ── 找回作品申请（特殊 PR：分支上只有证明材料，审核=改写 .owner，绝不合并）──
@@ -293,6 +313,7 @@ export async function approveShareClaim(prNumber: number, claim: ShareClaimInfo)
         });
     } catch { /* 尽力而为 */ }
     await gh(token, "PATCH", `/repos/${owner}/${repo}/pulls/${prNumber}`, { state: "closed" });
+    await deletePrHeadBranch(prNumber);
     // 索引由 Actions 在 .owner 提交后重建，先清一次 CDN 缓存，稍后再清一次兜底
     setTimeout(() => purgeShareIndexCache(loadResourceHubSource()), 90_000);
     purgeShareIndexCache(loadResourceHubSource());

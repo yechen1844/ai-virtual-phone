@@ -34,6 +34,8 @@ import {
     formatQaFeedbackMarkdown,
     type QaFeedbackTicket,
 } from "./qa-feedback";
+import { QA_COMPUTER_TOOLS, QA_COMPUTER_ALIAS_TOOLS } from "./qa-computer-tools";
+import { isWorkshopComputerEnabled } from "./agent-computer";
 import {
     QA_CONTENT_TOOLS,
     workbenchWriteLocal,
@@ -1380,12 +1382,13 @@ const UNIFIED_BASE_TOOLS: QaTool[] = [
 const UNIFIED_GITHUB_READ_TOOLS: QaTool[] = [githubSearchTool, repoQueryTool];
 const UNIFIED_GITHUB_WRITE_TOOLS: QaTool[] = [branchOpsTool, githubPullCreateTool, githubPullMergeTool, githubIssueUpdateTool, githubSyncUpstreamTool];
 
-/** 当前可用工具集：统一 CRUD + 辅助 + （已连接仓库）查询 + （有 PAT）写入。 */
+/** 当前可用工具集：统一 CRUD + 辅助 + （已连接仓库）查询 + （有 PAT）写入 + （已连接角色电脑）工作机。 */
 export function getQaTools(): QaTool[] {
     const config = loadQaGithubConfig();
     const tools = [...UNIFIED_BASE_TOOLS];
     if (config) tools.push(...UNIFIED_GITHUB_READ_TOOLS);
     if (config?.token) tools.push(...UNIFIED_GITHUB_WRITE_TOOLS);
+    if (isWorkshopComputerEnabled()) tools.push(...QA_COMPUTER_TOOLS);
     return tools;
 }
 
@@ -1395,6 +1398,8 @@ export const QA_TOOLS: QaTool[] = [...new Set([
     ...UNIFIED_BASE_TOOLS,
     ...UNIFIED_GITHUB_READ_TOOLS,
     ...UNIFIED_GITHUB_WRITE_TOOLS,
+    ...QA_COMPUTER_TOOLS,
+    ...QA_COMPUTER_ALIAS_TOOLS,
     diagnoseLegacyAliasTool,
     ...BASE_TOOLS,
     ...GITHUB_TOOLS,

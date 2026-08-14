@@ -25,6 +25,7 @@ import type { CustomAppToolDefinition } from "@/lib/custom-app-types";
 import { downloadFile } from "@/lib/download-utils";
 import {
     CALENDAR_MANAGEMENT_CAPABILITY_ID,
+    AGENT_COMPUTER_CAPABILITY_ID,
     LOCAL_DATA_LIBRARY_CAPABILITY_ID,
     loadInternalCapabilities,
     saveInternalCapabilities,
@@ -1048,7 +1049,8 @@ export function ToolboxSettings() {
             </div>
 
             <div className="flex flex-col gap-2">
-                {internalCapabilities.map(item => {
+                {/* 角色电脑的开关收进 设置 → 角色电脑，与小坊的开关放在一处 */}
+                {internalCapabilities.filter(item => item.id !== AGENT_COMPUTER_CAPABILITY_ID).map(item => {
                     const summary = (
                         <div className="flex-1 flex flex-col gap-1 min-w-0">
                             <div className="flex items-center gap-[6px] min-w-0">

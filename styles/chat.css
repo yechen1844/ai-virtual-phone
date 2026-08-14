@@ -2027,6 +2027,19 @@
 
 /* ── Music Share Card (uses --c-music-* tokens) ── */
 
+/* 聊天里的音乐/文件卡片沿用聊天自己的配色。tokens.css 的全局月光暗色板是给
+   全屏播放器的，2026-08-09 提取全局变量后意外漏进聊天卡片（白字浅底看不清）；
+   这里按提取前的兜底值把聊天卡片锁回原样，音乐 App 不受影响。 */
+.chat-music-share-card,
+.chat-media-file-wrap,
+.chat-media-file-card {
+  /* 值 = 2026-07-09 首发版 tokens.css 的"龙井绿"浅色板（8/9 播放器改月光暗色板前的原样） */
+  --c-music-surface: rgba(255, 255, 255, 0.3);
+  --c-music-surface-solid: rgba(255, 255, 255, 0.55);
+  --c-music-text: #2b3d31;
+  --c-music-accent: #5b7b64;
+}
+
 .chat-music-share-card {
   width: 220px;
   border-radius: 16px;
@@ -2093,10 +2106,10 @@
 
 .chat-media-file-card {
   width: 220px;
-  border-radius: 0;
+  border-radius: 16px;
   overflow: hidden;
   background: var(--c-music-surface, rgba(255,255,255,0.06));
-  border: none;
+  border: 1px solid var(--c-music-surface-solid, rgba(255,255,255,0.12));
   backdrop-filter: blur(16px);
 }
 

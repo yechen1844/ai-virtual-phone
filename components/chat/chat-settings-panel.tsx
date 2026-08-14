@@ -35,8 +35,10 @@ import {
 import { clearChatOfflineTurns } from "@/lib/chat-offline-storage";
 import { triggerDeleteFriendReaction } from "@/lib/friend-request-engine";
 import { loadCharacters } from "@/lib/character-storage";
+import { isAgentComputerConfigured } from "@/lib/agent-computer";
+import { CharacterComputerPage } from "./character-computer-page";
 import { resolveUserIdentity } from "@/lib/settings-storage";
-import { ChevronRight, Image as ImageIcon, Video, Mic, UserMinus, UserPlus, Users, Pin, MessageSquare, Search, AlertCircle, Code, Trash2, Smile, Sparkles, type LucideIcon } from "lucide-react";
+import { ChevronRight, Image as ImageIcon, Video, Mic, UserMinus, UserPlus, Users, Pin, MessageSquare, Search, AlertCircle, Code, Laptop, Trash2, Smile, Sparkles, type LucideIcon } from "lucide-react";
 import { BINDING_ACCENTS, CONTENT_APP_ACCENTS } from "@/lib/ui-accent-colors";
 import CSSSchemeBar from "@/components/ui/css-scheme-picker";
 import { ConfirmDialog } from "@/components/ui/modal";
@@ -193,6 +195,8 @@ export function ChatSettingsPanel({
     const [editingCSS, setEditingCSS] = useState(false);
     const [showScreenEffects, setShowScreenEffects] = useState(false);
     const [showSearch, setShowSearch] = useState(false);
+    // TA 的电脑：翻看角色云端电脑（连接了角色电脑才显示入口）
+    const [showComputer, setShowComputer] = useState(false);
     const [searchQuery, setSearchQuery] = useState("");
     const [submittedSearchQuery, setSubmittedSearchQuery] = useState("");
     const [searchHistoryMessages, setSearchHistoryMessages] = useState<ChatMessage[]>([]);
@@ -608,6 +612,16 @@ export function ChatSettingsPanel({
                         <div className="menu-label-group"><span className="menu-label">查找聊天记录</span></div>
                         <div className="menu-right"><ChevronRight size={16} /></div>
                     </button>
+                    {!session.isGroup && isAgentComputerConfigured() && (
+                        <button className="menu-item" onClick={() => setShowComputer(true)}>
+                            <ChatInfoIcon icon={Laptop} color={BINDING_ACCENTS.memory} />
+                            <div className="menu-label-group">
+                                <span className="menu-label">TA 的电脑</span>
+                                <span className="menu-desc">看看 TA 在自己电脑上存了什么</span>
+                            </div>
+                            <div className="menu-right"><ChevronRight size={16} /></div>
+                        </button>
+                    )}
                 </div>
 
                 {/* Group member management */}
@@ -1194,6 +1208,15 @@ export function ChatSettingsPanel({
                     </PageShell>
                 </div>
                 </div>
+            )}
+
+            {/* Sub-page: TA 的电脑 */}
+            {showComputer && (
+                <CharacterComputerPage
+                    characterId={session.contactId}
+                    characterName={characterName}
+                    onClose={() => setShowComputer(false)}
+                />
             )}
 
             {/* Sub-page: Search History */}

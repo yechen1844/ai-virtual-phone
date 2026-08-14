@@ -1499,3 +1499,75 @@
 .qa-drawer-new:active {
   transform: scale(0.96);
 }
+
+/* ── 工坊文件卡（电脑文件 op=send 的交付卡） ── */
+.qa-file-card {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 4px 4px;
+  padding: 9px 10px;
+  border-radius: 12px;
+  background: var(--c-card, #fff);
+  border: 1px solid var(--c-card-border, rgba(0, 0, 0, 0.08));
+  position: relative;
+  flex-wrap: wrap;
+}
+.qa-file-card-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+.qa-file-card-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: rgba(91, 123, 100, 0.12);
+  color: #5b7b64;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.qa-file-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--c-text-title, #222);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.qa-file-card-actions { display: flex; gap: 4px; flex: none; }
+.qa-file-card-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  border: 0;
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--c-text, #555);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.qa-file-card-btn:active { opacity: 0.7; }
+.qa-file-card-error { width: 100%; font-size: 11px; color: var(--c-danger, #d33); }
+
+.qa-file-card-ready {
+  width: 100%;
+  border: 0;
+  border-radius: 9px;
+  padding: 8px;
+  background: rgba(91, 123, 100, 0.14);
+  color: #3d5c48;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
