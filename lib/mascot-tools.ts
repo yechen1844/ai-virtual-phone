@@ -14,7 +14,7 @@ import type { LlmToolDefinition } from "./llm-provider-adapter";
 import type { ToolCall, ToolResult } from "./tool-executor";
 import type { MascotPageContext } from "./mascot-context";
 import type { Prompt } from "./settings-types";
-import { CHARACTER_CARD_PROMPT, WORLDBOOK_PROMPT, PRESET_PROMPT, GENERAL_PRESET_PROMPT, REGEX_PROMPT, CSS_PROMPT, WIDGET_PROMPT } from "./mascot-prompts";
+import { CHARACTER_CARD_PROMPT, CHARACTER_WORLD_PROMPT, WORLDBOOK_PROMPT, PRESET_PROMPT, GENERAL_PRESET_PROMPT, REGEX_PROMPT, CSS_PROMPT, WIDGET_PROMPT } from "./mascot-prompts";
 import {
     buildCssAssetNineSliceCss,
     calibrateCssAssetNineSlice,
@@ -248,6 +248,7 @@ const CREATE_CHARACTER_SCHEMA = {
         name: { type: "string", description: "角色全名" },
         persona: { type: "string", description: "完整人设（7 段式 markdown）" },
         personality: { type: "string", description: "性格简介（80-200 字）" },
+        briefPersona: { type: "string", description: "简量版人设（可选，100-200 字）：写给同世界且与该角色有关联的其他角色看，让它们提到或与它互动时不 OOC" },
     },
     required: ["name", "persona", "personality"],
     additionalProperties: false,
@@ -257,10 +258,87 @@ const UPDATE_CHARACTER_FIELD_SCHEMA = {
     type: "object",
     properties: {
         name: { type: "string", description: "要修改的角色名" },
-        field: { type: "string", enum: ["name", "persona", "personality"], description: "字段名" },
+        field: { type: "string", enum: ["name", "persona", "personality", "briefPersona"], description: "字段名" },
         value: { type: "string", description: "新值" },
     },
     required: ["name", "field", "value"],
+    additionalProperties: false,
+};
+
+// ── 角色世界（世界卷宗）工具 ──
+const LIST_CHARACTER_WORLDS_SCHEMA = {
+    type: "object",
+    properties: {},
+    additionalProperties: false,
+};
+
+const CREATE_CHARACTER_WORLD_SCHEMA = {
+    type: "object",
+    properties: {
+        name: { type: "string", description: "世界卷宗名称，例如：现代都市 / 仙侠界" },
+    },
+    required: ["name"],
+    additionalProperties: false,
+};
+
+const RENAME_CHARACTER_WORLD_SCHEMA = {
+    type: "object",
+    properties: {
+        name: { type: "string", description: "世界卷宗名称" },
+        newName: { type: "string", description: "新的卷宗名称" },
+    },
+    required: ["name", "newName"],
+    additionalProperties: false,
+};
+
+const UPDATE_CHARACTER_WORLD_DESC_SCHEMA = {
+    type: "object",
+    properties: {
+        name: { type: "string", description: "世界卷宗名称" },
+        description: { type: "string", description: "世界观描述（会注入该世界所有角色的上下文）" },
+    },
+    required: ["name", "description"],
+    additionalProperties: false,
+};
+
+const DELETE_CHARACTER_WORLD_SCHEMA = {
+    type: "object",
+    properties: {
+        name: { type: "string", description: "要删除的世界卷宗名称（默认世界不可删除）" },
+    },
+    required: ["name"],
+    additionalProperties: false,
+};
+
+const MOVE_CHARACTER_TO_WORLD_SCHEMA = {
+    type: "object",
+    properties: {
+        characterName: { type: "string", description: "角色名，用「读取角色」确认" },
+        worldName: { type: "string", description: "目标世界卷宗名称；角色会从原世界移出并加入这个世界" },
+    },
+    required: ["characterName", "worldName"],
+    additionalProperties: false,
+};
+
+const ADD_CHARACTER_RELATION_SCHEMA = {
+    type: "object",
+    properties: {
+        worldName: { type: "string", description: "世界卷宗名称（两个角色须已在同一世界，否则先用「移动角色到世界」）" },
+        fromCharacterName: { type: "string", description: "关系发起方角色名。例：「A 是 B 的哥哥」→ from=A" },
+        toCharacterName: { type: "string", description: "关系指向方角色名。例：「A 是 B 的哥哥」→ to=B" },
+        label: { type: "string", description: "关系标签，如：哥哥 / 宿敌 / 上司 / 恋人 / 发小" },
+    },
+    required: ["worldName", "fromCharacterName", "toCharacterName", "label"],
+    additionalProperties: false,
+};
+
+const DELETE_CHARACTER_RELATION_SCHEMA = {
+    type: "object",
+    properties: {
+        worldName: { type: "string", description: "世界卷宗名称" },
+        relationId: { type: "string", description: "关系 id（从「列出世界卷宗」结果获取）" },
+    },
+    required: ["worldName", "relationId"],
     additionalProperties: false,
 };
 
@@ -632,13 +710,29 @@ export const MASCOT_TOOL_PACKAGES: MascotToolPackage[] = [
     {
         id: "character_pack",
         label: "角色卡套件",
-        description: "创建 / 修改 / 查看 角色卡。角色由 name/persona/personality 三个字段组成。",
+        description: "创建 / 修改 / 查看 角色卡。角色由 name/persona/personality 三个字段组成，可另写简量人设 briefPersona（给同世界有关联的角色看，防 OOC）。",
         subTools: [
             { name: "读取角色", description: "不传 name 时列出所有角色；传 name 时返回完整字段。", parameterSchema: READ_CHARACTER_SCHEMA },
             { name: "创建角色", description: "新建一张角色卡。persona 必须包含 7 段式人设（基础信息/外貌/世界观/性格/补充信息/经历）。", parameterSchema: CREATE_CHARACTER_SCHEMA },
             { name: "更新角色字段", description: "修改某角色的单个字段（name/persona/personality）。", parameterSchema: UPDATE_CHARACTER_FIELD_SCHEMA },
         ],
         usageGuide: CHARACTER_CARD_PROMPT,
+    },
+    {
+        id: "character_world_pack",
+        label: "角色世界套件",
+        description: "管理「角色世界」的世界卷宗：创建/重命名/删除世界卷宗、把角色移入某个世界、在角色之间拉关系线（如 A 是 B 的哥哥）。关系线会注入相关角色上下文，同世界角色才能互见朋友圈。",
+        subTools: [
+            { name: "列出世界卷宗", description: "列出所有世界卷宗，含成员名单、关系线（带 relationId）与世界观描述。操作前建议先看。", parameterSchema: LIST_CHARACTER_WORLDS_SCHEMA },
+            { name: "创建世界卷宗", description: "新建一个世界卷宗（如：现代都市 / 仙侠界），初始为空，之后用「移动角色到世界」把角色放进去。", parameterSchema: CREATE_CHARACTER_WORLD_SCHEMA },
+            { name: "重命名世界卷宗", description: "修改某个世界卷宗的名字（默认世界不可改名）。", parameterSchema: RENAME_CHARACTER_WORLD_SCHEMA },
+            { name: "更新世界描述", description: "写入或修改某个世界卷宗的世界观描述，会注入该世界所有角色的上下文。", parameterSchema: UPDATE_CHARACTER_WORLD_DESC_SCHEMA },
+            { name: "删除世界卷宗", description: "删除某个世界卷宗（默认世界不可删除），其成员自动并回默认世界。", parameterSchema: DELETE_CHARACTER_WORLD_SCHEMA },
+            { name: "移动角色到世界", description: "把某个角色移入目标世界卷宗；角色会自动从原世界移出。", parameterSchema: MOVE_CHARACTER_TO_WORLD_SCHEMA },
+            { name: "添加关系", description: "在同一世界的两个角色之间拉一条关系线（如：A 是 B 的哥哥 / 宿敌 / 上司）。两个角色必须已在同一世界。", parameterSchema: ADD_CHARACTER_RELATION_SCHEMA },
+            { name: "删除关系", description: "剪断某条关系线，relationId 从「列出世界卷宗」获取。", parameterSchema: DELETE_CHARACTER_RELATION_SCHEMA },
+        ],
+        usageGuide: CHARACTER_WORLD_PROMPT,
     },
     {
         id: "worldbook_pack",
@@ -815,6 +909,14 @@ const MASCOT_NATIVE_TOOL_NAMES: Record<string, string> = {
     "读取角色": "mascot_read_character",
     "创建角色": "mascot_create_character",
     "更新角色字段": "mascot_update_character_field",
+    "列出世界卷宗": "mascot_list_character_worlds",
+    "创建世界卷宗": "mascot_create_character_world",
+    "重命名世界卷宗": "mascot_rename_character_world",
+    "更新世界描述": "mascot_update_character_world_description",
+    "删除世界卷宗": "mascot_delete_character_world",
+    "移动角色到世界": "mascot_move_character_to_world",
+    "添加关系": "mascot_add_character_relation",
+    "删除关系": "mascot_delete_character_relation",
     "列出世界书": "mascot_list_worldbooks",
     "读取词条": "mascot_read_worldbook_entry",
     "创建词条": "mascot_create_worldbook_entry",
@@ -847,6 +949,7 @@ const MASCOT_NATIVE_LOADER_NAMES: Record<string, string> = {
     css_pack: "mascot_load_css_pack",
     image_pack: "mascot_load_image_pack",
     character_pack: "mascot_load_character_pack",
+    character_world_pack: "mascot_load_character_world_pack",
     worldbook_pack: "mascot_load_worldbook_pack",
     preset_pack: "mascot_load_preset_pack",
     regex_pack: "mascot_load_regex_pack",
@@ -952,6 +1055,16 @@ export async function executeMascotToolCall(call: ToolCall, ctx: MascotToolConte
             case "读取角色": return await handleReadCharacter(call.args);
             case "创建角色": return await handleCreateCharacter(call.args);
             case "更新角色字段": return await handleUpdateCharacterField(call.args);
+
+            // ─── 角色世界（世界卷宗）───
+            case "列出世界卷宗": return await handleListCharacterWorlds();
+            case "创建世界卷宗": return await handleCreateCharacterWorld(call.args);
+            case "重命名世界卷宗": return await handleRenameCharacterWorld(call.args);
+            case "更新世界描述": return await handleUpdateCharacterWorldDescription(call.args);
+            case "删除世界卷宗": return await handleDeleteCharacterWorld(call.args);
+            case "移动角色到世界": return await handleMoveCharacterToWorld(call.args);
+            case "添加关系": return await handleAddCharacterRelation(call.args);
+            case "删除关系": return await handleDeleteCharacterRelation(call.args);
 
             // ─── 世界书 ───
             case "列出世界书": return await handleListWorldbooks(call.args);
@@ -1389,6 +1502,7 @@ async function handleReadCharacter(args: Record<string, unknown>): Promise<ToolR
     parts.push(`id: ${char.id}`);
     parts.push(`name: ${char.name || ""}`);
     parts.push(`personality: ${char.personality || ""}`);
+    parts.push(`briefPersona: ${char.briefPersona || "（未设置）"}`);
     parts.push(`persona:\n${char.persona || ""}`);
     return { name: "读取角色", success: true, data: parts.join("\n") };
 }
@@ -1398,18 +1512,21 @@ async function handleCreateCharacter(args: Record<string, unknown>): Promise<Too
     const chars = loadCharacters();
     if (chars.find((c) => c.name === args.name)) return { name: "创建角色", success: false, error: "已存在同名角色" };
     const now = new Date().toISOString();
+    const briefPersona = typeof args.briefPersona === "string" ? args.briefPersona.trim() : "";
     const newChar = {
         id: `char_${Date.now()}`,
         name: args.name as string,
         avatar: null,
         persona: args.persona as string,
         personality: args.personality as string,
+        briefPersona: briefPersona || undefined,
+        briefPersonaUpdatedAt: briefPersona ? now : undefined,
         createdAt: now,
         updatedAt: now,
     };
     chars.push(newChar as typeof chars[number]);
     saveCharacters(chars);
-    return { name: "创建角色", success: true, data: `已创建角色 ${newChar.name} (${newChar.id})` };
+    return { name: "创建角色", success: true, data: `已创建角色 ${newChar.name} (${newChar.id})${briefPersona ? "，含简量人设" : ""}` };
 }
 
 async function handleUpdateCharacterField(args: Record<string, unknown>): Promise<ToolResult> {
@@ -1419,13 +1536,17 @@ async function handleUpdateCharacterField(args: Record<string, unknown>): Promis
     if (idx < 0) return { name: "更新角色字段", success: false, error: `找不到角色：${args.name}` };
     const field = args.field as string;
     const value = args.value as string;
+    const now = new Date().toISOString();
     const char = { ...chars[idx] } as Record<string, unknown>;
     if (field === "name" || field === "persona" || field === "personality") {
         char[field] = value;
+    } else if (field === "briefPersona") {
+        char.briefPersona = value;
+        char.briefPersonaUpdatedAt = now;
     } else {
         return { name: "更新角色字段", success: false, error: `不支持的字段：${field}` };
     }
-    char.updatedAt = new Date().toISOString();
+    char.updatedAt = now;
     chars[idx] = char as typeof chars[number];
     saveCharacters(chars);
     return { name: "更新角色字段", success: true, data: `已更新 ${args.name} 的 ${field}` };
@@ -1534,6 +1655,131 @@ async function handleDeleteWorldbookEntry(args: Record<string, unknown>): Promis
     books[bookIdx] = book;
     saveWorldBooks(books);
     return { name: "删除词条", success: true, data: `已删除词条 ${args.entryUid}` };
+}
+
+// ── 角色世界（世界卷宗）Handlers ───────────────
+
+async function resolveCharacterIdByName(name: string): Promise<{ id: string; name: string } | null> {
+    const { loadCharacters } = await import("./character-storage");
+    const chars = loadCharacters();
+    const exact = chars.find((c) => c.name === name);
+    if (exact) return { id: exact.id, name: exact.name };
+    const fuzzy = chars.find((c) => c.name && c.name.includes(name));
+    if (fuzzy) return { id: fuzzy.id, name: fuzzy.name };
+    return null;
+}
+
+async function resolveCharacterWorldIdByName(name: string): Promise<{ id: string; name: string; isDefault: boolean } | null> {
+    const { loadCharacterWorldGroups, DEFAULT_CHARACTER_WORLD_ID } = await import("./character-world-storage");
+    const groups = loadCharacterWorldGroups();
+    const exact = groups.find((g) => g.name === name);
+    if (exact) return { id: exact.id, name: exact.name, isDefault: exact.id === DEFAULT_CHARACTER_WORLD_ID };
+    const fuzzy = groups.find((g) => g.name.includes(name));
+    if (fuzzy) return { id: fuzzy.id, name: fuzzy.name, isDefault: fuzzy.id === DEFAULT_CHARACTER_WORLD_ID };
+    return null;
+}
+
+async function handleListCharacterWorlds(): Promise<ToolResult> {
+    const { loadCharacterWorldGroups, DEFAULT_CHARACTER_WORLD_ID } = await import("./character-world-storage");
+    const { loadCharacters } = await import("./character-storage");
+    const groups = loadCharacterWorldGroups();
+    if (groups.length === 0) return { name: "列出世界卷宗", success: true, data: "（还没有世界卷宗）" };
+    const chars = loadCharacters();
+    const nameById = new Map(chars.map((c) => [c.id, c.name || c.id]));
+    const lines: string[] = [];
+    for (const group of groups) {
+        lines.push(`· ${group.name} [id: ${group.id}]${group.id === DEFAULT_CHARACTER_WORLD_ID ? "（默认世界，不可改名/删除）" : ""}`);
+        if (group.description.trim()) lines.push(`  描述：${group.description.trim().replace(/\s+/g, " ").slice(0, 80)}`);
+        const memberNames = group.memberIds.map((id) => nameById.get(id) || id);
+        lines.push(`  成员（${memberNames.length}）：${memberNames.join("、") || "（空）"}`);
+        if (group.relations.length > 0) {
+            for (const rel of group.relations) {
+                lines.push(`  关系：${nameById.get(rel.fromCharacterId) || rel.fromCharacterId} 是 ${nameById.get(rel.toCharacterId) || rel.toCharacterId} 的${rel.label} [relationId: ${rel.id}]`);
+            }
+        }
+    }
+    return { name: "列出世界卷宗", success: true, data: lines.join("\n") };
+}
+
+async function handleCreateCharacterWorld(args: Record<string, unknown>): Promise<ToolResult> {
+    const { createCharacterWorldGroup } = await import("./character-world-storage");
+    const name = typeof args.name === "string" ? args.name.trim() : "";
+    if (!name) return { name: "创建世界卷宗", success: false, error: "name 不能为空" };
+    const group = createCharacterWorldGroup(name);
+    return { name: "创建世界卷宗", success: true, data: `已创建世界卷宗「${group.name}」(${group.id})` };
+}
+
+async function handleRenameCharacterWorld(args: Record<string, unknown>): Promise<ToolResult> {
+    const { renameCharacterWorldGroup } = await import("./character-world-storage");
+    const name = typeof args.name === "string" ? args.name : "";
+    const newName = typeof args.newName === "string" ? args.newName.trim() : "";
+    if (!newName) return { name: "重命名世界卷宗", success: false, error: "newName 不能为空" };
+    const world = await resolveCharacterWorldIdByName(name);
+    if (!world) return { name: "重命名世界卷宗", success: false, error: `找不到世界卷宗：${name}。用「列出世界卷宗」确认名称。` };
+    if (world.isDefault) return { name: "重命名世界卷宗", success: false, error: "默认世界不可改名" };
+    renameCharacterWorldGroup(world.id, newName);
+    return { name: "重命名世界卷宗", success: true, data: `世界卷宗「${world.name}」已改名为「${newName}」` };
+}
+
+async function handleUpdateCharacterWorldDescription(args: Record<string, unknown>): Promise<ToolResult> {
+    const { updateCharacterWorldDescription } = await import("./character-world-storage");
+    const name = typeof args.name === "string" ? args.name : "";
+    const description = typeof args.description === "string" ? args.description.trim() : "";
+    const world = await resolveCharacterWorldIdByName(name);
+    if (!world) return { name: "更新世界描述", success: false, error: `找不到世界卷宗：${name}。用「列出世界卷宗」确认名称。` };
+    updateCharacterWorldDescription(world.id, description);
+    return { name: "更新世界描述", success: true, data: `已更新世界卷宗「${world.name}」的世界观描述` };
+}
+
+async function handleDeleteCharacterWorld(args: Record<string, unknown>): Promise<ToolResult> {
+    const { deleteCharacterWorldGroup } = await import("./character-world-storage");
+    const name = typeof args.name === "string" ? args.name : "";
+    const world = await resolveCharacterWorldIdByName(name);
+    if (!world) return { name: "删除世界卷宗", success: false, error: `找不到世界卷宗：${name}` };
+    if (world.isDefault) return { name: "删除世界卷宗", success: false, error: "默认世界不可删除" };
+    deleteCharacterWorldGroup(world.id);
+    return { name: "删除世界卷宗", success: true, data: `已删除世界卷宗「${world.name}」，其成员已并回默认世界` };
+}
+
+async function handleMoveCharacterToWorld(args: Record<string, unknown>): Promise<ToolResult> {
+    const { moveCharacterToWorld } = await import("./character-world-storage");
+    const characterName = typeof args.characterName === "string" ? args.characterName : "";
+    const worldName = typeof args.worldName === "string" ? args.worldName : "";
+    const character = await resolveCharacterIdByName(characterName);
+    if (!character) return { name: "移动角色到世界", success: false, error: `找不到角色：${characterName}。用「读取角色」确认名称。` };
+    const world = await resolveCharacterWorldIdByName(worldName);
+    if (!world) return { name: "移动角色到世界", success: false, error: `找不到世界卷宗：${worldName}。用「列出世界卷宗」确认名称，或先「创建世界卷宗」。` };
+    moveCharacterToWorld(character.id, world.id);
+    return { name: "移动角色到世界", success: true, data: `已将角色「${character.name}」移入世界「${world.name}」` };
+}
+
+async function handleAddCharacterRelation(args: Record<string, unknown>): Promise<ToolResult> {
+    const { addCharacterWorldRelation } = await import("./character-world-storage");
+    const worldName = typeof args.worldName === "string" ? args.worldName : "";
+    const fromName = typeof args.fromCharacterName === "string" ? args.fromCharacterName : "";
+    const toName = typeof args.toCharacterName === "string" ? args.toCharacterName : "";
+    const label = typeof args.label === "string" ? args.label.trim() : "";
+    if (!label) return { name: "添加关系", success: false, error: "label 不能为空" };
+    const world = await resolveCharacterWorldIdByName(worldName);
+    if (!world) return { name: "添加关系", success: false, error: `找不到世界卷宗：${worldName}。用「列出世界卷宗」确认名称。` };
+    const from = await resolveCharacterIdByName(fromName);
+    if (!from) return { name: "添加关系", success: false, error: `找不到角色：${fromName}。用「读取角色」确认名称。` };
+    const to = await resolveCharacterIdByName(toName);
+    if (!to) return { name: "添加关系", success: false, error: `找不到角色：${toName}。用「读取角色」确认名称。` };
+    if (from.id === to.id) return { name: "添加关系", success: false, error: "不能给角色自己建立关系" };
+    addCharacterWorldRelation(world.id, from.id, to.id, label);
+    return { name: "添加关系", success: true, data: `已添加关系：${from.name} 是 ${to.name} 的${label}（世界：${world.name}）` };
+}
+
+async function handleDeleteCharacterRelation(args: Record<string, unknown>): Promise<ToolResult> {
+    const { deleteCharacterWorldRelation } = await import("./character-world-storage");
+    const worldName = typeof args.worldName === "string" ? args.worldName : "";
+    const relationId = typeof args.relationId === "string" ? args.relationId : "";
+    if (!relationId) return { name: "删除关系", success: false, error: "缺少 relationId，先用「列出世界卷宗」获取" };
+    const world = await resolveCharacterWorldIdByName(worldName);
+    if (!world) return { name: "删除关系", success: false, error: `找不到世界卷宗：${worldName}` };
+    deleteCharacterWorldRelation(world.id, relationId);
+    return { name: "删除关系", success: true, data: `已删除世界「${world.name}」中的关系 ${relationId}` };
 }
 
 // ── Preset Handlers ────────────────────────────
