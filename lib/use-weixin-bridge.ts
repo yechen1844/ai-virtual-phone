@@ -66,9 +66,10 @@ function ensureAudioCreated() {
     const blob = new Blob([buf], { type: "audio/wav" });
     audio.src = URL.createObjectURL(blob);
     audio.loop = true;
-    // 0.05（约 -26dB）仍几乎无声，但比 0.01 更容易让系统认可"正在播放音频"，
-    // 从而拿到后台豁免；太低的音量会被部分安卓 ROM 当作静音而节流。
-    audio.volume = 0.05;
+    // 0.08（约 -22dB）几乎无声但足以让 Chrome 判定为"audible"（有声音输出）。
+    // 系统媒体管理能否显示播放条，取决于媒体会话声明（MediaSession）+ audible；
+    // 太低的音量会被部分安卓 ROM 当作静音而不计入媒体会话。
+    audio.volume = 0.08;
     // 挂进 DOM：个别安卓 ROM/浏览器只认"页面里真实存在"的媒体元素，
     // 游离的 new Audio() 对象可能不被计入媒体会话。绝对定位移出可视区，不占布局。
     try {
@@ -79,6 +80,21 @@ function ensureAudioCreated() {
         audio.setAttribute("aria-hidden", "true");
         audio.setAttribute("data-keepalive", "1");
         document.body.appendChild(audio);
+    } catch {}
+    // 声明媒体会话：让系统媒体管理/通知栏能显示"float 正在播放"。
+    // 不设 MediaSession metadata 时，即使音频在播（无声），系统也可能不显示播放条，
+    // 用户会误以为"没有播放"。
+    try {
+        if ("mediaSession" in navigator) {
+            navigator.mediaSession.metadata = new MediaMetadata({
+                title: "float",
+                artist: "float",
+                album: "后台保活",
+            });
+            navigator.mediaSession.setActionHandler("play", () => { if (_keepAliveWanted && !_suspendedForCall) retryPlay(); });
+            navigator.mediaSession.setActionHandler("pause", () => { try { _keepAliveAudio?.pause(); } catch {} });
+            navigator.mediaSession.setActionHandler("stop", () => { try { _keepAliveAudio?.pause(); } catch {} });
+        }
     } catch {}
     // 被系统打断/抢占后（来电、其他 App 出声、焦点被抢）自动续播
     audio.addEventListener("pause", () => { if (_keepAliveWanted && !_suspendedForCall) retryPlay(); });
@@ -196,6 +212,8 @@ function stopKeepAlive() {
     }
     clearGestureListeners();
     _gestureHintShown = false;
+    // 释放媒体会话声明，让系统媒体管理不再显示 float
+    try { if ("mediaSession" in navigator) navigator.mediaSession.metadata = null; } catch {}
     broadcastKeepAliveStatus("已停止");
 }
 
