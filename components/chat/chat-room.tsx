@@ -10,6 +10,7 @@ import { translateReasoningText } from "@/lib/reasoning-translate";
 import { MessageBubble, MediaDetailModal, prewarmStickerCache, BilingualTextBlock, isStandaloneHtmlPreviewContent, normalizeTextBubbleContent } from "./message-bubble";
 import { PhotoInputModal, TextPhotoModal, VoiceRecordModal, RedPacketModal, LocationInputModal, SystemInstructionModal } from "./rich-input-modals";
 import { EmojiPanel, StickerPanel } from "./emoji-panel";
+import { StickerSearchSuggest } from "./sticker-search-suggest";
 import { StateValuesPanel } from "./state-values-panel";
 import { generateChatCompletion, generateOfflineChatCompletion, flattenCompletionResult, ChatEngineError } from "@/lib/chat-engine";
 import { sendBrowserNotification } from "@/lib/browser-notification";
@@ -652,6 +653,8 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
 }, ref) {
     const [inputText, setInputText] = useState("");
     const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+    // 表情包搜索联想：ESC/失焦置 true 隐藏，输入变化重新开启
+    const [suggestClosed, setSuggestClosed] = useState(false);
     // 围观群/被禁言：输入与富媒体入口全部锁定，只留线下切换和生成按钮
     const [muteNowTick, setMuteNowTick] = useState(() => Date.now());
     useEffect(() => {
@@ -700,6 +703,11 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
     };
 
     const panelOpen = showEmojiPanel || showStickerPanel || showPlusMenu;
+    const suggestCharacterIds = useMemo(
+        () => (isGroup ? (stickerCharacterIds || []) : characterId ? [characterId] : []),
+        [isGroup, stickerCharacterIds, characterId],
+    );
+    const suggestEnabled = !inputLocked && !panelOpen && !suggestClosed && inputText.trim().length > 0;
     const plusMenuItems = [
         { icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--c-text)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" /></svg>, label: "照片墙", onClick: () => onOpenRichModal("photo") },
         { icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--c-text)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><line x1="7" y1="8" x2="17" y2="8" /><line x1="7" y1="12" x2="14" y2="12" /><line x1="7" y1="16" x2="11" y2="16" /></svg>, label: "文字图片", onClick: () => onOpenRichModal("text_photo") },
@@ -749,12 +757,21 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
                 </div>
             )}
 
+            {suggestEnabled && (
+                <StickerSearchSuggest
+                    query={inputText}
+                    characterIds={suggestCharacterIds}
+                    onSend={(name, url) => onSendSticker(name, url)}
+                    onClose={() => setSuggestClosed(true)}
+                />
+            )}
             <textarea
                 ref={textareaRef}
                 rows={1}
                 value={inputText}
                 onChange={e => {
                     setInputText(e.target.value);
+                    setSuggestClosed(false);
                     e.target.style.height = "auto";
                     e.target.style.height = Math.min(e.target.scrollHeight, 120) + "px";
                 }}
@@ -765,8 +782,14 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
                         const target = e.target as HTMLTextAreaElement;
                         requestAnimationFrame(() => requestAnimationFrame(() => target.focus()));
                     }
+                    setSuggestClosed(false);
                 }}
+                onBlur={() => setSuggestClosed(true)}
                 onKeyDown={e => {
+                    if (e.key === "Escape") {
+                        setSuggestClosed(true);
+                        return;
+                    }
                     if (shouldSendChatInputOnEnter(e, enterToSendEnabled)) {
                         e.preventDefault();
                         handleSubmit();
