@@ -32,7 +32,7 @@ function broadcastStatus() {
 // - 配合 MediaSession 声明，系统媒体管理/通知栏会显示"float 后台保活"播放条
 let _wakeLock: WakeLockSentinel | null = null;
 let _keepAliveCtx: AudioContext | null = null;
-let _keepAliveSource: AudioScheduledSourceNode | null = null;
+let _keepAliveSource: AudioBufferSourceNode | null = null;
 let _keepAliveGain: GainNode | null = null;
 let _keepAliveSourceStarted = false;
 
@@ -48,7 +48,7 @@ function createKeepAliveAudio(): boolean {
         if (!Ctor) return false;
         const ctx = new Ctor();
         const gain = ctx.createGain();
-        gain.gain.value = 0.25; // 诊断测试：音量可听（确认链路后在换回极轻）
+        gain.gain.value = 0.01; // 极轻（人耳不可闻），有微弱能量避免被系统判为纯静音
         gain.connect(ctx.destination);
         _keepAliveCtx = ctx;
         _keepAliveGain = gain;
@@ -72,26 +72,27 @@ function createKeepAliveAudio(): boolean {
     }
 }
 
-/** 生成并启动保活音频源（诊断测试模式：可听双音，验证链路真的在输出声音） */
+/** 生成并启动循环播放的无声音频（极弱噪声，人耳不可闻但有微弱能量） */
 function startKeepAliveSource() {
     if (!_keepAliveCtx || !_keepAliveGain || _keepAliveSource) return;
     try {
         const ctx = _keepAliveCtx;
-        // 诊断测试：可听的双音和弦（440Hz + 554Hz），音量 0.25，用户能明显听到。
-        // 用途：确认保活音频链路是否真的在输出声音 + 系统是否显示播放条。
-        // 测试确认链路正常后，再换回极轻/低频方案。
-        const osc1 = ctx.createOscillator();
-        osc1.type = "sine";
-        osc1.frequency.value = 440;
-        osc1.connect(_keepAliveGain);
-        osc1.start(0);
-        const osc2 = ctx.createOscillator();
-        osc2.type = "sine";
-        osc2.frequency.value = 554;
-        osc2.connect(_keepAliveGain);
-        osc2.start(0);
-        _keepAliveSource = osc1;
+        const len = Math.max(1, Math.floor(ctx.sampleRate * 0.5));
+        const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < len; i++) {
+            data[i] = (Math.random() * 2 - 1) * 0.001; // 极弱噪声（人耳不可闻）
+        }
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        src.loop = true;
+        src.connect(_keepAliveGain);
+        src.start(0);
+        _keepAliveSource = src;
         _keepAliveSourceStarted = true;
+        // 关键修复：AudioContext 不像 <audio> 元素会自动设 MediaSession.playbackState，
+        // 必须手动设为 "playing"，系统媒体管理才会显示播放条
+        try { if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing"; } catch {}
     } catch {
         _keepAliveSource = null;
         _keepAliveSourceStarted = false;
@@ -107,6 +108,7 @@ function suspendKeepAliveSource() {
     try {
         if (_keepAliveCtx && _keepAliveCtx.state === "running") void _keepAliveCtx.suspend();
     } catch {}
+    try { if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused"; } catch {}
 }
 
 function clearGestureListeners() {
@@ -223,7 +225,7 @@ function stopKeepAlive() {
     clearGestureListeners();
     _gestureHintShown = false;
     // 释放媒体会话声明，让系统媒体管理不再显示 float
-    try { if ("mediaSession" in navigator) navigator.mediaSession.metadata = null; } catch {}
+    try { if ("mediaSession" in navigator) { navigator.mediaSession.playbackState = "none"; navigator.mediaSession.metadata = null; } } catch {}
     broadcastKeepAliveStatus("已停止");
 }
 
