@@ -27,6 +27,7 @@ import { runSummarizationPipeline } from "@/lib/memory-summarizer";
 import { runCoreMemoryPipeline } from "@/lib/core-memory-builder";
 import { resolveAuxiliaryApiConfig, resolveUserIdentity } from "@/lib/settings-storage";
 import { generateEmbedding, resolveEmbeddingModel } from "@/lib/memory-embedding";
+import { backfillMissingEmbeddings } from "@/lib/memory-service";
 import { BINDING_ACCENTS } from "@/lib/ui-accent-colors";
 
 type MemoryView = "list" | "detail" | "settings";
@@ -256,6 +257,23 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
             ]);
             setCoreEntries(core);
             setLongTermEntries(lt);
+            // 长期记忆缺向量时静默补向量：后台逐条重试，不阻塞渲染、失败静默，下次进入再试
+            void backfillMissingEmbeddings(charId).then(updated => {
+                if (!updated || updated.length === 0) return;
+                setLongTermEntries(prev => {
+                    const byId = new Map(updated.map(e => [e.id, e]));
+                    let changed = false;
+                    const next = prev.map(e => {
+                        const filled = byId.get(e.id);
+                        if (filled && filled.embedding?.length && !e.embedding?.length) {
+                            changed = true;
+                            return { ...e, embedding: filled.embedding };
+                        }
+                        return e;
+                    });
+                    return changed ? next : prev;
+                });
+            });
         } catch {
             setCoreEntries([]);
             setLongTermEntries([]);
@@ -454,7 +472,9 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
     };
 
     const maybeBuildManualMemoryEmbedding = async (type: MemoryEntry["type"], content: string): Promise<number[] | undefined> => {
-        if (type !== "long_term" || !config.vectorRecallEnabled) return undefined;
+        // 编辑/新增长期记忆时只要有 embedding API 就静默生成向量，
+        // 不依赖 vectorRecallEnabled（那是检索开关，不是写入开关）。
+        if (type !== "long_term") return undefined;
         const embeddingApiConfig = resolveAuxiliaryApiConfig("embeddingApiConfigId");
         if (!embeddingApiConfig || !resolveEmbeddingModel(embeddingApiConfig)) return undefined;
         try {
@@ -596,6 +616,20 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                                     <span className={`mem-origin-badge ${isManualMemoryEntry(entry) ? "is-manual" : ""}`}>
                                         {isManualMemoryEntry(entry) ? "MANUAL" : "AUTO"}
                                     </span>
+                                    {type === "long_term" && (
+                                        <span
+                                            className="mem-origin-badge"
+                                            style={{
+                                                background: entry.embedding?.length ? "rgba(16,185,129,0.14)" : "rgba(148,163,184,0.16)",
+                                                color: entry.embedding?.length ? "var(--c-success)" : "#94a3b8",
+                                            }}
+                                            title={entry.embedding?.length
+                                                ? "已生成向量：超预算时参与相关性召回"
+                                                : "尚无向量：会静默补向量，编辑/新增后也会自动生成"}
+                                        >
+                                            {entry.embedding?.length ? "已向量化" : "未向量化"}
+                                        </span>
+                                    )}
                                     <div className="mem-entry-menu-wrap">
                                         <button
                                             className="mem-entry-menu-btn"

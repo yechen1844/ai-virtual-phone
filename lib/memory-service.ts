@@ -2,7 +2,7 @@
 // High-level memory orchestration: retrieve long-term memories for prompt injection.
 
 import type { MemoryConfig, MemoryEntry } from "./memory-types";
-import { loadMemoryEntriesByType } from "./memory-storage";
+import { loadMemoryEntriesByType, saveMemoryEntry } from "./memory-storage";
 import { resolveAuxiliaryApiConfig } from "./settings-storage";
 import { generateEmbedding, resolveEmbeddingModel, cosineSimilarity } from "./memory-embedding";
 import { estimateTokens } from "./token-counter";
@@ -90,4 +90,51 @@ function fillByBudget(entries: MemoryEntry[], budget: number): MemoryEntry[] {
         used += tokens;
     }
     return result;
+}
+
+/**
+ * 静默补向量：把某个角色所有「尚无向量」的长期记忆逐条补生成 embedding。
+ * 用户编辑/新增长期记忆时会主动生成向量；若当时未配 embedding API 或生成失败，
+ * 条目会保持无向量状态——本函数在打开记忆库详情页时后台兜底重试。
+ * 行为特征：
+ *  - 不依赖 vectorRecallEnabled 开关（补向量是写入侧动作，检索开关只管读取）
+ *  - 逐条串行生成，失败静默跳过，不中断整体
+ *  - 每角色防重入（同一时刻只跑一轮）
+ * @returns 该角色当前的全部长期记忆（含补向量后的最新状态）；无可补/未运行返回 null
+ */
+const backfillSet = new Set<string>();
+
+export async function backfillMissingEmbeddings(characterId: string): Promise<MemoryEntry[] | null> {
+    if (backfillSet.has(characterId)) return null;
+    const apiConfig = resolveAuxiliaryApiConfig("embeddingApiConfigId");
+    if (!apiConfig || !resolveEmbeddingModel(apiConfig)) return null;
+
+    const entries = await loadMemoryEntriesByType(characterId, "long_term");
+    const pending = entries.filter(entry => !entry.embedding || entry.embedding.length === 0);
+    if (pending.length === 0) return entries;
+
+    backfillSet.add(characterId);
+    try {
+        const updatedById = new Map<string, MemoryEntry>();
+        for (const entry of pending) {
+            try {
+                const emb = await generateEmbedding(entry.content, apiConfig);
+                if (emb && emb.length > 0) {
+                    const next: MemoryEntry = {
+                        ...entry,
+                        embedding: emb,
+                        updatedAt: new Date().toISOString(),
+                    };
+                    await saveMemoryEntry(next);
+                    updatedById.set(entry.id, next);
+                }
+            } catch {
+                // 静默：单条失败不影响其余条目
+            }
+        }
+        if (updatedById.size === 0) return entries;
+        return entries.map(entry => updatedById.get(entry.id) ?? entry);
+    } finally {
+        backfillSet.delete(characterId);
+    }
 }
