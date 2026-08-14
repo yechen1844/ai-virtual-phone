@@ -1171,15 +1171,15 @@
 /* tile 底板复用 .icon-glyph-box：扁平/毛玻璃、底色、阴影全部跟随
    个性化装扮里的图标材质设定，文件夹永远和图标一个质感。 */
 
-/* 迷你格铺在玻璃打光层(z1)之上、描边(z3)之下 */
+/* 迷你格铺在玻璃打光层(z1)之上、描边(z3)之下；2×2 最多 4 个，够大够认 */
 .folder-mini-grid {
   position: absolute;
-  inset: 14%;
+  inset: 15%;
   z-index: 2;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  grid-template-rows: repeat(3, 1fr);
-  gap: 9%;
+  grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: repeat(2, 1fr);
+  gap: 10%;
   pointer-events: none;
 }
 
@@ -1190,6 +1190,25 @@
   display: grid;
   place-items: center;
   background: color-mix(in srgb, var(--c-desktop-icon-box, #ffffff) 46%, transparent);
+}
+
+/* 毛玻璃态：迷你格用与大图标同源的打光配方（斜向高光 + 底色透出 + 内描边）。
+   不用真 backdrop-filter——嵌在已有 backdrop-filter 的玻璃盒里采样不可靠，
+   而且每个文件夹 4 个迷你格的实时模糊太贵；身后本来就是 tile 模糊好的壁纸，
+   叠上高光就是"霜上加霜"的效果。 */
+.phone-shell[data-icon-effect="glass"] .folder-mini {
+  background:
+    linear-gradient(135deg,
+      rgba(255, 255, 255, 0.32),
+      color-mix(in srgb, var(--c-desktop-icon-bg, #c7b8ff) 8%, transparent) 45%,
+      rgba(255, 255, 255, 0.10)),
+    linear-gradient(0deg,
+      color-mix(in srgb, var(--c-desktop-icon-box, #ffffff) 38%, transparent),
+      color-mix(in srgb, var(--c-desktop-icon-box, #ffffff) 38%, transparent)),
+    rgba(255, 255, 255, 0.16);
+  box-shadow:
+    inset 0 0.5px 1px rgba(255, 255, 255, 0.5),
+    inset 0 -0.5px 0.5px rgba(255, 255, 255, 0.10);
 }
 
 .phone-shell[data-icon-effect="flat"] .folder-mini {
@@ -1258,9 +1277,12 @@
 }
 
 .folder-panel {
-  width: min(304px, 86%);
+  /* 四边等距的账（以图标"盒"边缘计，标签算在留白里，和 iOS 一致）：
+     侧距 = (212 - 2×58) / 3 = 32；上距 = padding-top 32；
+     下距 = 行内标签区 26 + padding-bottom 6 = 32。改尺寸要一起改。 */
+  width: min(212px, 78%);
   border-radius: 30px;
-  padding: 16px 4px 12px;
+  padding: 0;
   /* 扁平材质：图标底色罩在面板底色(--c-home-card，即扁平组件的卡面)上，
      两个颜色都跟装扮面板走；默认图标底色近乎透明时就是一张干净的组件卡 */
   background:
@@ -1333,10 +1355,12 @@
   flex: 0 0 100%;
   scroll-snap-align: center;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  grid-template-rows: repeat(3, minmax(84px, auto));
-  gap: 6px 2px;
-  padding: 6px 8px;
+  /* 列宽定死为图标宽，space-evenly 让左边距=列间距=右边距，四向留白统一 */
+  grid-template-columns: repeat(2, 58px);
+  grid-template-rows: repeat(2, minmax(84px, auto));
+  justify-content: space-evenly;
+  row-gap: 4px;
+  padding: 32px 0 6px;
   align-items: start;
 }
 
@@ -1359,20 +1383,42 @@
   transform: scale(0.92);
   transition: transform 0.15s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
-/* 面板里的图标盒尺寸固定，不吃桌面 --slot-size 收缩 */
+/* 面板里的图标盒尺寸固定，不吃桌面 --slot-size 收缩。
+   另外补一层"座位"底色：桌面上玻璃盒靠 backdrop 模糊壁纸显形、扁平盒
+   底色 token 默认近乎全透明，进了面板身后是均匀的面板底，两种材质都
+   会隐形成"光杆图标"。座位用文字色低透明度调出，深浅主题都有对比。 */
 .folder-app .icon-glyph-box {
   width: 58px;
   height: 58px;
+  background:
+    linear-gradient(0deg, var(--c-desktop-icon-box, transparent), var(--c-desktop-icon-box, transparent)),
+    color-mix(in srgb, var(--c-home-text, #2f343b) 10%, transparent);
+}
+.phone-shell[data-icon-effect="glass"] .folder-app .icon-glyph-box {
+  background:
+    linear-gradient(135deg,
+      rgba(255, 255, 255, 0.17),
+      color-mix(in srgb, var(--c-desktop-icon-bg, #c7b8ff) 6%, transparent),
+      rgba(255, 255, 255, 0.07)),
+    linear-gradient(0deg,
+      color-mix(in srgb, var(--c-desktop-icon-box, #ffffff) 38%, transparent),
+      color-mix(in srgb, var(--c-desktop-icon-box, #ffffff) 38%, transparent)),
+    rgba(255, 255, 255, 0.28);
 }
 .folder-app .icon-label {
   color: var(--c-home-label, #2f343b);
 }
 
+/* 圆点浮在下边距里，不撑高面板——有没有第二页四向留白都一致 */
 .folder-dots {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 12px;
   display: flex;
   justify-content: center;
   gap: 6px;
-  padding: 8px 0 4px;
+  pointer-events: none;
 }
 .folder-dots .dot {
   width: 6px;

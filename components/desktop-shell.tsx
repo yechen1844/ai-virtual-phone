@@ -127,6 +127,7 @@ import { generateChatCompletion, flattenCompletionResult } from "@/lib/chat-engi
 import { parseAIResponse } from "@/lib/rich-message-parser";
 import { requestBackgroundChatReply, scheduleFollowUp } from "@/lib/follow-up-service";
 import { CHAT_MESSAGE_NOTICE_EVENT, CHAT_OPEN_SESSION_EVENT, type ChatMessageNoticeDetail } from "@/lib/chat-notification-events";
+import { startIncomingCallVibration } from "@/lib/call-vibration";
 import { setMascotContext } from "@/lib/mascot-context";
 import { DESKTOP_WIDGETS_CHANGED_EVENT } from "@/lib/mascot-events";
 import { useWeixinBridge } from "@/lib/use-weixin-bridge";
@@ -1083,6 +1084,11 @@ export function DesktopShell({ initialThemeProfile, initialThemeAssets }: Deskto
   const [incomingCall, setIncomingCall] = useState<{
     sessionId: string; type: "voice" | "video"; charName: string; charAvatar: string | null; isGroup?: boolean;
   } | null>(null);
+  // 桌面来电横幅显示期间循环振动（开关在聊天主页"语音/视频来电振动"）
+  useEffect(() => {
+    if (!incomingCall) return;
+    return startIncomingCallVibration();
+  }, [incomingCall]);
   const [chatMessageNotice, setChatMessageNotice] = useState<{
     sessionId: string;
     title: string;
@@ -4415,7 +4421,7 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
                                   >
                                     <span className="icon-glyph-box folder-glyph-box" aria-hidden>
                                       <span className="folder-mini-grid">
-                                        {folder.icons.slice(0, 9).map(memberId => renderFolderMini(memberId))}
+                                        {folder.icons.slice(0, 4).map(memberId => renderFolderMini(memberId))}
                                       </span>
                                       {folderBadge > 0 ? (
                                         <span className="desktop-icon-badge" aria-label={`${folderBadge} 条未读`}>
@@ -4740,8 +4746,8 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
               {!activeApp && openFolderId && folders[openFolderId] && (() => {
                 const folder = folders[openFolderId];
                 const memberPages: DesktopIconId[][] = [];
-                for (let i = 0; i < folder.icons.length; i += 9) {
-                  memberPages.push(folder.icons.slice(i, i + 9));
+                for (let i = 0; i < folder.icons.length; i += 4) {
+                  memberPages.push(folder.icons.slice(i, i + 4));
                 }
                 if (memberPages.length === 0) memberPages.push([]);
                 const boundedFolderPage = Math.min(folderPageIndex, memberPages.length - 1);
