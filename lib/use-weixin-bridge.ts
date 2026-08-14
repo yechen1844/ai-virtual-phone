@@ -26,21 +26,17 @@ function broadcastStatus() {
     window.dispatchEvent(new CustomEvent("weixin-status-changed"));
 }
 
-// ── 保活：Wake Lock + <audio> 静音音频 + MediaSession ─────────
-// Chrome Android 的媒体通知只认 <audio>/<video> 元素（不认 AudioContext），
-// 所以必须用 <audio> 播放才能让系统媒体管理显示播放条。
+// ── 保活：Wake Lock + 静音音频 ───────────────────────────────
 let _wakeLock: WakeLockSentinel | null = null;
 let _keepAliveAudio: HTMLAudioElement | null = null;
 
-let _keepAliveWanted = false;
-let _suspendedForCall = false;
-let _gestureHintShown = false;
-let _retryTimer: number | null = null;
+let _keepAliveWanted = false; // 标记：想要保活但还没获得用户手势
+let _suspendedForCall = false; // 标记：因语音/视频通话临时暂停了保活
 
 function ensureAudioCreated() {
     if (_keepAliveAudio) return;
-    const audio = new Audio();
-    // 生成 1 秒静音 WAV（有微弱能量，人耳不可闻）
+    _keepAliveAudio = new Audio();
+    // 生成 1 秒静音 WAV
     const sampleRate = 8000;
     const samples = sampleRate;
     const buf = new ArrayBuffer(44 + samples * 2);
@@ -59,150 +55,87 @@ function ensureAudioCreated() {
     view.setUint16(34, 16, true);
     writeStr(36, "data");
     view.setUint32(40, samples * 2, true);
+    // ±1 LSB 微噪声（约 -90dB，不可闻）：纯零波形会被 Chrome 判为"无声页面"，
+    // 安卓后台 5 分钟后定时器被强节流（轮询延迟拉到分钟级）；有能量的音频
+    // 可获得 "playing audio" 豁免。
     for (let i = 0; i < samples; i++) {
         view.setInt16(44 + i * 2, i % 2 === 0 ? 1 : -1, true);
     }
     const blob = new Blob([buf], { type: "audio/wav" });
-    audio.src = URL.createObjectURL(blob);
-    audio.loop = true;
-    audio.volume = 0.01;
-    // 挂进 DOM（Chrome Android 只认页面里真实存在的媒体元素）
-    try {
-        audio.style.position = "fixed";
-        audio.style.left = "-9999px";
-        audio.style.width = "1px";
-        audio.style.height = "1px";
-        audio.setAttribute("aria-hidden", "true");
-        audio.setAttribute("data-keepalive", "1");
-        document.body.appendChild(audio);
-    } catch {}
-    // MediaSession：让系统媒体管理显示"float 正在播放"
-    try {
-        if ("mediaSession" in navigator) {
-            navigator.mediaSession.metadata = new MediaMetadata({
-                title: "float",
-                artist: "float",
-                album: "后台保活",
-            });
-            navigator.mediaSession.setActionHandler("play", () => { if (_keepAliveWanted && !_suspendedForCall) retryPlay(); });
-            navigator.mediaSession.setActionHandler("pause", () => { try { _keepAliveAudio?.pause(); } catch {} });
-            navigator.mediaSession.setActionHandler("stop", () => { try { _keepAliveAudio?.pause(); } catch {} });
-        }
-    } catch {}
-    // 被系统打断后自动续播
-    audio.addEventListener("pause", () => { if (_keepAliveWanted && !_suspendedForCall) retryPlay(); });
-    audio.addEventListener("ended", () => { if (_keepAliveWanted && !_suspendedForCall) retryPlay(); });
-    _keepAliveAudio = audio;
+    _keepAliveAudio.src = URL.createObjectURL(blob);
+    _keepAliveAudio.loop = true;
+    _keepAliveAudio.volume = 0.01;
 }
 
-function clearGestureListeners() {
-    document.removeEventListener("touchstart", onUserGesture, true);
-    document.removeEventListener("click", onUserGesture, true);
-}
-
-function ensureGestureListeners() {
-    document.addEventListener("touchstart", onUserGesture, { capture: true, once: false });
-    document.addEventListener("click", onUserGesture, { capture: true, once: false });
-}
-
-function clearRetryTimer() {
-    if (_retryTimer !== null) {
-        window.clearTimeout(_retryTimer);
-        _retryTimer = null;
-    }
-}
-
-function scheduleRetry() {
-    if (_retryTimer !== null) return;
-    _retryTimer = window.setTimeout(() => {
-        _retryTimer = null;
-        retryPlay();
-    }, 3000);
-}
-
-function maybeShowGestureHint() {
-    if (_gestureHintShown) return;
-    _gestureHintShown = true;
-    window.dispatchEvent(new CustomEvent("global-notice", {
-        detail: "后台保活已开启：请在页面上点一下屏幕，让静音音频完成启动",
-    }));
-}
-
-function broadcastKeepAliveStatus(status: string) {
-    window.dispatchEvent(new CustomEvent("weixin-keepalive-status", { detail: status }));
-}
-
-/** 尝试播放保活音频；失败则等手势 + 周期重试 */
-function retryPlay() {
-    if (!_keepAliveWanted || _suspendedForCall || !_keepAliveAudio) return;
-    _keepAliveAudio.play()
-        .then(() => {
-            clearRetryTimer();
-            // 显式设 playbackState=playing：确保系统媒体管理显示播放条
-            try { if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing"; } catch {}
-            broadcastKeepAliveStatus("运行中");
-        })
-        .catch(() => {
-            ensureGestureListeners();
-            scheduleRetry();
-            maybeShowGestureHint();
-            broadcastKeepAliveStatus("等待触摸启动");
-        });
-}
-
+/** 用户触摸时尝试播放（浏览器要求音频必须在用户手势中启动） */
 function onUserGesture() {
     if (!_keepAliveWanted || !_keepAliveAudio) return;
-    retryPlay();
+    _keepAliveAudio.play().then(() => {
+        // 成功了，移除监听
+        document.removeEventListener("touchstart", onUserGesture, true);
+        document.removeEventListener("click", onUserGesture, true);
+    }).catch(() => {});
 }
 
 async function startKeepAlive() {
     _keepAliveWanted = true;
-    broadcastKeepAliveStatus("启动中");
-    ensureAudioCreated();
-    ensureGestureListeners();
-    retryPlay();
+
+    // Wake Lock
     try {
         if ("wakeLock" in navigator) {
-            const sentinel = await navigator.wakeLock.request("screen");
-            sentinel.addEventListener("release", () => { _wakeLock = null; });
-            _wakeLock = sentinel;
+            _wakeLock = await navigator.wakeLock.request("screen");
+            _wakeLock.addEventListener("release", () => { _wakeLock = null; });
         }
     } catch {}
+
+    // 准备音频
+    ensureAudioCreated();
+
+    // 先尝试直接播放（如果之前已有用户手势则可以成功）
+    _keepAliveAudio!.play().catch(() => {
+        // 失败了：注册监听，等下一次用户触摸时播放
+        document.addEventListener("touchstart", onUserGesture, { capture: true, once: false });
+        document.addEventListener("click", onUserGesture, { capture: true, once: false });
+    });
 }
 
 function stopKeepAlive() {
     _keepAliveWanted = false;
     _suspendedForCall = false;
-    clearRetryTimer();
     _wakeLock?.release().catch(() => {});
     _wakeLock = null;
     if (_keepAliveAudio) {
         _keepAliveAudio.pause();
         _keepAliveAudio.currentTime = 0;
     }
-    clearGestureListeners();
-    _gestureHintShown = false;
-    try { if ("mediaSession" in navigator) { navigator.mediaSession.playbackState = "none"; navigator.mediaSession.metadata = null; } } catch {}
-    broadcastKeepAliveStatus("已停止");
+    document.removeEventListener("touchstart", onUserGesture, true);
+    document.removeEventListener("click", onUserGesture, true);
 }
 
+/**
+ * Pause keep-alive for the duration of a voice/video call. Starting STT grabs
+ * the mic and the OS audio focus, which would otherwise interrupt the looping
+ * silent audio and leave it dead after the call. The call holds the mic + audio
+ * session itself, so keep-alive is redundant meanwhile. No-op if keep-alive is off.
+ */
 export function suspendKeepAliveForCall() {
     if (!_keepAliveWanted) return;
     _suspendedForCall = true;
-    clearRetryTimer();
     _wakeLock?.release().catch(() => {});
     _wakeLock = null;
     if (_keepAliveAudio) {
         try { _keepAliveAudio.pause(); } catch {}
     }
-    clearGestureListeners();
+    document.removeEventListener("touchstart", onUserGesture, true);
+    document.removeEventListener("click", onUserGesture, true);
 }
 
+/** Re-arm keep-alive after a call ends, unless the user turned it off meanwhile. */
 export function resumeKeepAliveAfterCall() {
     if (!_suspendedForCall) return;
     _suspendedForCall = false;
-    if (!_keepAliveWanted) return;
-    void startKeepAlive();
+    if (!_keepAliveWanted) return; // keep-alive was switched off during the call
+    void startKeepAlive(); // re-acquires Wake Lock + replays the silent audio
 }
 
 export function useWeixinBridge() {
