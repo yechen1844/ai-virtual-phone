@@ -32,10 +32,12 @@ let _keepAliveAudio: HTMLAudioElement | null = null;
 
 let _keepAliveWanted = false; // 标记：想要保活但还没获得用户手势
 let _suspendedForCall = false; // 标记：因语音/视频通话临时暂停了保活
+let _gestureHintShown = false; // 提示"点一下屏幕"只弹一次
+let _retryTimer: number | null = null; // 音频播放失败后的周期重试
 
 function ensureAudioCreated() {
     if (_keepAliveAudio) return;
-    _keepAliveAudio = new Audio();
+    const audio = new Audio();
     // 生成 1 秒静音 WAV
     const sampleRate = 8000;
     const samples = sampleRate;
@@ -62,54 +64,108 @@ function ensureAudioCreated() {
         view.setInt16(44 + i * 2, i % 2 === 0 ? 1 : -1, true);
     }
     const blob = new Blob([buf], { type: "audio/wav" });
-    _keepAliveAudio.src = URL.createObjectURL(blob);
-    _keepAliveAudio.loop = true;
-    _keepAliveAudio.volume = 0.01;
+    audio.src = URL.createObjectURL(blob);
+    audio.loop = true;
+    audio.volume = 0.01;
+    // 挂进 DOM：个别安卓 ROM/浏览器只认"页面里真实存在"的媒体元素，
+    // 游离的 new Audio() 对象可能不被计入媒体会话。绝对定位移出可视区，不占布局。
+    try {
+        audio.style.position = "fixed";
+        audio.style.left = "-9999px";
+        audio.style.width = "1px";
+        audio.style.height = "1px";
+        audio.setAttribute("aria-hidden", "true");
+        audio.setAttribute("data-keepalive", "1");
+        document.body.appendChild(audio);
+    } catch {}
+    // 被系统打断/抢占后（来电、其他 App 出声、焦点被抢）自动续播
+    audio.addEventListener("pause", () => { if (_keepAliveWanted && !_suspendedForCall) retryPlay(); });
+    audio.addEventListener("ended", () => { if (_keepAliveWanted && !_suspendedForCall) retryPlay(); });
+    _keepAliveAudio = audio;
+}
+
+function clearGestureListeners() {
+    document.removeEventListener("touchstart", onUserGesture, true);
+    document.removeEventListener("click", onUserGesture, true);
+}
+
+function clearRetryTimer() {
+    if (_retryTimer !== null) {
+        window.clearTimeout(_retryTimer);
+        _retryTimer = null;
+    }
+}
+
+function scheduleRetry() {
+    if (_retryTimer !== null) return;
+    _retryTimer = window.setTimeout(() => {
+        _retryTimer = null;
+        retryPlay();
+    }, 1500);
+}
+
+function maybeShowGestureHint() {
+    if (_gestureHintShown) return;
+    _gestureHintShown = true;
+    window.dispatchEvent(new CustomEvent("global-notice", {
+        detail: "后台保活已开启：请在页面上点一下屏幕，让静音音频完成启动",
+    }));
+}
+
+/** 尝试播放保活音频；失败则等手势 + 周期重试 */
+function retryPlay() {
+    if (!_keepAliveWanted || _suspendedForCall || !_keepAliveAudio) return;
+    _keepAliveAudio.play()
+        .then(() => {
+            clearRetryTimer();
+            clearGestureListeners();
+        })
+        .catch(() => {
+            scheduleRetry();
+            maybeShowGestureHint();
+        });
 }
 
 /** 用户触摸时尝试播放（浏览器要求音频必须在用户手势中启动） */
 function onUserGesture() {
     if (!_keepAliveWanted || !_keepAliveAudio) return;
-    _keepAliveAudio.play().then(() => {
-        // 成功了，移除监听
-        document.removeEventListener("touchstart", onUserGesture, true);
-        document.removeEventListener("click", onUserGesture, true);
-    }).catch(() => {});
+    retryPlay();
 }
 
 async function startKeepAlive() {
     _keepAliveWanted = true;
 
-    // Wake Lock
+    // 音频优先：play 需要用户手势上下文，绝不能排在 wakeLock 的异步等待之后，
+    // 否则 await 期间手势窗口已经过去，首次播放必然失败。
+    ensureAudioCreated();
+    retryPlay();
+
+    // Wake Lock（切后台会被浏览器自动释放，回前台再取）
     try {
         if ("wakeLock" in navigator) {
-            _wakeLock = await navigator.wakeLock.request("screen");
-            _wakeLock.addEventListener("release", () => { _wakeLock = null; });
+            const sentinel = await navigator.wakeLock.request("screen");
+            sentinel.addEventListener("release", () => { _wakeLock = null; });
+            _wakeLock = sentinel;
         }
     } catch {}
 
-    // 准备音频
-    ensureAudioCreated();
-
-    // 先尝试直接播放（如果之前已有用户手势则可以成功）
-    _keepAliveAudio!.play().catch(() => {
-        // 失败了：注册监听，等下一次用户触摸时播放
-        document.addEventListener("touchstart", onUserGesture, { capture: true, once: false });
-        document.addEventListener("click", onUserGesture, { capture: true, once: false });
-    });
+    // 播放被 autoplay 策略拒绝时：挂手势监听，等下一次触摸（retryPlay 成功后会自动移除）
+    document.addEventListener("touchstart", onUserGesture, { capture: true, once: false });
+    document.addEventListener("click", onUserGesture, { capture: true, once: false });
 }
 
 function stopKeepAlive() {
     _keepAliveWanted = false;
     _suspendedForCall = false;
+    clearRetryTimer();
     _wakeLock?.release().catch(() => {});
     _wakeLock = null;
     if (_keepAliveAudio) {
         _keepAliveAudio.pause();
         _keepAliveAudio.currentTime = 0;
     }
-    document.removeEventListener("touchstart", onUserGesture, true);
-    document.removeEventListener("click", onUserGesture, true);
+    clearGestureListeners();
+    _gestureHintShown = false;
 }
 
 /**
@@ -121,13 +177,13 @@ function stopKeepAlive() {
 export function suspendKeepAliveForCall() {
     if (!_keepAliveWanted) return;
     _suspendedForCall = true;
+    clearRetryTimer();
     _wakeLock?.release().catch(() => {});
     _wakeLock = null;
     if (_keepAliveAudio) {
         try { _keepAliveAudio.pause(); } catch {}
     }
-    document.removeEventListener("touchstart", onUserGesture, true);
-    document.removeEventListener("click", onUserGesture, true);
+    clearGestureListeners();
 }
 
 /** Re-arm keep-alive after a call ends, unless the user turned it off meanwhile. */
