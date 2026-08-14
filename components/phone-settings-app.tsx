@@ -106,6 +106,7 @@ export function PhoneSettingsApp({ onClose, onNotice }: SettingsPageProps) {
     const [promptViewerEnabled, setPromptViewerEnabled] = useState(false);
     const [quickActionEnabled, setQuickActionEnabled] = useState(false);
     const [keepAlive, setKeepAlive] = useState(false);
+    const [keepAliveStatus, setKeepAliveStatus] = useState<string>("");
     const pageBodyRef = useRef<HTMLDivElement | null>(null);
 
     // ── 账号：显示当前登录 / 修改密码 / 退出登录 ──
@@ -309,6 +310,16 @@ export function PhoneSettingsApp({ onClose, onNotice }: SettingsPageProps) {
         setKeepAlive(loadKeepAlive());
     }, []);
 
+    // 监听保活状态（由 use-weixin-bridge 广播），在设置页实时显示
+    useEffect(() => {
+        const onStatus = (e: Event) => {
+            const detail = (e as CustomEvent).detail;
+            setKeepAliveStatus(typeof detail === "string" ? detail : "");
+        };
+        window.addEventListener("weixin-keepalive-status", onStatus);
+        return () => window.removeEventListener("weixin-keepalive-status", onStatus);
+    }, []);
+
     // Listen for mascot navigation mode (e.g. jump to worldbook/regex tab)
     useEffect(() => {
         const onMode = (e: Event) => {
@@ -390,6 +401,11 @@ export function PhoneSettingsApp({ onClose, onNotice }: SettingsPageProps) {
                                 <div className="card-featured-body">
                                     <div className="card-featured-label">后台保活</div>
                                     <div className="card-featured-desc">切到后台时尽量保持网页运行，主动消息与轮询不中断</div>
+                                    {keepAliveStatus && (
+                                        <div className="card-featured-desc keep-alive-status" style={{ marginTop: 2, fontSize: 12 }}>
+                                            <span style={{ color: keepAliveStatus === "运行中" ? "#22c55e" : "#eab308" }}>●</span> 保活：{keepAliveStatus}
+                                        </div>
+                                    )}
                                 </div>
                                 <Toggle checked={keepAlive} onChange={handleKeepAliveChange} className="settings-toggle-control" />
                             </div>

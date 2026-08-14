@@ -57,16 +57,18 @@ function ensureAudioCreated() {
     view.setUint16(34, 16, true);
     writeStr(36, "data");
     view.setUint32(40, samples * 2, true);
-    // ±1 LSB 微噪声（约 -90dB，不可闻）：纯零波形会被 Chrome 判为"无声页面"，
+    // ±32 LSB 微噪声（约 -54dB，人耳不可闻）：纯零波形会被 Chrome 判为"无声页面"，
     // 安卓后台 5 分钟后定时器被强节流（轮询延迟拉到分钟级）；有能量的音频
-    // 可获得 "playing audio" 豁免。
+    // 可获得 "playing audio" 豁免。振幅太低（如 ±1）个别安卓 ROM 会当静音丢弃。
     for (let i = 0; i < samples; i++) {
-        view.setInt16(44 + i * 2, i % 2 === 0 ? 1 : -1, true);
+        view.setInt16(44 + i * 2, i % 2 === 0 ? 32 : -32, true);
     }
     const blob = new Blob([buf], { type: "audio/wav" });
     audio.src = URL.createObjectURL(blob);
     audio.loop = true;
-    audio.volume = 0.01;
+    // 0.05（约 -26dB）仍几乎无声，但比 0.01 更容易让系统认可"正在播放音频"，
+    // 从而拿到后台豁免；太低的音量会被部分安卓 ROM 当作静音而节流。
+    audio.volume = 0.05;
     // 挂进 DOM：个别安卓 ROM/浏览器只认"页面里真实存在"的媒体元素，
     // 游离的 new Audio() 对象可能不被计入媒体会话。绝对定位移出可视区，不占布局。
     try {
@@ -118,20 +120,42 @@ function maybeShowGestureHint() {
     }));
 }
 
+/** 保活状态广播：设置页可实时显示（运行中 / 等待触摸启动 / 启动中 / 已停止） */
+function broadcastKeepAliveStatus(status: string) {
+    window.dispatchEvent(new CustomEvent("weixin-keepalive-status", { detail: status }));
+}
+
 /** 尝试播放保活音频；失败则等手势 + 周期重试 */
 function retryPlay() {
     if (!_keepAliveWanted || _suspendedForCall || !_keepAliveAudio) return;
-    _keepAliveAudio.play()
-        .then(() => {
+    const audio = _keepAliveAudio;
+    // play() 在部分环境（blob 音频未就绪、系统音频焦点被占等）可能永远不 settle，
+    // 导致"无提示、无重试"的假死。加 2s 超时兜底：超时按失败处理，走等手势+重试。
+    let settled = false;
+    const settle = (fn: () => void) => { if (!settled) { settled = true; fn(); } };
+    const timeout = window.setTimeout(() => {
+        settle(() => {
+            ensureGestureListeners();
+            scheduleRetry();
+            maybeShowGestureHint();
+            broadcastKeepAliveStatus("等待触摸启动");
+        });
+    }, 2000);
+    audio.play()
+        .then(() => settle(() => {
+            window.clearTimeout(timeout);
             clearRetryTimer();
-        })
-        .catch(() => {
+            broadcastKeepAliveStatus("运行中");
+        }))
+        .catch(() => settle(() => {
+            window.clearTimeout(timeout);
             // 不在这里移除触摸监听（旧逻辑在成功后 clear，导致音频被系统打断后
             // 触摸监听已消失，之后再怎么点都无法恢复播放）。
             ensureGestureListeners();
             scheduleRetry();
             maybeShowGestureHint();
-        });
+            broadcastKeepAliveStatus("等待触摸启动");
+        }));
 }
 
 /** 用户触摸时尝试播放（浏览器要求音频必须在用户手势中启动） */
@@ -142,6 +166,7 @@ function onUserGesture() {
 
 async function startKeepAlive() {
     _keepAliveWanted = true;
+    broadcastKeepAliveStatus("启动中");
 
     // 音频优先：play 需要用户手势上下文，绝不能排在 wakeLock 的异步等待之后，
     // 否则 await 期间手势窗口已经过去，首次播放必然失败。
@@ -171,6 +196,7 @@ function stopKeepAlive() {
     }
     clearGestureListeners();
     _gestureHintShown = false;
+    broadcastKeepAliveStatus("已停止");
 }
 
 /**
