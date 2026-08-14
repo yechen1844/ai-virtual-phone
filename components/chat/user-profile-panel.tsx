@@ -515,6 +515,16 @@ function FollowUpSettingsEditor({ onBack }: { onBack: () => void }) {
         saveFollowUpConfig(next);
     };
 
+    // 角色级开关：关闭后该角色即使焦虑值超阈值也不会主动追发
+    const [showCharacterSwitchList, setShowCharacterSwitchList] = useState(false);
+    const characters = loadCharacters();
+    const disabledSet = new Set(config.disabledCharacterIds ?? []);
+    const toggleCharacterFollowUp = (characterId: string, enabled: boolean) => {
+        const next = new Set(config.disabledCharacterIds ?? []);
+        if (enabled) next.delete(characterId); else next.add(characterId);
+        updateConfig({ disabledCharacterIds: [...next] });
+    };
+
     const handleResetDefaults = () => {
         setConfig(defaults);
         saveFollowUpConfig(defaults);
@@ -585,6 +595,45 @@ function FollowUpSettingsEditor({ onBack }: { onBack: () => void }) {
                         <ProfileSettingsIcon icon={RotateCcw} color={BINDING_ACCENTS.regex} />
                         <div className="menu-label-group"><span className="menu-label menu-label-danger">恢复默认</span></div>
                     </button>
+                </div>
+
+                {/* 角色级主动消息开关 */}
+                <div className="menu-group">
+                    <div className="menu-item" onClick={() => setShowCharacterSwitchList(!showCharacterSwitchList)} style={{ cursor: "pointer" }}>
+                        <ProfileSettingsIcon icon={Send} color={CONTENT_APP_ACCENTS.chat} />
+                        <div className="menu-label-group">
+                            <span className="menu-label">允许主动发消息的角色</span>
+                            <span className="menu-desc">
+                                {disabledSet.size > 0
+                                    ? `已关闭 ${disabledSet.size} 个角色的主动追发`
+                                    : "所有角色都会按上述规则主动追发"}
+                            </span>
+                        </div>
+                        <div className="menu-right">
+                            <ChevronRight size={16} style={showCharacterSwitchList ? { transform: "rotate(90deg)" } : undefined} />
+                        </div>
+                    </div>
+                    {showCharacterSwitchList && characters.map(char => (
+                        <div key={char.id} className="menu-item" style={{ cursor: "default" }}>
+                            <div className="chat-contact-avatar" style={{ width: 32, height: 32 }}>
+                                {char.avatar ? <img src={char.avatar} alt="" /> : <ChatFallbackAvatar />}
+                            </div>
+                            <div className="menu-label-group">
+                                <span className="menu-label">{char.name || "UNNAMED"}</span>
+                            </div>
+                            <div className="menu-right">
+                                <Toggle
+                                    checked={!disabledSet.has(char.id)}
+                                    onChange={checked => toggleCharacterFollowUp(char.id, checked)}
+                                />
+                            </div>
+                        </div>
+                    ))}
+                    {showCharacterSwitchList && characters.length === 0 && (
+                        <div className="menu-item" style={{ cursor: "default" }}>
+                            <div className="menu-label-group"><span className="menu-desc">还没有角色，先创建或导入角色卡吧</span></div>
+                        </div>
+                    )}
                 </div>
 
             </div>
