@@ -35,6 +35,14 @@ import {
 import { WorldTabStrip, WorldCaseSheet, NewWorldSheet } from "@/components/character/world-tabs";
 import { RelationLinkDialog, RelationPairSheet } from "@/components/character/relation-dialogs";
 import { loadMomentsConfig, saveMomentsConfig } from "@/lib/moments-storage";
+import {
+  clearFollowUpSchedule,
+  deleteChatSession,
+  loadChatSessions,
+  removeChatContact,
+} from "@/lib/chat-storage";
+import { clearRequestsForCharacter } from "@/lib/friend-request-storage";
+import { clearChatOfflineTurns } from "@/lib/chat-offline-storage";
 import type { CanvasBgItem } from "@/lib/character-types";
 import { PageShell } from "@/components/ui/page-shell";
 import { ConfirmDialog } from "@/components/ui/modal";
@@ -269,6 +277,17 @@ export function PhoneCharacterApp({ onClose, onNotice }: PhoneCharacterAppProps)
             }}
             onDelete={() => {
               if (view.id) {
+                // 删除角色卡时一并清理相关私聊记录：
+                // 私聊会话与消息、联系人、好友申请、追发计划、线下聊天记录
+                for (const session of loadChatSessions()) {
+                  if (session.isGroup) continue;
+                  if (session.contactId !== view.id) continue;
+                  clearFollowUpSchedule(session.id);
+                  clearChatOfflineTurns(session.id);
+                  deleteChatSession(session.id);
+                }
+                removeChatContact(view.id);
+                clearRequestsForCharacter(view.id);
                 updateChars(characters.filter((c) => c.id !== view.id));
               }
               setView({ type: "list", id: null, isEditing: false });

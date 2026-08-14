@@ -106,7 +106,6 @@ type CustomAppRunnerProps = {
 
 type BridgeResult = unknown;
 
-const EMPTY_CUSTOM_APP_SRC_DOC = "<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>";
 const CUSTOM_APP_BACKGROUND_RUNNER_TIMEOUT_MS = 5 * 60_000;
 
 function normalizeAssetRef(value: string): string {
@@ -730,7 +729,6 @@ export function CustomAppRunner({
     onlineRoomRef.current = null;
   }, []);
   const [frameId] = useState(() => `custom_app_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
-  const [bridgeReady, setBridgeReady] = useState(false);
   const isBackgroundRunner = Boolean(backgroundEvent || backgroundTool);
   const effectiveEmbedded = embedded || isBackgroundRunner;
   const srcDoc = useMemo(() => createCustomAppSrcDoc(app, frameId, launchContext, effectiveEmbedded), [app, frameId, launchContext, effectiveEmbedded]);
@@ -1794,7 +1792,6 @@ export function CustomAppRunner({
         .catch(err => postResponse(requestId, false, undefined, err instanceof Error ? err.message : String(err)));
     };
     window.addEventListener("message", handleMessage);
-    setBridgeReady(true);
     return () => {
       window.removeEventListener("message", handleMessage);
     };
@@ -1819,7 +1816,7 @@ export function CustomAppRunner({
         className="custom-app-runner-frame"
         sandbox="allow-scripts allow-downloads"
         allow="autoplay"
-        srcDoc={bridgeReady ? srcDoc : EMPTY_CUSTOM_APP_SRC_DOC}
+        srcDoc={srcDoc}
       />
 
       {menuOpen ? (

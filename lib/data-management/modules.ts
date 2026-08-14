@@ -97,16 +97,17 @@ export const DATA_MODULES: DataModuleDefinition[] = [
   {
     id: "desktop",
     label: "桌面与主题",
-    description: "桌面布局、小组件、主题、图标、自定义 CSS 和社交展示资料",
+    description: "桌面布局、小组件、主题、图标、自定义 CSS、工坊 AI 助手设置和社交展示资料",
     variant: "success",
     critical: true,
     sources: [
-      { type: "indexeddb", dbName: "AiPhoneMascotDB", label: "桌宠聊天" },
+      { type: "indexeddb", dbName: "AiPhoneMascotDB", label: "工坊 AI 聊天记录（桌宠聊天）" },
       { type: "indexeddb", dbName: "ai_phone_theme_db_v1", label: "主题素材库" },
       {
         type: "kv",
         label: "桌面与主题配置",
         keys: [
+          "ai_phone_mascot_settings_v1",
           "ai_phone_icon_layout_v1",
           "ai_phone_icon_layout_v2",
           "ai_phone_desktop_folders_v1",
@@ -187,7 +188,7 @@ export const DATA_MODULES: DataModuleDefinition[] = [
   {
     id: "apps",
     label: "内容应用",
-    description: "日历、日记、购物、余额、阅读、音乐、经期记录与应用偏好",
+    description: "日历、日记、购物、余额、阅读、音乐、经期记录、自制 APP 与应用偏好",
     variant: "teal",
     large: true,
     sources: [
@@ -199,6 +200,8 @@ export const DATA_MODULES: DataModuleDefinition[] = [
         type: "kv",
         label: "内容应用配置与缓存",
         keys: [
+          "ai_phone_custom_apps_v1",
+          "ai_phone_custom_app_icon_styles_v1",
           "ai_phone_calendar_plans_v1",
           "ai_phone_calendar_config_v1",
           "ai_phone_diary_entries_v1",
@@ -230,7 +233,13 @@ export const DATA_MODULES: DataModuleDefinition[] = [
           "reading-import-diagnostic-v1",
           "reading_import_diag_v1",
         ],
-        prefixes: ["music-search-cache:", "music-playlist-tracks-", "music-playlist-detail-"],
+        prefixes: [
+          "music-search-cache:",
+          "music-playlist-tracks-",
+          "music-playlist-detail-",
+          "ai_phone_custom_app_data_v1:",
+          "ai_phone_custom_app_timeline_v1:",
+        ],
       },
     ],
   },

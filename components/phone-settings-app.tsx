@@ -14,6 +14,7 @@ import { RegexManager } from "./settings/regex-manager";
 import { DataManagement } from "./settings/data-management";
 import { UserIdentitySettings } from "./settings/user-identity";
 import { AboutDeclaration } from "./settings/about-declaration";
+import { FollowUpSettings } from "./settings/follow-up-settings";
 import { BindingManager } from "./settings/binding-manager";
 import { WeixinSettings } from "./settings/weixin-settings";
 import { ToolboxSettings } from "./settings/toolbox-settings";
@@ -54,6 +55,7 @@ type SubPage =
     | "toolbox"
     | "agentComputer"
     | "moderation"
+    | "followUp"
     | "about";
 
 const SETTINGS_MENU = [
@@ -67,6 +69,7 @@ const SETTINGS_MENU = [
     { id: "binding", icon: Link2, label: "配置绑定", desc: "管理全局默认、角色与应用的配置绑定关系", iconColor: BINDING_ACCENTS.identity },
     { id: "weixin", icon: MessageSquare, label: "微信接入", desc: "iLink Bot", iconColor: CONTENT_APP_ACCENTS.chat },
     { id: "toolbox", icon: Wrench, label: "聊天工具箱", desc: "外部工具调用", iconColor: BINDING_ACCENTS.voice },
+    { id: "followUp", icon: MessageSquare, label: "主动消息", desc: "控制哪些角色会主动发消息", iconColor: CONTENT_APP_ACCENTS.chat },
     { id: "agentComputer", icon: Laptop, label: "角色电脑", desc: "云端小电脑（自部署）", iconColor: BINDING_ACCENTS.memory },
     { id: "identity", icon: UserCircle, label: "用户身份", desc: "个人信息", iconColor: BINDING_ACCENTS.identity },
     { id: "about", icon: Info, label: "关于与声明", desc: "版本与协议", iconColor: BINDING_ACCENTS.memory },
@@ -295,6 +298,8 @@ export function PhoneSettingsApp({ onClose, onNotice }: SettingsPageProps) {
                 return <WeixinSettings onOpenDataManagement={() => setCurrentPage("data")} />;
             case "toolbox":
                 return <ToolboxSettings />;
+            case "followUp":
+                return <FollowUpSettings />;
             case "agentComputer":
                 return <AgentComputerSettings onNotice={onNotice} />;
             case "moderation":

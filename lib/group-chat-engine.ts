@@ -1048,17 +1048,42 @@ export async function generateGroupOfflineChatCompletion(
     );
     const summaryTag = preset?.story_summary_tag?.trim() || "summary";
     let reasoning = "";
-    const rawOutput = await sendLLMRequest(config, preset, llmMessages, regexes, {
-        characterName: `群聊:${session.groupName || "群聊"}`,
-    }, {
+    const meta = { characterName: `群聊:${session.groupName || "群聊"}` };
+    const requestOptions = {
         appId: "group_chat",
         appTags: ["group_chat", "offline"],
         debugSessionId: session.id,
         signal: options?.signal,
-        onReasoning: (t) => { reasoning = t; },
-    });
+        onReasoning: (t: string) => { reasoning = t; },
+    };
+    let rawOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, requestOptions);
+    let parsed = parseOfflineResponse(rawOutput, summaryTag);
+
+    // 摘要缺失时自动补提：拿上次完整输出做上下文，只要求模型补一段摘要，
+    // 避免「静默结束」导致该轮线下记录没有摘要、进不了短期记忆事件流。
+    const MAX_SUMMARY_RETRY = 2;
+    for (let attempt = 0; attempt < MAX_SUMMARY_RETRY; attempt += 1) {
+        if (parsed.summary.trim()) break;
+        if (!parsed.content.trim() && !rawOutput.trim()) break; // 连正文都没有，补提没有意义
+        const retryMessages: LLMMessage[] = [
+            ...llmMessages,
+            { role: "assistant", content: rawOutput },
+            {
+                role: "user",
+                content: `刚才的回复里没有输出 <${summaryTag}> 摘要。请只针对上面这段对话的关键事件补一段第三人称摘要，严格按以下格式输出，不要输出任何其他内容：\n<${summaryTag}>一句话摘要</${summaryTag}>`,
+            },
+        ];
+        throwIfAborted(options?.signal);
+        const retryRaw = await sendLLMRequest(config, preset, retryMessages, regexes, meta, requestOptions);
+        const retried = parseOfflineResponse(retryRaw, summaryTag);
+        if (retried.summary.trim()) {
+            parsed = { ...parsed, summary: retried.summary.trim() };
+            break;
+        }
+    }
+
     return {
-        ...parseOfflineResponse(rawOutput, summaryTag),
+        ...parsed,
         model: config.defaultModel,
         presetName: preset?.name || "默认预设",
         reasoning: reasoning || undefined,

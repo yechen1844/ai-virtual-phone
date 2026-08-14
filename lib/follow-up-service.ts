@@ -96,8 +96,22 @@ export function stopFollowUpService() {
 
 /** Schedule a follow-up for a session (called by ChatRoom after AI replies).
  *  Purely anxiety-driven: no anxiety field or below threshold → no follow-up. */
+function isFollowUpDisabledForSession(sessionId: string): boolean {
+    const disabled = new Set(loadFollowUpConfig().disabledCharacterIds ?? []);
+    if (disabled.size === 0) return false;
+    const session = loadChatSessions().find(s => s.id === sessionId);
+    if (!session || session.isGroup) return false;
+    return disabled.has(session.contactId);
+}
+
 export function scheduleFollowUp(sessionId: string, count: number, stateValues?: StateValue[]) {
     const config = loadFollowUpConfig();
+
+    if (isFollowUpDisabledForSession(sessionId)) {
+        console.log(`[FollowUp] Character disabled for proactive messages, not scheduling. session=${sessionId}`);
+        clearFollowUpSchedule(sessionId);
+        return;
+    }
 
     if (!stateValues || stateValues.length === 0) {
         console.log(`[FollowUp] No state values, not scheduling.`);
@@ -197,6 +211,10 @@ function pollSchedules() {
         const schedules = loadAllFollowUpSchedules();
         const now = Date.now();
         for (const sched of schedules) {
+            if (isFollowUpDisabledForSession(sched.sessionId)) {
+                clearFollowUpSchedule(sched.sessionId);
+                continue;
+            }
             if (sched.fireAt > now) {
                 const remainSec = Math.round((sched.fireAt - now) / 1000);
                 if (remainSec % 10 === 0) console.log(`[FollowUp] Waiting: session=${sched.sessionId}, ${remainSec}s remaining`);
@@ -262,6 +280,12 @@ function pollMenstrualPeriodCare(now: number) {
 
 async function fireFollowUp(sched: { sessionId: string; count: number; delaySec?: number }) {
     if (sched.count >= MAX_FOLLOW_UPS) {
+        clearFollowUpSchedule(sched.sessionId);
+        return;
+    }
+
+    // 防御性检查：角色被禁用主动消息时（例如调度轮询时刚好切换了设置），不再触发
+    if (isFollowUpDisabledForSession(sched.sessionId)) {
         clearFollowUpSchedule(sched.sessionId);
         return;
     }
