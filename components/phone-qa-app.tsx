@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
@@ -34,6 +34,7 @@ import {
   stopQaGeneration,
   subscribeQaChat,
   switchQaSession,
+  updateQaMessageContent,
   type QaMsg,
   type QaSession,
   type QaToolStatus,
@@ -273,8 +274,73 @@ function QaStreamingText({ text }: { text: string }) {
   );
 }
 
-function QaMessageItem({ msg, isStreaming, onRetry, onViewImage }: { msg: QaMsg; isStreaming: boolean; onRetry: (id: string) => void; onViewImage: (url: string) => void }) {
+function QaMessageItem({
+  msg,
+  isStreaming,
+  onRetry,
+  onViewImage,
+  onCopy,
+  onEdit,
+}: {
+  msg: QaMsg;
+  isStreaming: boolean;
+  onRetry: (id: string) => void;
+  onViewImage: (url: string) => void;
+  onCopy: (content: string) => void;
+  onEdit: (msg: QaMsg) => void;
+}) {
   const thinkingOnly = isStreaming && !msg.content && (!msg.tools || msg.tools.length === 0);
+  // 长按 / 右键弹出消息操作菜单：复制（复制原始内容）、编辑（编辑框展示未渲染的原始内容，
+  // 因为前端渲染会吞掉一些特殊标签，沟通时看不到原始内容）
+  const [menuOpen, setMenuOpen] = useState(false);
+  const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelPress = useCallback(() => {
+    if (pressTimer.current) {
+      clearTimeout(pressTimer.current);
+      pressTimer.current = null;
+    }
+  }, []);
+  const startPress = useCallback(() => {
+    cancelPress();
+    pressTimer.current = setTimeout(() => setMenuOpen(true), 500);
+  }, [cancelPress]);
+  const msgWrap = (node: ReactNode) => (
+    <div
+      className="qa-msg-wrap"
+      onContextMenu={(e) => {
+        e.preventDefault();
+        setMenuOpen(true);
+      }}
+      onTouchStart={startPress}
+      onTouchEnd={cancelPress}
+      onTouchMove={cancelPress}
+      onTouchCancel={cancelPress}
+    >
+      {node}
+      {menuOpen && (
+        <div className="qa-msg-menu" role="menu" onPointerDown={(e) => e.stopPropagation()}>
+          <button
+            type="button"
+            onClick={() => {
+              onCopy(msg.content);
+              setMenuOpen(false);
+            }}
+          >
+            复制
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              onEdit(msg);
+              setMenuOpen(false);
+            }}
+          >
+            编辑
+          </button>
+        </div>
+      )}
+    </div>
+  );
   // 时序分段渲染：文字与工具行按实际发生顺序交错（连续工具行合并成一组）；
   // 旧消息没有 segments 时回退「工具在顶、文字在下」布局。
   // hooks 必须在 user 分支 early-return 之前调用（rules-of-hooks）
@@ -295,7 +361,7 @@ function QaMessageItem({ msg, isStreaming, onRetry, onViewImage }: { msg: QaMsg;
   }, [msg.segments]);
 
   if (msg.role === "user") {
-    return (
+    return msgWrap(
       <div className="qa-msg-user-row">
         <div className="qa-msg-user">
           {msg.images && msg.images.length > 0 && (
@@ -309,11 +375,11 @@ function QaMessageItem({ msg, isStreaming, onRetry, onViewImage }: { msg: QaMsg;
           )}
           {msg.content}
         </div>
-      </div>
+      </div>,
     );
   }
 
-  return (
+  return msgWrap(
     <div className="qa-msg-assistant">
       {segmentBlocks ? (
         segmentBlocks.map((block, i) =>
@@ -369,7 +435,7 @@ function QaMessageItem({ msg, isStreaming, onRetry, onViewImage }: { msg: QaMsg;
           </button>
         </div>
       )}
-    </div>
+    </div>,
   );
 }
 
@@ -699,6 +765,8 @@ export function PhoneQaApp({ onClose, onNotice }: PhoneQaAppProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pendingImages, setPendingImages] = useState<string[]>([]);
   const [viewerImage, setViewerImage] = useState<string | null>(null);
+  const [editingMsg, setEditingMsg] = useState<QaMsg | null>(null);
+  const [editText, setEditText] = useState("");
   const [visionEnabled, setVisionEnabled] = useState(false);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const [apiReady, setApiReady] = useState(true);
@@ -821,6 +889,25 @@ export function PhoneQaApp({ onClose, onNotice }: PhoneQaAppProps) {
     void retryQaMessage(assistantMsgId);
   }, []);
 
+  const handleCopyMessage = useCallback((content: string) => {
+    void navigator.clipboard?.writeText(content).then(
+      () => onNotice?.("已复制原始内容"),
+      () => onNotice?.("复制失败"),
+    );
+  }, [onNotice]);
+
+  const handleEditMessage = useCallback((msg: QaMsg) => {
+    setEditingMsg(msg);
+    setEditText(msg.content);
+  }, []);
+
+  const handleSaveEdit = useCallback(() => {
+    if (!editingMsg || !snapshot.activeSessionId) return;
+    updateQaMessageContent(snapshot.activeSessionId, editingMsg.id, editText);
+    setEditingMsg(null);
+    onNotice?.("已保存消息内容");
+  }, [editingMsg, editText, snapshot.activeSessionId, onNotice]);
+
   const streamingMsgId =
     snapshot.isGenerating && messages.length > 0 && messages[messages.length - 1].role === "assistant"
       ? messages[messages.length - 1].id
@@ -911,7 +998,7 @@ export function PhoneQaApp({ onClose, onNotice }: PhoneQaAppProps) {
         ) : (
           <div className="qa-messages">
             {messages.map((msg) => (
-              <QaMessageItem key={msg.id} msg={msg} isStreaming={msg.id === streamingMsgId} onRetry={handleRetry} onViewImage={setViewerImage} />
+              <QaMessageItem key={msg.id} msg={msg} isStreaming={msg.id === streamingMsgId} onRetry={handleRetry} onViewImage={setViewerImage} onCopy={handleCopyMessage} onEdit={handleEditMessage} />
             ))}
           </div>
         )}
@@ -1065,6 +1152,35 @@ export function PhoneQaApp({ onClose, onNotice }: PhoneQaAppProps) {
           <button type="button" className="qa-image-viewer-close" aria-label="关闭" onClick={() => setViewerImage(null)}>
             <X size={20} />
           </button>
+        </div>
+      )}
+
+      {editingMsg && (
+        <div className="qa-edit-backdrop" onClick={() => setEditingMsg(null)}>
+          <div className="qa-edit-dialog" role="dialog" aria-label="编辑消息" onClick={(e) => e.stopPropagation()}>
+            <div className="qa-edit-head">
+              <span className="qa-edit-title">编辑消息（未渲染原始内容）</span>
+              <button type="button" className="qa-icon-btn" onClick={() => setEditingMsg(null)} aria-label="关闭">
+                <X size={16} />
+              </button>
+            </div>
+            <textarea
+              className="qa-edit-textarea"
+              value={editText}
+              onChange={(e) => setEditText(e.target.value)}
+              spellCheck={false}
+              autoFocus
+              placeholder="这里显示的是消息的原始内容，不会被前端渲染，可放心查看特殊标签。"
+            />
+            <div className="qa-edit-actions">
+              <button type="button" className="qa-devnotice-btn" onClick={() => setEditingMsg(null)}>
+                取消
+              </button>
+              <button type="button" className="qa-devnotice-btn is-primary" onClick={handleSaveEdit}>
+                保存
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

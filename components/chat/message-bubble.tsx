@@ -321,81 +321,6 @@ function ChatHtmlInlineFrame({
     const [height, setHeight] = useState(240);
     const [expanded, setExpanded] = useState(false);
     const allowFullscreen = variant !== "offline";
-    // 聊天室 keep-alive（visitedSessions）：返回列表只 display:none、组件不卸载。
-    // 若带 HTML 卡片的回合在隐藏状态下挂载，iframe 在零尺寸容器里加载会高度测不准/内容不渲染，
-    // 恢复显示时就是「空一块」——完全退出聊天 APP 重进才恢复。这里用 IntersectionObserver
-    // 检测从隐藏恢复可见，强制重建 iframe 重新执行脚本与高度测量。
-    const [reloadKey, setReloadKey] = useState(0);
-    // 挂载时的可见性（首次 IO 回调记录）与最近一次可见性
-    const mountedVisibleRef = useRef<boolean | null>(null);
-    const prevVisibleRef = useRef<boolean | null>(null);
-    // 是否收到过 iframe 的高度自适应消息（说明脚本已执行、内容已渲染）
-    const receivedResizeRef = useRef(false);
-    const rebuildCountRef = useRef(0);
-    // 空白检测：iframe 加载后检查内容是否真的渲染出来了。
-    // 若空白（文档没加载 / 脚本没跑），通知聊天室强制重算离线回合的显示缓存——
-    // 因为首个空白回合的根因是「显示缓存第一次算出坏内容，任何触发缓存重算的
-    // 操作（发送新回合、退出重进）都能修复」，这里自动触发一次等效「发送」的重算。
-    const checkBlankAndNotify = useCallback(() => {
-        const frame = iframeRef.current;
-        if (!frame) return;
-        try {
-            const doc = frame.contentDocument;
-            const body = doc?.body;
-            const hasContent = body && (body.children.length > 0 || (body.textContent || "").trim().length > 0);
-            if (!hasContent) {
-                window.dispatchEvent(new CustomEvent("chat-html-inline-failed"));
-            }
-        } catch {
-            // 跨域或不可访问，跳过
-        }
-    }, []);
-    useEffect(() => {
-        const t = window.setTimeout(checkBlankAndNotify, 600);
-        return () => window.clearTimeout(t);
-    }, [reloadKey, checkBlankAndNotify]);
-    useEffect(() => {
-        const el = containerRef.current;
-        if (!el || typeof IntersectionObserver === "undefined") return;
-        const io = new IntersectionObserver((entries) => {
-            for (const entry of entries) {
-                const visible = entry.isIntersecting;
-                if (mountedVisibleRef.current === null) {
-                    mountedVisibleRef.current = visible;
-                    prevVisibleRef.current = visible;
-                    continue;
-                }
-                const prev = prevVisibleRef.current;
-                prevVisibleRef.current = visible;
-                // 仅「挂载时处于隐藏」的卡片，从隐藏恢复可见时重建一次：
-                // 挂载即可见的卡片本身是好的，进出聊天室不重建、避免闪烁
-                if (visible && prev === false && mountedVisibleRef.current === false) {
-                    setReloadKey(k => k + 1);
-                    setHeight(240);
-                }
-            }
-        }, { threshold: 0 });
-        io.observe(el);
-        return () => io.disconnect();
-    }, []);
-    // 兜底：生成完成瞬间页面正忙（插入回合 + 清 loading + 滚动锚定同帧），
-    // 首个 iframe 可能加载异常——脚本没跑、高度测不到，表现为「空一块」；
-    // 页面稳定后创建的新 iframe 都正常。这里在挂载后定时检查，
-    // 若始终收不到高度自适应消息（正常 300ms 内必有），就强制重建一次（此时页面已稳定）。
-    useEffect(() => {
-        receivedResizeRef.current = false;
-        const timers: number[] = [];
-        const maybeRebuild = () => {
-            if (receivedResizeRef.current) return;
-            if (rebuildCountRef.current >= 2) return;
-            rebuildCountRef.current += 1;
-            setReloadKey(k => k + 1);
-            setHeight(240);
-        };
-        timers.push(window.setTimeout(maybeRebuild, 1200));
-        timers.push(window.setTimeout(maybeRebuild, 3200));
-        return () => timers.forEach(t => window.clearTimeout(t));
-    }, [reloadKey]);
     const srcDoc = useMemo(() => buildChatHtmlDocument(html, true), [html]);
 
     useEffect(() => {
@@ -407,7 +332,6 @@ function ChatHtmlInlineFrame({
             if (!e.data || typeof e.data !== "object") return;
             if (iframeRef.current && e.source !== iframeRef.current.contentWindow) return;
             if (e.data.type === "_chat_inline_html_resize" && typeof e.data.h === "number") {
-                receivedResizeRef.current = true;
                 setHeight(Math.max(80, Math.ceil(e.data.h)));
             }
             if (e.data.type === "_chat_action" && typeof e.data.text === "string") {
@@ -421,7 +345,6 @@ function ChatHtmlInlineFrame({
     return (
         <div ref={containerRef} className="chat-html-inline" data-chat-html-inline="" data-variant={variant}>
             <iframe
-                key={reloadKey}
                 ref={iframeRef}
                 className="chat-html-inline-frame"
                 srcDoc={srcDoc}

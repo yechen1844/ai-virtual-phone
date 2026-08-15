@@ -355,6 +355,17 @@ export function deleteQaSession(sessionId: string) {
     publish();
 }
 
+/** 编辑一条已发送消息的内容（小坊助手界面"编辑"）。
+ *  只覆盖 content 并清掉时序分段缓存（保证渲染用新内容），工具行/提交卡等历史保留。 */
+export function updateQaMessageContent(sessionId: string, msgId: string, content: string): void {
+    sessions = sessions.map((s) =>
+        s.id !== sessionId
+            ? s
+            : { ...s, messages: s.messages.map((m) => (m.id === msgId ? { ...m, content, segments: undefined } : m)) }
+    );
+    publish();
+}
+
 function updateSession(sessionId: string, updater: (session: QaSession) => QaSession, options?: { persist?: boolean }) {
     sessions = sessions
         .map((s) => (s.id === sessionId ? updater(s) : s))

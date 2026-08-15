@@ -1445,6 +1445,100 @@
   box-shadow: none;
 }
 
+/* ── 消息操作菜单（长按 / 右键弹出：复制、编辑）── */
+.qa-msg-wrap {
+  position: relative;
+}
+.qa-msg-menu {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 20;
+  display: flex;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 10px;
+  background: var(--qa-bg-overlay);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  animation: qa-fade-in 0.12s ease;
+}
+.qa-msg-menu button {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--qa-text-primary);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.qa-msg-menu button:active {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* ── 编辑消息弹窗（展示未渲染原始内容）── */
+.qa-edit-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: qa-fade-in 0.18s ease;
+}
+.qa-edit-dialog {
+  width: min(100%, 520px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 16px;
+  background: var(--qa-bg-overlay);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+}
+.qa-edit-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.qa-edit-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--qa-text-primary);
+}
+.qa-edit-textarea {
+  width: 100%;
+  min-height: 220px;
+  max-height: 55vh;
+  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: var(--qa-bg-raised);
+  color: var(--qa-text-primary);
+  font-size: 13px;
+  line-height: 1.6;
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  outline: none;
+  box-sizing: border-box;
+}
+.qa-edit-textarea:focus {
+  border-color: var(--qa-accent, rgba(255, 255, 255, 0.35));
+}
+.qa-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 /* 工坊配置面板 */
 .qa-settings-field {
   display: flex;
