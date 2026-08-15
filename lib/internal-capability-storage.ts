@@ -1,5 +1,5 @@
 import type { InternalCapabilityConfig } from "./settings-types";
-import { isAgentComputerConfigured } from "./agent-computer";
+import { isAgentComputerConfigured, isContainerComputer } from "./agent-computer";
 import { kvGet, kvSet, registerKvMigration } from "./kv-db";
 
 const INTERNAL_CAPABILITIES_KEY = "ai_phone_internal_capabilities_v1";
@@ -586,14 +586,19 @@ const AGENT_COMPUTER_PARAMETER_SCHEMA = JSON.stringify({
     required: ["op"],
 });
 
-const AGENT_COMPUTER_USAGE_GUIDE = [
-    "这是你自己的电脑（云端、持久，只属于你这个角色）。你可以：",
-    "· op=write：把想留存的东西写成文件（日记、写给对方的东西、随手记）。路径自己规划，如 /日记/2026-08-14.txt；",
-    "· op=read / op=list：翻自己以前存的文件；",
-    "· op=send：把电脑里的一个文件发给对方（会以文件消息出现在聊天里）；",
-    "· op=exec：在终端里执行 shell 命令（ls/cat/grep/sed/awk/jq 等常用工具齐全，curl 可只读访问公开网页；不是完整 Linux，装不了软件）。删除类命令（rm）会真的删掉文件且无法恢复，动手前想清楚。",
-    "写什么、何时写由你自己决定，像真人使用电脑一样自然；不必每次聊天都用。",
-].join("\n");
+function buildAgentComputerUsageGuide(): string {
+    const execLine = isContainerComputer()
+        ? "· op=exec：在终端里执行 shell 命令。你的电脑是真正的 Linux（bash 完整、可安装软件、可自由联网；文件在 /workspace 下持久保存）。删除类命令（rm）会真的删掉文件且无法恢复，动手前想清楚。"
+        : "· op=exec：在终端里执行 shell 命令（ls/cat/grep/sed/awk/jq 等常用工具齐全，curl 可只读访问公开网页；不是完整 Linux，装不了软件）。删除类命令（rm）会真的删掉文件且无法恢复，动手前想清楚。";
+    return [
+        "这是你自己的电脑（云端、持久，只属于你这个角色）。你可以：",
+        "· op=write：把想留存的东西写成文件（日记、写给对方的东西、随手记）。路径自己规划，如 /日记/2026-08-14.txt；",
+        "· op=read / op=list：翻自己以前存的文件；",
+        "· op=send：把电脑里的一个文件发给对方（会以文件消息出现在聊天里）；",
+        execLine,
+        "写什么、何时写由你自己决定，像真人使用电脑一样自然；不必每次聊天都用。",
+    ].join("\n");
+}
 
 const SEND_FILE_PARAMETER_SCHEMA = JSON.stringify({
     type: "object",
@@ -1323,7 +1328,7 @@ export function getInternalCapabilityToolDefinition(capability: InternalCapabili
             name: capability.name,
             description: capability.description,
             parameterSchema: AGENT_COMPUTER_PARAMETER_SCHEMA,
-            usageGuide: AGENT_COMPUTER_USAGE_GUIDE,
+            usageGuide: buildAgentComputerUsageGuide(),
         };
     }
     if (capability.id === SEND_FILE_CAPABILITY_ID) {

@@ -1058,6 +1058,31 @@
 
 @media (max-width: 500px) and (hover: none) and (pointer: coarse) {
 
+  /* 用户在设置里显式开启「显示系统状态栏」且运行时不在全屏时，控制器才会挂
+     data-pwa-display-mode 标记（见 pwa-manifest-injector）：此时所有 App 共用系统
+     安全区，不再重复预留 48px 虚拟状态栏。未开启开关的用户（含 iOS 装机用户，
+     iOS 永远报 standalone）不受影响，保持沉浸外观。 */
+  html[data-pwa-display-mode="standalone"] .phone-shell,
+  html[data-pwa-display-mode="minimal-ui"] .phone-shell,
+  html[data-pwa-display-mode="browser"] .phone-shell {
+    --safe-area-top: env(safe-area-inset-top, 0px);
+    --phone-titlebar-safe-top: env(safe-area-inset-top, 0px);
+    --page-header-safe-top: env(safe-area-inset-top, 0px);
+    --home-grid-top-offset: calc(env(safe-area-inset-top, 0px) + 16px);
+  }
+
+  html[data-pwa-display-mode="standalone"] .phone-shell > .phone-status-bar,
+  html[data-pwa-display-mode="minimal-ui"] .phone-shell > .phone-status-bar,
+  html[data-pwa-display-mode="browser"] .phone-shell > .phone-status-bar {
+    display: none;
+  }
+
+  html[data-pwa-display-mode="standalone"] .phone-shell-wrap,
+  html[data-pwa-display-mode="minimal-ui"] .phone-shell-wrap,
+  html[data-pwa-display-mode="browser"] .phone-shell-wrap {
+    margin-top: 0;
+  }
+
   :root {
     --phone-screen-width: 100vw;
     --phone-screen-height: 100lvh;

@@ -124,8 +124,20 @@ export async function readQaGithubFile(config: QaGithubConfig, path: string, sig
     if (response.status === 404) throw new Error(`文件不存在：${cleanPath}`);
     if (!response.ok) throw new Error(`读取文件失败：HTTP ${response.status}`);
     const text = await response.text();
+    // 解析放在独立 try 里：目录报错要能穿透出去，不能被"非 JSON→当原文"的兜底吞掉
+    let parsed: unknown = null;
+    let isJson = false;
     try {
-        const data = JSON.parse(text) as { content?: string; encoding?: string; size?: number; type?: string };
+        parsed = JSON.parse(text);
+        isJson = true;
+    } catch {
+        // 响应不是 JSON（raw 源码 / 代理返回原文）→ 直接作为文件内容返回
+    }
+    if (isJson) {
+        // contents API 对目录返回数组：保留明确报错，别把 JSON 数组当文件内容
+        if (Array.isArray(parsed)) throw new Error(`${cleanPath} 不是文件（可能是目录）`);
+        const data = parsed as { content?: string; encoding?: string; size?: number; type?: string };
+        if (data && typeof data === "object" && data.type === "dir") throw new Error(`${cleanPath} 不是文件（可能是目录）`);
         if (data && typeof data === "object" && data.type === "file" && data.encoding === "base64" && typeof data.content === "string") {
             const binary = atob(data.content.replace(/\n/g, ""));
             let decoded: string;
@@ -139,8 +151,6 @@ export async function readQaGithubFile(config: QaGithubConfig, path: string, sig
         if (data && typeof data === "object" && data.type === "file" && typeof data.content === "string") {
             return { path: cleanPath, text: data.content, size: data.size ?? data.content.length, truncated: false };
         }
-    } catch {
-        // 响应不是 JSON（raw 源码 / 代理返回原文）→ 直接作为文件内容返回
     }
     return { path: cleanPath, text, size: text.length, truncated: false };
 }

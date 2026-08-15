@@ -68,6 +68,16 @@ function effectiveRef(source: ResourceHubSource): string {
     return _resolvedRef?.key === sourceKey(source) ? _resolvedRef.sha : source.branch;
 }
 
+// 中转站 endpoint（与上传/送花同一个;不能 import resource-hub-upload,会循环依赖,直接读同一份配置）
+const RELAY_ENDPOINT_FALLBACK = "https://floatshare.netlify.app/.netlify/functions/upload";
+function relayEndpoint(): string {
+    try {
+        const parsed = JSON.parse(kvGet("ai_phone_resource_hub_upload_cfg_v1") || "{}") as { endpoint?: string };
+        if (parsed && typeof parsed.endpoint === "string" && parsed.endpoint.trim()) return parsed.endpoint.trim();
+    } catch { /* 用默认 */ }
+    return RELAY_ENDPOINT_FALLBACK;
+}
+
 async function resolveLatestSha(source: ResourceHubSource): Promise<string | null> {
     try {
         const res = await fetchWithTimeout(
@@ -78,7 +88,22 @@ async function resolveLatestSha(source: ResourceHubSource): Promise<string | nul
             const sha = (await res.text()).trim();
             if (/^[0-9a-f]{40}$/i.test(sha)) return sha;
         }
-    } catch { /* 拿不到就退回分支名 */ }
+    } catch { /* 走中转站兜底 */ }
+    // GitHub API 匿名配额（60 次/小时）耗尽时,请中转站代查——否则退回分支名,
+    // jsDelivr 对分支的缓存可滞后数小时,刚上传/更新的资源会一直显示旧版
+    try {
+        const res = await fetchWithTimeout(relayEndpoint(), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "head" }),
+        });
+        if (res.ok) {
+            const data = await res.json() as { ok?: boolean; sha?: string; repo?: string };
+            if (data.ok && data.repo === `${source.owner}/${source.repo}` && /^[0-9a-f]{40}$/i.test(data.sha || "")) {
+                return (data.sha as string);
+            }
+        }
+    } catch { /* 兜底也失败就退回分支名 */ }
     return null;
 }
 

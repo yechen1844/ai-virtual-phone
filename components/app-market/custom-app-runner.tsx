@@ -18,6 +18,7 @@ import { OnlineRoomConnection, onlineCloudApi } from "@/lib/online-room-client";
 import { submitContentReport } from "@/lib/moderation-client";
 import { hydrateKvDb } from "@/lib/kv-db";
 import { ensureSettingsStorageHydrated } from "@/lib/settings-storage";
+import { getPwaHostedSafeArea, PWA_DISPLAY_MODE_CHANGED_EVENT } from "@/lib/pwa-display-mode";
 import {
   addChatContact,
   CHAT_MESSAGE_PUSHED_EVENT,
@@ -106,6 +107,7 @@ type CustomAppRunnerProps = {
 
 type BridgeResult = unknown;
 
+const EMPTY_CUSTOM_APP_SRC_DOC = "<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>";
 const CUSTOM_APP_BACKGROUND_RUNNER_TIMEOUT_MS = 5 * 60_000;
 
 function normalizeAssetRef(value: string): string {
@@ -168,6 +170,20 @@ html, body { min-height: 100%; }
   window.addEventListener('message', function(event){
     var data = event.data || {};
     if (data.source !== 'ai-phone-custom-app-host' || data.frameId !== frameId) return;
+    if (data.type === 'layout.safe-area' && data.safeArea) {
+      var safeArea = data.safeArea;
+      var root = document.documentElement;
+      root.style.setProperty('--ai-phone-app-safe-top', String(safeArea.top || '0px'));
+      root.style.setProperty('--ai-phone-app-safe-right', String(safeArea.right || '0px'));
+      root.style.setProperty('--ai-phone-app-safe-bottom', String(safeArea.bottom || '0px'));
+      root.style.setProperty('--ai-phone-app-safe-left', String(safeArea.left || '0px'));
+      root.style.setProperty('--ai-phone-app-bar-top', String(safeArea.barTop || '0px'));
+      root.style.setProperty('--ai-phone-app-bar-height', String(safeArea.barHeight || '0px'));
+      root.style.setProperty('--ai-phone-app-bar-clear-left', String(safeArea.barClearLeft || '0px'));
+      root.style.setProperty('--ai-phone-app-bar-clear-right', String(safeArea.barClearRight || '0px'));
+      window.dispatchEvent(new CustomEvent('aiphone:safe-area-change', { detail: safeArea }));
+      return;
+    }
     if (data.type === 'tool.invoke' && data.toolRequestId) {
       var handlerKey = String(data.handler || data.toolId || data.toolName || '').trim();
       var handler = toolHandlers[handlerKey] || toolHandlers[String(data.toolId || '')] || toolHandlers[String(data.toolName || '')];
@@ -729,9 +745,37 @@ export function CustomAppRunner({
     onlineRoomRef.current = null;
   }, []);
   const [frameId] = useState(() => `custom_app_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+  const [bridgeReady, setBridgeReady] = useState(false);
   const isBackgroundRunner = Boolean(backgroundEvent || backgroundTool);
   const effectiveEmbedded = embedded || isBackgroundRunner;
   const srcDoc = useMemo(() => createCustomAppSrcDoc(app, frameId, launchContext, effectiveEmbedded), [app, frameId, launchContext, effectiveEmbedded]);
+  const syncHostedSafeArea = useCallback(() => {
+    const frame = iframeRef.current;
+    if (!frame) return;
+    // 实测胶囊按钮（菜单/关闭）几何：top 取其下沿（整体让位的保守值），
+    // bar* 取整行位置和右侧水平占位（供想与胶囊同排摆按钮的应用贴行对齐）。
+    // 元素不在（如嵌入模式）时退回 getPwaHostedSafeArea 的估算值。
+    let measured;
+    const capsule = frame.parentElement?.querySelector(".custom-app-runner-capsule");
+    if (capsule) {
+      const capsuleRect = capsule.getBoundingClientRect();
+      const frameRect = frame.getBoundingClientRect();
+      if (capsuleRect.height > 0) {
+        measured = {
+          topPx: capsuleRect.bottom - frameRect.top + 8,
+          barTopPx: capsuleRect.top - frameRect.top,
+          barHeightPx: capsuleRect.height,
+          barClearRightPx: frameRect.right - capsuleRect.left + 8,
+        };
+      }
+    }
+    frame.contentWindow?.postMessage({
+      source: "ai-phone-custom-app-host",
+      type: "layout.safe-area",
+      frameId,
+      safeArea: getPwaHostedSafeArea("custom-app", effectiveEmbedded, measured),
+    }, "*");
+  }, [effectiveEmbedded, frameId]);
   const declaredEvents = useMemo(() => getCustomAppDeclaredEventNames(app), [app]);
   const declaredToolKeys = useMemo(() => getCustomAppDeclaredToolKeys(app), [app]);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -742,6 +786,17 @@ export function CustomAppRunner({
   const closeLabel = launchSource === "chat_plus_action" || launchSource === "chat_card" || launchSource === "chat_directive"
     ? "返回聊天室"
     : "返回桌面";
+
+  useEffect(() => {
+    window.addEventListener(PWA_DISPLAY_MODE_CHANGED_EVENT, syncHostedSafeArea);
+    document.addEventListener("fullscreenchange", syncHostedSafeArea);
+    window.addEventListener("pageshow", syncHostedSafeArea);
+    return () => {
+      window.removeEventListener(PWA_DISPLAY_MODE_CHANGED_EVENT, syncHostedSafeArea);
+      document.removeEventListener("fullscreenchange", syncHostedSafeArea);
+      window.removeEventListener("pageshow", syncHostedSafeArea);
+    };
+  }, [syncHostedSafeArea]);
 
   const getFrameAudioChannel = useCallback((name: string): FrameAudioChannel => {
     let entry = frameAudioChannelsRef.current.get(name);
@@ -1792,6 +1847,7 @@ export function CustomAppRunner({
         .catch(err => postResponse(requestId, false, undefined, err instanceof Error ? err.message : String(err)));
     };
     window.addEventListener("message", handleMessage);
+    setBridgeReady(true);
     return () => {
       window.removeEventListener("message", handleMessage);
     };
@@ -1816,7 +1872,8 @@ export function CustomAppRunner({
         className="custom-app-runner-frame"
         sandbox="allow-scripts allow-downloads"
         allow="autoplay"
-        srcDoc={srcDoc}
+        onLoad={syncHostedSafeArea}
+        srcDoc={bridgeReady ? srcDoc : EMPTY_CUSTOM_APP_SRC_DOC}
       />
 
       {menuOpen ? (

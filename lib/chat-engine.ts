@@ -12,6 +12,7 @@ import {
     ChatMessage,
     loadFollowUpSchedule,
     loadChatAppSettings,
+    getMaxToolRounds,
     loadChatSessions,
     saveChatSessions,
     getLatestCharacterStateValues,
@@ -1445,7 +1446,7 @@ export function flattenCompletionResult(result: ChatCompletionResult): string {
     return result.parts.map(p => stripTextToolDirectives(p.text)).filter(Boolean).join("\n\n");
 }
 
-const MAX_TOOL_ROUNDS = 5;
+// 单条消息工具循环轮数上限：设置项（聊天工具箱），默认 5
 const MAX_NATIVE_EXPANDED_TOOL_PACKAGES = 2;
 
 export function buildChatBilingualInstruction(
@@ -2067,7 +2068,8 @@ async function generateNativeChatCompletion(
     const actionContext = { characterId: session.contactId, sessionId: session.id, sourceEngine: "chat" as const, signal: options?.signal };
     const expandableSourceKeys = new Set(enabledTools.filter(tool => !isNativeSingleTool(tool)).map(nativeToolSourceKey));
 
-    for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+    const maxToolRounds = getMaxToolRounds();
+    for (let round = 0; round < maxToolRounds; round += 1) {
         let result: LLMToolRequestResult;
         try {
             result = await sendLLMToolRequest(
@@ -2310,7 +2312,8 @@ export async function generateChatCompletion(
     const meta = { characterName: character.name, userName: userIdentity?.name };
     const actionContext = { characterId: session.contactId, sessionId: session.id, sourceEngine: "chat" as const, signal: options?.signal };
 
-    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const maxToolRounds = getMaxToolRounds();
+    for (let round = 0; round < maxToolRounds; round++) {
         let filteredOutput: string;
         try {
             filteredOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
@@ -2476,7 +2479,7 @@ export async function generateChatCompletion(
             }
 
             // Last round — one final call
-            if (round === MAX_TOOL_ROUNDS - 1) {
+            if (round === maxToolRounds - 1) {
                 try {
                     const finalOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
                         appId: options?.appId ?? "chat",

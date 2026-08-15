@@ -110,7 +110,6 @@ export function PhoneSettingsApp({ onClose, onNotice }: SettingsPageProps) {
     const [quickActionEnabled, setQuickActionEnabled] = useState(false);
     const [keepAlive, setKeepAlive] = useState(false);
     // 角色电脑：施工中弹窗（返回 / 仍要看看）
-    const [showAgentComputerGate, setShowAgentComputerGate] = useState(false);
     const pageBodyRef = useRef<HTMLDivElement | null>(null);
 
     // ── 账号：显示当前登录 / 修改密码 / 退出登录 ──
@@ -211,7 +210,6 @@ export function PhoneSettingsApp({ onClose, onNotice }: SettingsPageProps) {
         iconColor: item.iconColor,
         onClick: () => {
             // 施工中：角色电脑先弹提示，可选择仍要看看
-            if (item.id === "agentComputer") { setShowAgentComputerGate(true); return; }
             setCurrentPage(item.id as SubPage);
         },
     });
@@ -259,8 +257,7 @@ export function PhoneSettingsApp({ onClose, onNotice }: SettingsPageProps) {
         label: agentComputerItem.label,
         desc: agentComputerItem.desc,
         iconColor: agentComputerItem.iconColor,
-        // 施工中：先弹提示，可选择仍要看看
-        onClick: () => setShowAgentComputerGate(true),
+        onClick: () => setCurrentPage("agentComputer"),
     };
 
     const bindingItem = SETTINGS_MENU.find(i => i.id === "binding")!;
@@ -541,18 +538,6 @@ export function PhoneSettingsApp({ onClose, onNotice }: SettingsPageProps) {
                                     </div>
                                 </div>
                             </div>
-                        )}
-
-                        {showAgentComputerGate && (
-                            <ConfirmDialog
-                                title="角色电脑施工中"
-                                message="这个功能还在施工中，可能随时有变动。先去别的地方看看吧～"
-                                icon={Laptop}
-                                confirmLabel="仍要看看"
-                                cancelLabel="返回"
-                                onConfirm={() => { setShowAgentComputerGate(false); setCurrentPage("agentComputer"); }}
-                                onCancel={() => setShowAgentComputerGate(false)}
-                            />
                         )}
 
                         {confirmLogout && (

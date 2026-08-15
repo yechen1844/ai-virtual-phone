@@ -9,6 +9,7 @@
 import {
     WORKSHOP_WORKSPACE,
     agentComputerRequest,
+    isContainerComputer,
 } from "./agent-computer";
 
 // 与 qa-agent-tools 的 QaTool 结构保持一致（避免循环依赖，重复声明最小形状）
@@ -136,10 +137,16 @@ const computerFilesTool: QaComputerTool = {
 const computerExecTool: QaComputerTool = {
     name: "电脑执行命令",
     nativeName: "computer_exec",
-    description:
-        "在工作机上执行 shell 命令。内嵌 POSIX 工具集：ls/cat/grep/sed/awk/find/sort/wc/xargs、jq/sqlite3/yq、tar/gzip、curl（只读 GET/HEAD）等，"
-        + "支持管道/重定向/循环/函数。不是完整 Linux：没有 ps/top 等系统命令，装不了软件包（npm/pip 不可用），跑不了任意二进制。"
-        + "注意：基础模式的电脑没有 shell（会返回明确提示），此时改用「电脑文件」完成任务。",
+    // 描述按连接测试探到的模式动态措辞：容器 = 真 Linux；否则 = 内嵌工具集
+    get description() {
+        if (isContainerComputer()) {
+            return "在工作机上执行 shell 命令。工作机是真 Linux 容器：bash 完整、可 npm/pip 装软件、网络全功能（curl 不限方法）、"
+                + "硬盘挂载在 /workspace（持久保存）。适合跑脚本、装工具、生成文档等真实任务。";
+        }
+        return "在工作机上执行 shell 命令。内嵌 POSIX 工具集：ls/cat/grep/sed/awk/find/sort/wc/xargs、jq/sqlite3/yq、tar/gzip、curl（只读 GET/HEAD）等，"
+            + "支持管道/重定向/循环/函数。不是完整 Linux：没有 ps/top 等系统命令，装不了软件包（npm/pip 不可用），跑不了任意二进制。"
+            + "注意：基础模式的电脑没有 shell（会返回明确提示），此时改用「电脑文件」完成任务。";
+    },
     schemaLines: [
         "  参数：",
         "    · command (必填) — 要执行的命令",

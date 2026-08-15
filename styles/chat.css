@@ -645,7 +645,7 @@
   left: 0;
   right: 0;
   z-index: 10;
-  padding: 10px 16px;
+  padding: 8px 16px max(8px, env(safe-area-inset-bottom, 0px));
   background: color-mix(in srgb, var(--c-input, var(--c-page-body-bg)) 55%, transparent);
   backdrop-filter: blur(20px) saturate(180%);
   -webkit-backdrop-filter: blur(20px) saturate(180%);
@@ -726,7 +726,7 @@
   display: flex;
   justify-content: center;
   gap: 32px;
-  padding: 10px 0 24px;
+  padding: 6px 0 0;
 }
 
 .chat-input-bar .chat-input-actions .ui-bare-btn {

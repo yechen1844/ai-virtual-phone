@@ -13,15 +13,18 @@ import { SessionCustomCSS } from "@/components/ui/session-custom-css";
 import { CHAT_SESSION_CSS_EXAMPLE } from "@/lib/css-examples";
 import {
     clearMascotToolHistoryMessages,
+    createMascotSession,
     deleteMascotMessageWithLinkedTools,
+    deleteMascotSession,
     getMascotChatSnapshot,
     hasMascotToolHistoryMessages,
     hydrateMascotChat,
-    resetMascotConversation,
+    renameMascotSession,
     sendMascotMessage,
     setMascotMessages,
     stopMascotGeneration,
     subscribeMascotChat,
+    switchMascotSession,
 } from "@/lib/mascot-chat-store";
 import type { MascotMsg } from "@/lib/mascot-engine";
 import { getMascotContext, subscribeMascotContext } from "@/lib/mascot-context";
@@ -139,7 +142,6 @@ function MascotInfoPanel({
     const [personaDraft, setPersonaDraft] = useState(settings.personaPrompt);
     const [editingCSS, setEditingCSS] = useState(false);
     const [cssDraft, setCssDraft] = useState(settings.chatCustomCSS || "");
-    const [showConfirmNewSession, setShowConfirmNewSession] = useState(false);
     const [showConfirmClearTools, setShowConfirmClearTools] = useState(false);
     const [showConfirmDelete, setShowConfirmDelete] = useState(false);
     const chat = useSyncExternalStore(subscribeMascotChat, getMascotChatSnapshot, getMascotChatSnapshot);
@@ -280,13 +282,62 @@ function MascotInfoPanel({
                             </span>
                         </div>
                     </button>
-                    <button className="menu-item" onClick={() => setShowConfirmNewSession(true)}>
-                        <MascotInfoIcon color="var(--c-danger)"><RotateCcw size={22} strokeWidth={1.75} /></MascotInfoIcon>
+                    <button
+                        className="menu-item"
+                        disabled={!chat.hydrated || chat.isThinking}
+                        onClick={() => {
+                            const id = createMascotSession();
+                            if (id) onClose();
+                        }}
+                        style={!chat.hydrated || chat.isThinking ? { opacity: 0.55, cursor: "not-allowed" } : undefined}
+                    >
+                        <MascotInfoIcon color="var(--c-icon-active)"><RotateCcw size={22} strokeWidth={1.75} /></MascotInfoIcon>
                         <div className="menu-label-group">
-                            <span className="menu-label menu-label-danger">新会话</span>
-                            <span className="menu-desc">清空当前 AI助手聊天记录并重新开始</span>
+                            <span className="menu-label">开启新对话</span>
+                            <span className="menu-desc">保留当前记录，创建一段独立对话</span>
                         </div>
                     </button>
+                    {chat.sessions.map((session) => {
+                        const active = session.id === chat.activeSessionId;
+                        return (
+                            <div className="menu-item" key={session.id} style={{ gap: 8 }}>
+                                <MascotInfoIcon color={active ? "var(--c-icon-active)" : "var(--c-text-secondary)"}>
+                                    <MessageSquare size={21} strokeWidth={1.75} />
+                                </MascotInfoIcon>
+                                <button
+                                    type="button"
+                                    className="menu-label-group min-w-0 flex-1 text-left"
+                                    disabled={chat.isThinking || active}
+                                    onClick={() => {
+                                        if (switchMascotSession(session.id)) onClose();
+                                    }}
+                                    style={{ opacity: chat.isThinking ? 0.55 : 1 }}
+                                >
+                                    <span className="menu-label truncate">{session.title}{active ? "（当前）" : ""}</span>
+                                    <span className="menu-desc">{new Date(session.updatedAt).toLocaleString()}</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    className="menu-desc shrink-0"
+                                    disabled={chat.isThinking}
+                                    onClick={() => {
+                                        const title = window.prompt("重命名对话", session.title);
+                                        if (title !== null) renameMascotSession(session.id, title);
+                                    }}
+                                >改名</button>
+                                <button
+                                    type="button"
+                                    className="menu-desc shrink-0 text-[var(--c-danger)]"
+                                    disabled={chat.isThinking}
+                                    onClick={() => {
+                                        if (window.confirm(`确定删除对话“${session.title}”吗？此操作不会删除角色卡，但无法恢复这段聊天记录。`)) {
+                                            deleteMascotSession(session.id);
+                                        }
+                                    }}
+                                >删除</button>
+                            </div>
+                        );
+                    })}
                     <button className="menu-item" onClick={() => setShowConfirmDelete(true)}>
                         <MascotInfoIcon color="var(--c-danger)"><Trash2 size={22} strokeWidth={1.75} /></MascotInfoIcon>
                         <div className="menu-label-group">
@@ -367,22 +418,6 @@ function MascotInfoPanel({
                     </PageShell>
                 </div>
                 </div>
-            )}
-
-            {showConfirmNewSession && (
-                <ConfirmDialog
-                    title="开始新会话？"
-                    message="当前 AI助手聊天记录会被清空，之后从新会话继续。"
-                    icon={AlertCircle}
-                    variant="danger"
-                    confirmLabel="新会话"
-                    cancelLabel="取消"
-                    onConfirm={() => {
-                        resetMascotConversation();
-                        setShowConfirmNewSession(false);
-                    }}
-                    onCancel={() => setShowConfirmNewSession(false)}
-                />
             )}
 
             {showConfirmClearTools && (

@@ -96,6 +96,25 @@ export async function compareForkWithUpstream(forkRepo: string, branch?: string,
     };
 }
 
+/** contents API 的 JSON 元数据信封：有些镜像/代理会无视 raw 媒体类型原样返回它。
+ *  若命中就解出真正的文件内容——否则"信封"会被当成源码一路走到 PR（社区 #103 事故）。 */
+export function unwrapContentsApiEnvelope(text: string): string {
+    const trimmed = text.trim();
+    if (!trimmed.startsWith("{") || !trimmed.includes('"content"')) return text;
+    try {
+        const data = JSON.parse(trimmed) as { type?: string; encoding?: string; content?: string };
+        if (data && data.type === "file" && data.encoding === "base64" && typeof data.content === "string") {
+            const binary = atob(data.content.replace(/\n/g, ""));
+            try {
+                return new TextDecoder("utf-8").decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)));
+            } catch {
+                return binary;
+            }
+        }
+    } catch { /* 不是 JSON 或不是信封 → 原样返回 */ }
+    return text;
+}
+
 /** 读 fork 里某个文件的当前内容。公开 fork 走 raw 域名（带 CORS 可直连）；
  *  私有 fork 带 token 走 contents API 的 raw 媒体类型（api 域名对带鉴权的跨域请求友好）。 */
 export async function fetchForkFileText(forkRepo: string, branch: string, path: string, token?: string): Promise<string> {
@@ -106,7 +125,7 @@ export async function fetchForkFileText(forkRepo: string, branch: string, path: 
         })
         : await fetch(`https://raw.githubusercontent.com/${forkRepo}/${encodeURIComponent(branch)}/${encodedPath}`);
     if (!res.ok) throw new Error(`读取 fork 文件失败 ${res.status}（${path}）`);
-    return await res.text();
+    return unwrapContentsApiEnvelope(await res.text());
 }
 
 /** 读官方 main 某个文件的当前内容 */
@@ -136,7 +155,25 @@ export type ContribSubmitInput = {
 };
 
 /** 提交贡献：中转函数在官方仓库开 community PR，返回 PR 链接 */
+/** 内容像 contents API 信封 → 说明读取环节拿错了层，绝不能进 PR */
+function looksLikeContentsEnvelope(content: string): boolean {
+    const trimmed = content.trim();
+    if (!trimmed.startsWith("{")) return false;
+    try {
+        const data = JSON.parse(trimmed) as Record<string, unknown>;
+        return Boolean(data && data.type === "file" && typeof data.content === "string"
+            && (data.encoding === "base64" || "_links" in data || "download_url" in data));
+    } catch {
+        return false;
+    }
+}
+
 export async function submitContribution(input: ContribSubmitInput): Promise<{ prNumber: number; prUrl: string }> {
+    for (const file of input.files) {
+        if (looksLikeContentsEnvelope(file.content)) {
+            throw new Error(`${file.path} 的内容是 GitHub API 元数据而不是源码——通常是读取文件时镜像源返回了 JSON 信封。请重新用「读取文件」获取该文件的真实内容后再提交。`);
+        }
+    }
     const res = await fetch(input.endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

@@ -10,6 +10,7 @@ import { downloadFile } from "@/lib/download-utils";
 import type { QaFileCardInfo } from "@/lib/qa-computer-tools";
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|avif)$/i;
+const HTML_EXT = /\.(html?)$/i;
 const TEXT_EXT = /\.(txt|md|markdown|json|js|ts|tsx|css|html|htm|csv|log|xml|yml|yaml|ini|conf|mjs)$/i;
 
 function mimeFor(name: string): string {
@@ -17,6 +18,7 @@ function mimeFor(name: string): string {
     const map: Record<string, string> = {
         png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp",
         txt: "text/plain", md: "text/markdown", json: "application/json",
+        html: "text/html", htm: "text/html",
     };
     return map[ext] || "application/octet-stream";
 }
@@ -27,7 +29,9 @@ export function QaFileCard({ file }: { file: QaFileCardInfo }) {
     // 大文件拉取耗时可能超过 iOS 分享卡的用户激活窗口：失败时攥住 blob，
     // 让用户再点一次（新激活）直接弹分享——与数据导出的两段式同一思路
     const [ready, setReady] = useState<{ blob: Blob; name: string } | null>(null);
-    const [preview, setPreview] = useState<{ kind: "text" | "image"; content: string; truncated?: boolean } | null>(null);
+    const [preview, setPreview] = useState<{ kind: "text" | "image" | "html"; content: string; truncated?: boolean } | null>(null);
+    // HTML 预览默认渲染网页，可切到源码
+    const [htmlSourceView, setHtmlSourceView] = useState(false);
     const previewable = IMAGE_EXT.test(file.name) || TEXT_EXT.test(file.name);
 
     const save = async () => {
@@ -70,6 +74,12 @@ export function QaFileCard({ file }: { file: QaFileCardInfo }) {
             if (IMAGE_EXT.test(file.name)) {
                 const data = await agentComputerRequest<{ base64: string }>("read_base64", file.workspace, { path: file.path });
                 setPreview({ kind: "image", content: `data:${mimeFor(file.name)};base64,${data.base64}` });
+            } else if (HTML_EXT.test(file.name)) {
+                // 走 base64 拿完整内容再解码：文本接口有截断，HTML 截断会渲染成残页
+                const data = await agentComputerRequest<{ base64: string }>("read_base64", file.workspace, { path: file.path });
+                const bytes = Uint8Array.from(atob(data.base64), c => c.charCodeAt(0));
+                setHtmlSourceView(false);
+                setPreview({ kind: "html", content: new TextDecoder().decode(bytes) });
             } else {
                 const data = await agentComputerRequest<{ content: string; truncated: boolean }>("read", file.workspace, { path: file.path, maxChars: 50000 });
                 setPreview({ kind: "text", content: data.content, truncated: data.truncated });
@@ -111,17 +121,29 @@ export function QaFileCard({ file }: { file: QaFileCardInfo }) {
                         <div className="modal-header" data-ui="modal-header">
                             <h3 className="modal-title" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{file.name}</h3>
                         </div>
-                        <div className="modal-body" data-ui="modal-body" style={{ overflowY: "auto", minHeight: 0 }}>
-                            {preview.kind === "image"
-                                ? /* eslint-disable-next-line @next/next/no-img-element */
-                                  <img src={preview.content} alt={file.name} style={{ maxWidth: "100%", borderRadius: 8 }} />
-                                : (
-                                    <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "inherit", fontSize: 14, lineHeight: 1.8, margin: 0 }}>
-                                        {preview.content}{preview.truncated ? "\n…（文件较长，完整内容请保存后查看）" : ""}
-                                    </pre>
-                                )}
+                        <div className="modal-body" data-ui="modal-body" style={{ overflowY: "auto", minHeight: 0, ...(preview.kind === "html" && !htmlSourceView ? { padding: 0, display: "flex" } : null) }}>
+                            {preview.kind === "image" ? (
+                                /* eslint-disable-next-line @next/next/no-img-element */
+                                <img src={preview.content} alt={file.name} style={{ maxWidth: "100%", borderRadius: 8 }} />
+                            ) : preview.kind === "html" && !htmlSourceView ? (
+                                <iframe
+                                    title={file.name}
+                                    sandbox="allow-scripts"
+                                    srcDoc={preview.content}
+                                    style={{ border: 0, width: "100%", height: "56vh", flex: 1, background: "#fff", borderRadius: 8 }}
+                                />
+                            ) : (
+                                <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "inherit", fontSize: 14, lineHeight: 1.8, margin: 0 }}>
+                                    {preview.content}{preview.truncated ? "\n…（文件较长，完整内容请保存后查看）" : ""}
+                                </pre>
+                            )}
                         </div>
                         <div className="modal-footer" data-ui="modal-footer">
+                            {preview.kind === "html" && (
+                                <button className="ui-btn" onClick={() => setHtmlSourceView(v => !v)}>
+                                    {htmlSourceView ? "预览网页" : "查看源码"}
+                                </button>
+                            )}
                             <button className="ui-btn" onClick={() => setPreview(null)}>关闭</button>
                             <button className="ui-btn ui-btn-primary" onClick={() => void save()}>保存</button>
                         </div>

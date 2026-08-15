@@ -164,6 +164,22 @@ export async function deserializeValue(value: unknown, resolver?: MediaResolver)
   return value;
 }
 
+// 纯算术估算 UTF-8 字节数：逐字符累加，零内存分配。
+// 旧实现对每条字符串做 JSON.stringify + new Blob 两次全量复制——大库（几百 MB 的
+// base64 媒体串）统计时瞬时内存冲到数据本身的 2~3 倍，移动端 Chrome 直接 OOM 杀页。
+// 统计用途不需要字节级精确，省掉引号/转义的出入无所谓。
+function utf8Bytes(text: string): number {
+  let bytes = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff) { bytes += 4; i += 1; } // 代理对 = 4 字节，跳过低位
+    else bytes += 3;
+  }
+  return bytes;
+}
+
 export function estimateValueBytes(value: unknown): number {
   if (typeof Blob !== "undefined" && value instanceof Blob) return value.size;
   if (value instanceof ArrayBuffer) return value.byteLength;
@@ -171,16 +187,8 @@ export function estimateValueBytes(value: unknown): number {
   if (value === undefined) return 0;
   if (value === null) return 4;
 
-  const textBytes = (text: string) => {
-    try {
-      return new Blob([text]).size;
-    } catch {
-      return text.length;
-    }
-  };
-
-  if (typeof value === "string") return textBytes(JSON.stringify(value));
-  if (typeof value === "number" || typeof value === "boolean") return textBytes(JSON.stringify(value));
+  if (typeof value === "string") return utf8Bytes(value) + 2; // + 引号
+  if (typeof value === "number" || typeof value === "boolean") return String(value).length;
 
   if (Array.isArray(value)) {
     if (value.length === 0) return 2;
@@ -191,12 +199,13 @@ export function estimateValueBytes(value: unknown): number {
     const entries = Object.entries(value);
     if (entries.length === 0) return 2;
     return 2 + Math.max(0, entries.length - 1) + entries.reduce((sum, [key, child]) => {
-      return sum + textBytes(JSON.stringify(key)) + 1 + estimateValueBytes(child);
+      return sum + utf8Bytes(key) + 3 + estimateValueBytes(child); // 键的引号 + 冒号
     }, 0);
   }
 
+  // Date/Map 等少数结构：退回 stringify（个头小，代价可忽略）
   try {
-    return textBytes(JSON.stringify(value));
+    return utf8Bytes(JSON.stringify(value) ?? "");
   } catch {
     return 0;
   }

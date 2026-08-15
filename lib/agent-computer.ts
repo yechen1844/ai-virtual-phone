@@ -10,6 +10,13 @@ const CONFIG_KEY = "ai_phone_agent_computer_cfg_v1";
 export const AGENT_COMPUTER_DEPLOY_URL =
     "https://deploy.workers.cloudflare.com/?url=https://github.com/xiaolongbao0709/agent-computer";
 
+/** 容器版一键部署（独立仓库：真 Linux，需 Workers 付费计划；配置已开好，零改动。
+ *  独立成仓库而非分支——部署向导对 /tree/ 形式的 URL 时灵时不灵，根路径最稳） */
+export const AGENT_COMPUTER_CONTAINER_DEPLOY_URL =
+    "https://deploy.workers.cloudflare.com/?url=https://github.com/xiaolongbao0709/agent-computer-container";
+
+export type AgentComputerMode = "container" | "shell" | "fs-only";
+
 export type AgentComputerConfig = {
     /** Worker 地址，如 https://ai-phone-agent-computer.xxx.workers.dev */
     endpoint: string;
@@ -17,6 +24,8 @@ export type AgentComputerConfig = {
     token: string;
     /** 小坊（工坊）是否使用这台电脑；缺省视为开 */
     workshopEnabled?: boolean;
+    /** 最近一次连接测试探到的模式（container=真 Linux；用于工具说明的措辞） */
+    mode?: AgentComputerMode;
 };
 
 export function loadAgentComputerConfig(): AgentComputerConfig {
@@ -28,6 +37,7 @@ export function loadAgentComputerConfig(): AgentComputerConfig {
                 endpoint: typeof parsed.endpoint === "string" ? parsed.endpoint : "",
                 token: typeof parsed.token === "string" ? parsed.token : "",
                 workshopEnabled: parsed.workshopEnabled !== false,
+                mode: parsed.mode === "container" || parsed.mode === "shell" || parsed.mode === "fs-only" ? parsed.mode : undefined,
             };
         }
     } catch { /* fall through */ }
@@ -39,7 +49,13 @@ export function saveAgentComputerConfig(config: AgentComputerConfig): void {
         endpoint: config.endpoint.trim().replace(/\/+$/, ""),
         token: config.token.trim(),
         workshopEnabled: config.workshopEnabled !== false,
+        ...(config.mode ? { mode: config.mode } : {}),
     }));
+}
+
+/** 当前电脑是否为容器模式（真 Linux）；来自最近一次连接测试的记录 */
+export function isContainerComputer(): boolean {
+    return loadAgentComputerConfig().mode === "container";
 }
 
 export function isAgentComputerConfigured(): boolean {
@@ -68,7 +84,7 @@ export type AgentComputerStatus = {
     ok: boolean;
     fs?: boolean;
     shell?: boolean;
-    mode?: "shell" | "fs-only";
+    mode?: AgentComputerMode;
     error?: string;
 };
 
