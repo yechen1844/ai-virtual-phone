@@ -937,7 +937,6 @@ export function RegexManager({ isActive = true }: { isActive?: boolean } = {}) {
                                                                 </label>
                                                                 <span className="menu-desc !mt-0">勾选后只作用于聊天历史消息，不碰系统提示词/预设/世界书</span>
                                                             </div>
-                                                            </div>
                                                         </div>
 
                                                         <div className="flex flex-col gap-1">
