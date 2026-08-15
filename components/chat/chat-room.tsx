@@ -762,7 +762,11 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
                 <StickerSearchSuggest
                     query={inputText}
                     characterIds={suggestCharacterIds}
-                    onSend={(name, url) => onSendSticker(name, url)}
+                    onSend={(name, url) => {
+                        onSendSticker(name, url);
+                        setInputText("");
+                        resetTextareaHeight();
+                    }}
                     onClose={() => setSuggestClosed(true)}
                 />
             )}
