@@ -317,9 +317,42 @@ function ChatHtmlInlineFrame({
     variant?: ChatHtmlFrameVariant;
 }) {
     const iframeRef = useRef<HTMLIFrameElement>(null);
+    const containerRef = useRef<HTMLDivElement>(null);
     const [height, setHeight] = useState(240);
     const [expanded, setExpanded] = useState(false);
     const allowFullscreen = variant !== "offline";
+    // 聊天室 keep-alive（visitedSessions）：返回列表只 display:none、组件不卸载。
+    // 若带 HTML 卡片的回合在隐藏状态下挂载，iframe 在零尺寸容器里加载会高度测不准/内容不渲染，
+    // 恢复显示时就是「空一块」——完全退出聊天 APP 重进才恢复。这里用 IntersectionObserver
+    // 检测从隐藏恢复可见，强制重建 iframe 重新执行脚本与高度测量。
+    const [reloadKey, setReloadKey] = useState(0);
+    // 挂载时的可见性（首次 IO 回调记录）与最近一次可见性
+    const mountedVisibleRef = useRef<boolean | null>(null);
+    const prevVisibleRef = useRef<boolean | null>(null);
+    useEffect(() => {
+        const el = containerRef.current;
+        if (!el || typeof IntersectionObserver === "undefined") return;
+        const io = new IntersectionObserver((entries) => {
+            for (const entry of entries) {
+                const visible = entry.isIntersecting;
+                if (mountedVisibleRef.current === null) {
+                    mountedVisibleRef.current = visible;
+                    prevVisibleRef.current = visible;
+                    continue;
+                }
+                const prev = prevVisibleRef.current;
+                prevVisibleRef.current = visible;
+                // 仅「挂载时处于隐藏」的卡片，从隐藏恢复可见时重建一次：
+                // 挂载即可见的卡片本身是好的，进出聊天室不重建、避免闪烁
+                if (visible && prev === false && mountedVisibleRef.current === false) {
+                    setReloadKey(k => k + 1);
+                    setHeight(240);
+                }
+            }
+        }, { threshold: 0 });
+        io.observe(el);
+        return () => io.disconnect();
+    }, []);
     const srcDoc = useMemo(() => buildChatHtmlDocument(html, true), [html]);
 
     useEffect(() => {
@@ -342,8 +375,9 @@ function ChatHtmlInlineFrame({
     }, [onActionSelect]);
 
     return (
-        <div className="chat-html-inline" data-chat-html-inline="" data-variant={variant}>
+        <div ref={containerRef} className="chat-html-inline" data-chat-html-inline="" data-variant={variant}>
             <iframe
+                key={reloadKey}
                 ref={iframeRef}
                 className="chat-html-inline-frame"
                 srcDoc={srcDoc}
