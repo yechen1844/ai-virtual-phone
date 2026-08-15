@@ -306,22 +306,30 @@ export async function generateAnnotationBatch(
 
     const { input, apiConfig, preset } = resolved;
     const llmMessages = assemblePromptPayload(input);
+
+    // 批注输出格式指令：始终作为 user 消息注入，不依赖预设条目（兼容自定义预设/条目
+    // 被禁用/版本差异导致的指令缺失），并确保 Anthropic 等 API 最后一条是 user 消息。
+    const instructionParts = [
+        "<reading_annotation_output>",
+        "请为上文正文中你有感触的段落写批注，尽量输出多条（通常 2-6 条）。",
+        "每条必须严格使用格式：[批注:段落序号]批注内容[/批注]，段落序号是正文每段前的 [N] 序号，从 1 开始。",
+        "可以吐槽、感叹、分析、联想、共情、提问，但不要复述原文。",
+        "如果本批内容确实没什么值得评论的，只输出 [无批注]。",
+        "不要输出批注标签以外的解释、前言或结尾。",
+    ];
     if (annotationLimit && annotationLimit > 0) {
-        // 批次上限指令必须作为 user 消息追加：Anthropic 等 API 严格要求最后一条是
-        // user 消息，直接 push system 到末尾会导致整个批注请求 400 失败。
-        const limitText = [
-            "<reading_batch_limit>",
-            `本次批注任务上限：整批最多输出 ${annotationLimit} 条批注（即 [批注:N] 块的总数不能超过 ${annotationLimit} 条）。`,
-            "优先选择本批次里最值得评论的段落；可以针对同一段落输出多条批注，但每条必须使用独立的 [批注:N] 块，段落序号相同即可。",
-            "条数到达上限后立即停止，不要凑数。如果本批内容确实没什么值得评论的，输出 [无批注]。",
-            "</reading_batch_limit>",
-        ].join("\n");
-        const lastMsg = llmMessages[llmMessages.length - 1];
-        if (lastMsg && lastMsg.role === "user" && typeof lastMsg.content === "string") {
-            lastMsg.content = `${lastMsg.content}\n\n${limitText}`;
-        } else {
-            llmMessages.push({ role: "user", content: limitText });
-        }
+        instructionParts.push(
+            "",
+            `本次批注条数上限：整批最多输出 ${annotationLimit} 条（即 [批注:N] 块总数不超过 ${annotationLimit} 条），达到上限立即停止，不要凑数。`,
+        );
+    }
+    instructionParts.push("</reading_annotation_output>");
+    const instructionText = instructionParts.join("\n");
+    const lastMsg = llmMessages[llmMessages.length - 1];
+    if (lastMsg && lastMsg.role === "user" && typeof lastMsg.content === "string") {
+        lastMsg.content = `${lastMsg.content}\n\n${instructionText}`;
+    } else {
+        llmMessages.push({ role: "user", content: instructionText });
     }
     const responseText = await callReadingLLM(
         apiConfig!,
