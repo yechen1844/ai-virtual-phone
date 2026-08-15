@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type TouchEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
@@ -291,8 +291,9 @@ function QaMessageItem({
 }) {
   const thinkingOnly = isStreaming && !msg.content && (!msg.tools || msg.tools.length === 0);
   // 长按 / 右键弹出消息操作菜单：复制（复制原始内容）、编辑（编辑框展示未渲染的原始内容，
-  // 因为前端渲染会吞掉一些特殊标签，沟通时看不到原始内容）
-  const [menuOpen, setMenuOpen] = useState(false);
+  // 因为前端渲染会吞掉一些特殊标签，沟通时看不到原始内容）。
+  // 菜单出现在「手指长按的位置」，而不是固定在气泡右上角，方便单手操作。
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cancelPress = useCallback(() => {
     if (pressTimer.current) {
@@ -300,30 +301,46 @@ function QaMessageItem({
       pressTimer.current = null;
     }
   }, []);
-  const startPress = useCallback(() => {
+  const startPress = useCallback((e: TouchEvent) => {
     cancelPress();
-    pressTimer.current = setTimeout(() => setMenuOpen(true), 500);
+    const touch = e.touches?.[0];
+    if (!touch) return;
+    const x = touch.clientX;
+    const y = touch.clientY;
+    pressTimer.current = setTimeout(() => setMenu({ x, y }), 500);
   }, [cancelPress]);
+  // 菜单尺寸（用于边缘防溢出翻转）
+  const MENU_W = 150;
+  const MENU_H = 56;
+  const menuStyle = menu
+    ? {
+        left: menu.x + MENU_W > window.innerWidth ? Math.max(8, menu.x - MENU_W) : menu.x,
+        top: menu.y + MENU_H > window.innerHeight ? Math.max(8, menu.y - MENU_H) : menu.y,
+      }
+    : undefined;
   const msgWrap = (node: ReactNode) => (
     <div
       className="qa-msg-wrap"
       onContextMenu={(e) => {
         e.preventDefault();
-        setMenuOpen(true);
+        setMenu({ x: e.clientX, y: e.clientY });
       }}
       onTouchStart={startPress}
       onTouchEnd={cancelPress}
-      onTouchMove={cancelPress}
+      onTouchMove={() => {
+        cancelPress();
+        setMenu(null);
+      }}
       onTouchCancel={cancelPress}
     >
       {node}
-      {menuOpen && (
-        <div className="qa-msg-menu" role="menu" onPointerDown={(e) => e.stopPropagation()}>
+      {menu && (
+        <div className="qa-msg-menu" role="menu" style={menuStyle} onPointerDown={(e) => e.stopPropagation()}>
           <button
             type="button"
             onClick={() => {
               onCopy(msg.content);
-              setMenuOpen(false);
+              setMenu(null);
             }}
           >
             复制
@@ -332,7 +349,7 @@ function QaMessageItem({
             type="button"
             onClick={() => {
               onEdit(msg);
-              setMenuOpen(false);
+              setMenu(null);
             }}
           >
             编辑
