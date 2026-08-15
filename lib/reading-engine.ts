@@ -148,7 +148,9 @@ async function callReadingLLM(
         messages,
         regexes ?? [],
         { characterName, userName },
-        { appId: "reading", appTags },
+        // 批注/讨论返回的是内部协议文本（[批注:N]...[/批注]、【新增批注】等），
+        // 不能经过用户配置的「输出正则」改写，否则协议格式被破坏导致解析失败。
+        { appId: "reading", appTags, skipOutputRegex: true },
     );
 }
 
