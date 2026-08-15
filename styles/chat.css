@@ -4499,6 +4499,66 @@
   pointer-events: none;
   inset: 0 auto auto 0;
 }
+/* ── Scroll mode: continuous paragraph flow ── */
+.reading-scroll-wrap {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.reading-scroll-flow {
+  flex: 1 0 auto;
+  width: 100%;
+  padding: 6px 2px 12px;
+}
+.reading-scroll-paragraph-block {
+  margin-bottom: 18px;
+}
+.reading-scroll-flow-end {
+  height: 120px;
+  flex: 0 0 auto;
+}
+/* ── Reading settings: mode switch & reset ── */
+.reading-mode-switch {
+  display: flex;
+  gap: 6px;
+  padding: 3px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--reading-warm-brown-light, #a39487) 12%, transparent);
+}
+.reading-mode-btn {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--reading-warm-ink-secondary, #555);
+  font-size: calc(11.7px*var(--app-text-scale,1));
+  font-weight: 600;
+  padding: 8px 0;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.reading-mode-btn.is-active {
+  background: var(--reading-warm-card, #fff);
+  color: var(--reading-warm-ink, #111);
+  box-shadow: 0 2px 6px rgba(60, 45, 20, 0.1);
+}
+.reading-mode-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.reading-settings-link-btn {
+  border: none;
+  background: transparent;
+  color: var(--reading-warm-brown, #8a5a2b);
+  font-size: calc(10.8px*var(--app-text-scale,1));
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 999px;
+}
+.reading-settings-link-btn:active {
+  opacity: 0.7;
+}
 .reading-settings-grid {
   display: flex;
   flex-direction: column;

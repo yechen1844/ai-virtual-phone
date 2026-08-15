@@ -239,6 +239,7 @@ export function ReadingViewer({ book, onBack }: Props) {
     const [autoAnnotate, setAutoAnnotate] = useState(false);
     const [annotationBatchSize, setAnnotationBatchSize] = useState(isPdf ? 5 : 50);
     const [annotationBatchInput, setAnnotationBatchInput] = useState(String(isPdf ? 5 : 50));
+    const [annotationLimitInput, setAnnotationLimitInput] = useState(String(readingConfig.annotationLimit || 0));
     const [annotationDialogMode, setAnnotationDialogMode] = useState<AnnotationDialogMode | null>(null);
     const [showReadingSettings, setShowReadingSettings] = useState(false);
     const [showNavigationDialog, setShowNavigationDialog] = useState(false);
@@ -255,7 +256,15 @@ export function ReadingViewer({ book, onBack }: Props) {
     const readingMessagePressStartRef = useRef<{ x: number; y: number } | null>(null);
     const chatDragRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
     const chatMovedRef = useRef(false);
+    // rAF-throttled drag: pointermove only writes refs; one setState per frame
+    const chatRafRef = useRef<number | null>(null);
+    const pendingChatOffsetRef = useRef<{ x: number; y: number } | null>(null);
+    // Scroll-mode auto-annotation throttle
+    const lastScrollAnnotateCheckRef = useRef(0);
+    // Scroll-mode pending ratio (slider jump / progress restore)
+    const pendingScrollRatioRef = useRef<number | null>(null);
     const scrollRef = useRef<HTMLDivElement>(null);
+    const scrollFlowRef = useRef<HTMLDivElement>(null);
     const txtMeasureLineRef = useRef<HTMLParagraphElement>(null);
     const txtMeasureGapRef = useRef<HTMLDivElement>(null);
     const txtMeasureAnnotationRef = useRef<HTMLDivElement>(null);
@@ -292,11 +301,15 @@ export function ReadingViewer({ book, onBack }: Props) {
 
     const companion = companionId ? (enrichedContacts.find(c => c.characterId === companionId)?.char || loadCharacters().find(c => c.id === companionId)) : null;
     const bilingualTranslationEnabled = readingConfig.bilingualTranslationEnabled === true;
+    // 连续滚动模式：仅 TXT 支持，PDF 保持整页滚动
+    const readingMode: "paged" | "scroll" = !isPdf && readingConfig.readingMode === "scroll" ? "scroll" : "paged";
+    const isScrollMode = readingMode === "scroll";
+    const annotationLimit = readingConfig.annotationLimit || 0;
     const defaultTranslationExpanded = readingConfig.collapseBilingualTranslation !== true;
     const currentChapter = chapters[chapterIndex];
     const txtPagesChapterIndex = txtPages[0]?.find((item) => item.kind !== "gap")?.chapterIndex ?? txtPages[0]?.[0]?.chapterIndex;
     const txtPagesReadyForCurrentChapter = !isPdf && txtPages.length > 0 && txtPagesChapterIndex === chapterIndex;
-    const showTxtLoading = !isPdf && (
+    const showTxtLoading = !isPdf && !isScrollMode && (
         !chaptersLoaded ||
         (chaptersLoaded && chapters.length > 0 && Boolean(currentChapter) && !txtPagesReadyForCurrentChapter)
     );
@@ -359,6 +372,80 @@ export function ReadingViewer({ book, onBack }: Props) {
                             )
                             : <p key={i} className={`reading-line${item.indent ? " reading-line-indent" : ""}${item.segEnd ? " reading-line-seg-end" : ""}`}>{item.text}</p>
                 ))}
+            </div>
+        );
+    };
+
+    // ── Scroll mode: render the chapter as a continuous paragraph flow with inline annotations ──
+    const renderScrollContent = () => {
+        if (!currentChapter) return null;
+        const chapterAnnotations = annotations.filter((a) => a.chapterIndex === chapterIndex);
+        const annotationMap = new Map<number, ReadingAnnotation[]>();
+        for (const a of chapterAnnotations) {
+            const list = annotationMap.get(a.paragraphIndex) || [];
+            list.push(a);
+            annotationMap.set(a.paragraphIndex, list);
+        }
+        return (
+            <div className="reading-scroll-flow" ref={scrollFlowRef}>
+                {currentChapter.paragraphs.map((paragraph, index) => {
+                    const segs = paragraph.split("\n");
+                    return (
+                        <div key={index} className="reading-scroll-paragraph-block" data-paragraph-index={index}>
+                            {segs.map((seg, si) => (
+                                <p key={si} className={`reading-line${si === 0 ? " reading-line-indent" : ""}${si === segs.length - 1 ? " reading-line-seg-end" : ""}`}>{seg}</p>
+                            ))}
+                            {(annotationMap.get(index) || []).map((ann) => (
+                                <div
+                                    key={ann.id}
+                                    className="reading-annotation reading-annotation-interactive"
+                                    data-no-nav="true"
+                                    onPointerDown={() => {
+                                        longPressTimer.current = setTimeout(() => {
+                                            setActiveMessageId(null);
+                                            setActiveAnnotationId(ann.id);
+                                        }, 500);
+                                    }}
+                                    onPointerUp={() => { if (longPressTimer.current) clearTimeout(longPressTimer.current); }}
+                                    onPointerCancel={() => { if (longPressTimer.current) clearTimeout(longPressTimer.current); }}
+                                    onPointerLeave={() => { if (longPressTimer.current) clearTimeout(longPressTimer.current); }}
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (activeAnnotationId && activeAnnotationId !== ann.id) setActiveAnnotationId(null);
+                                    }}
+                                >
+                                    <span className="reading-annotation-name">{ann.characterName}</span>
+                                    <ReadingAnnotationContent
+                                        text={ann.content}
+                                        bilingualEnabled={bilingualTranslationEnabled}
+                                        expanded={isAnnotationTranslationExpanded(ann.id)}
+                                        onToggle={() => handleAnnotationTranslationToggle(ann.id)}
+                                    />
+                                    {activeAnnotationId === ann.id && (
+                                        <div className="ctx-menu reading-annotation-menu" onClick={(e) => e.stopPropagation()}>
+                                            <button
+                                                onClick={() => {
+                                                    copyToClipboard(ann.content);
+                                                    setActiveAnnotationId(null);
+                                                }}
+                                                className="ctx-menu-btn"
+                                            >
+                                                复制
+                                            </button>
+                                            <button
+                                                onClick={() => { void handleDeleteReadingAnnotation(ann.id); }}
+                                                className="ctx-menu-btn ctx-menu-btn-danger"
+                                            >
+                                                删除
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    );
+                })}
+                <div className="reading-scroll-flow-end" />
             </div>
         );
     };
@@ -486,7 +573,12 @@ export function ReadingViewer({ book, onBack }: Props) {
                     : 0;
                 setChapterIndex(safeChapterIndex);
                 setCompanionId(progress.companionCharacterId || null);
-                if (!isPdf) setTxtPage(Math.max(0, progress.scrollPosition || 0));
+                if (!isPdf) {
+                    setTxtPage(Math.max(0, progress.scrollPosition || 0));
+                    // Only scroll mode can consume a saved scroll ratio; paged mode would
+                    // otherwise keep a stale pending ratio that gets applied on mode switch.
+                    if (isScrollMode && typeof progress.scrollRatio === "number") pendingScrollRatioRef.current = progress.scrollRatio;
+                }
             }
             // Default companion: first contact
             if (!progress?.companionCharacterId && enrichedContacts.length > 0) {
@@ -666,6 +758,47 @@ export function ReadingViewer({ book, onBack }: Props) {
         };
     }, [chapterIndex, paragraphRefs, txtPage, txtPages]);
 
+    // ── Scroll-mode helpers ──
+    const getTopVisibleParagraphIndex = useCallback((): number => {
+        const body = scrollRef.current;
+        if (!body) return -1;
+        const bodyTop = body.getBoundingClientRect().top;
+        const blocks = body.querySelectorAll<HTMLElement>(".reading-scroll-paragraph-block");
+        for (const el of blocks) {
+            const rect = el.getBoundingClientRect();
+            if (rect.bottom > bodyTop + 8) {
+                return Number(el.dataset.paragraphIndex ?? -1);
+            }
+        }
+        return -1;
+    }, []);
+
+    const scrollToScrollRatio = useCallback((ratio: number) => {
+        const body = scrollRef.current;
+        if (!body) return;
+        const max = body.scrollHeight - body.clientHeight;
+        body.scrollTo(0, Math.max(0, Math.min(1, ratio)) * Math.max(0, max));
+    }, []);
+
+    const buildScrollBatchRequest = useCallback((size: number, mode: AnnotationBatchMode): AnnotationBatchRequest | null => {
+        if (!currentChapter) return null;
+        const topIndex = getTopVisibleParagraphIndex();
+        if (topIndex < 0) return null;
+        const chapterRefs = paragraphRefs.filter((item) => item.chapterIndex === chapterIndex && item.text.trim());
+        if (chapterRefs.length === 0) return null;
+        const baseAbsolute = chapterRefs[0].absoluteIndex;
+        const startInChapter = mode === "manual" ? topIndex : Math.floor(topIndex / size) * size;
+        const startAbsolute = baseAbsolute + startInChapter;
+        const items = paragraphRefs.slice(startAbsolute, startAbsolute + size).filter((item) => item.chapterIndex === chapterIndex && item.text.trim());
+        if (items.length === 0) return null;
+        return {
+            key: `scroll:${chapterIndex}:${startInChapter}:${size}`,
+            title: `第${items[0].absoluteIndex + 1}-${items[items.length - 1].absoluteIndex + 1}段`,
+            size,
+            items,
+        };
+    }, [chapterIndex, currentChapter, getTopVisibleParagraphIndex, paragraphRefs]);
+
     const getPdfBatchWindow = useCallback((size: number, mode: AnnotationBatchMode) => {
         const chapterMaxPage = Math.max(0, ...chapters.map((chapter) => chapter.pageEnd ?? 0));
         const refMaxPage = Math.max(0, ...paragraphRefs.map((item) => item.pageNum || 0));
@@ -698,7 +831,10 @@ export function ReadingViewer({ book, onBack }: Props) {
     }, [getPdfBatchWindow, paragraphRefs]);
 
     const materializeBatchRequest = useCallback(async (size: number, mode: AnnotationBatchMode): Promise<AnnotationBatchRequest | null> => {
-        if (!isPdf) return buildTxtBatchRequest(size, mode);
+        if (!isPdf) {
+            if (isScrollMode) return buildScrollBatchRequest(size, mode);
+            return buildTxtBatchRequest(size, mode);
+        }
 
         const windowInfo = getPdfBatchWindow(size, mode);
         if (!windowInfo) return null;
@@ -706,7 +842,7 @@ export function ReadingViewer({ book, onBack }: Props) {
         const mergedChapters = await ensurePdfPageRangeParsed(windowInfo.startPage, windowInfo.endPage);
         const refs = buildParagraphRefsFromChapters(mergedChapters);
         return buildPdfBatchRequest(size, mode, refs);
-    }, [buildPdfBatchRequest, buildTxtBatchRequest, ensurePdfPageRangeParsed, getPdfBatchWindow, isPdf]);
+    }, [buildPdfBatchRequest, buildScrollBatchRequest, buildTxtBatchRequest, ensurePdfPageRangeParsed, getPdfBatchWindow, isPdf, isScrollMode]);
 
     const executeBatchAnnotation = useCallback(async (request: AnnotationBatchRequest, options?: { force?: boolean }) => {
         if (!companionId || generating) return;
@@ -733,6 +869,7 @@ export function ReadingViewer({ book, onBack }: Props) {
                 })),
                 existing,
                 companionId,
+                annotationLimit,
             );
 
             generatedBatchesRef.current.add(batchKey);
@@ -753,7 +890,7 @@ export function ReadingViewer({ book, onBack }: Props) {
         } finally {
             setGenerating(false);
         }
-    }, [book, companionId, generating, loadExistingAnnotationsForItems]);
+    }, [annotationLimit, book, companionId, generating, loadExistingAnnotationsForItems]);
 
     const openAnnotationDialog = (mode: AnnotationDialogMode) => {
         const nextSize = annotationBatchSize || (isPdf ? 5 : 50);
@@ -766,6 +903,15 @@ export function ReadingViewer({ book, onBack }: Props) {
         const size = clampBatchSize(Number(annotationBatchInput));
         setAnnotationBatchSize(size);
         setAnnotationBatchInput(String(size));
+
+        // Persist the batch-level annotation count limit (0 = unlimited)
+        const nextLimit = Math.max(0, Math.min(50, Math.round(Number(annotationLimitInput) || 0)));
+        setAnnotationLimitInput(String(nextLimit));
+        if (readingConfig.annotationLimit !== nextLimit) {
+            const next = { ...readingConfig, annotationLimit: nextLimit };
+            setReadingConfig(next);
+            saveReadingInteractionConfig(next);
+        }
 
         if (annotationDialogMode === "auto") {
             setAnnotationDialogMode(null);
@@ -920,6 +1066,17 @@ export function ReadingViewer({ book, onBack }: Props) {
             const targetChapterIndex = Math.min(chapters.length - 1, Math.floor(rawPosition));
             const pageFraction = Math.max(0, Math.min(1, rawPosition - targetChapterIndex));
 
+            if (isScrollMode) {
+                if (targetChapterIndex === chapterIndex) {
+                    scrollToScrollRatio(pageFraction);
+                } else {
+                    pendingScrollRatioRef.current = pageFraction;
+                    setChapterIndex(targetChapterIndex);
+                    setTxtPage(0);
+                }
+                return;
+            }
+
             if (targetChapterIndex === chapterIndex) {
                 pendingTxtPageFractionRef.current = null;
                 setTxtPage(Math.round(pageFraction * Math.max(0, txtTotalPages - 1)));
@@ -941,7 +1098,7 @@ export function ReadingViewer({ book, onBack }: Props) {
             return;
         }
 
-        if (!isPdf && currentChapter) {
+        if (!isPdf && !isScrollMode && currentChapter) {
             const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
             const x = e.clientX - rect.left;
             const w = rect.width;
@@ -974,6 +1131,7 @@ export function ReadingViewer({ book, onBack }: Props) {
     const goToChapter = (idx: number, startFromEnd = false) => {
         if (idx < 0 || idx >= chapters.length) return;
         pendingTxtPageFractionRef.current = startFromEnd ? 1 : null;
+        pendingScrollRatioRef.current = startFromEnd ? 1 : null;
         setChapterIndex(idx);
         setTxtPage(0);
         scrollRef.current?.scrollTo(0, 0);
@@ -1212,8 +1370,9 @@ export function ReadingViewer({ book, onBack }: Props) {
 
     const handleChatDragStart = (e: React.PointerEvent<HTMLElement>) => {
         if (e.pointerType === "mouse" && e.button !== 0) return;
-        // Don't hijack the message list scroll or the input — only drag from the chrome.
-        if ((e.target as HTMLElement).closest("button, input, textarea, select, a, .reading-chat-float-body, .reading-char-picker")) return;
+        // Don't hijack the message list scroll, the input, or inner buttons — only drag from the chrome.
+        // NOTE: do NOT exclude "button" itself: the launch ball is a <button> and must stay draggable.
+        if ((e.target as HTMLElement).closest("input, textarea, select, a, .reading-chat-float-body, .reading-char-picker, .reading-bottom-avatar, .reading-chat-float-trigger, .reading-chat-float-close")) return;
         setIsDragging(true);
         chatDragRef.current = {
             pointerId: e.pointerId,
@@ -1235,8 +1394,16 @@ export function ReadingViewer({ book, onBack }: Props) {
         if (!chatMovedRef.current && (Math.abs(nextX - drag.originX) > dragThreshold || Math.abs(nextY - drag.originY) > dragThreshold)) {
             chatMovedRef.current = true;
         }
-        if (chatMovedRef.current) {
-            setChatOffset({ x: nextX, y: nextY });
+        if (!chatMovedRef.current) return;
+        // rAF-throttle: pointermove can fire faster than frames; coalesce to one setState per frame
+        pendingChatOffsetRef.current = { x: nextX, y: nextY };
+        if (chatRafRef.current == null) {
+            chatRafRef.current = requestAnimationFrame(() => {
+                chatRafRef.current = null;
+                const p = pendingChatOffsetRef.current;
+                pendingChatOffsetRef.current = null;
+                if (p) setChatOffset(p);
+            });
         }
     };
 
@@ -1244,39 +1411,54 @@ export function ReadingViewer({ book, onBack }: Props) {
         const drag = chatDragRef.current;
         if (!drag || drag.pointerId !== e.pointerId) return;
         chatDragRef.current = null;
+        if (chatRafRef.current != null) {
+            cancelAnimationFrame(chatRafRef.current);
+            chatRafRef.current = null;
+        }
         e.currentTarget.releasePointerCapture?.(e.pointerId);
         setIsDragging(false);
 
-        // Snap to edges horizontally if not expanded, or bound within screen
+        // Flush the last pending position before snapping/clamping
+        const last = pendingChatOffsetRef.current;
+        pendingChatOffsetRef.current = null;
+        const currentX = last ? last.x : chatOffset.x;
+        const currentY = last ? last.y : chatOffset.y;
+
         const marginX = 12; // left/right margin defined in CSS
         const marginY = 12; // bottom margin
         const w = window.innerWidth;
         const h = window.innerHeight;
 
-        let targetX = chatOffset.x;
-        let targetY = chatOffset.y;
-
-        // Keep inside bounds roughly
-        // If not expanded, we might want to snap to left or right edge.
-        // For simplicity, just bound it inside the screen so it doesn't get lost
-        const elWidth = chatExpanded ? 300 : Math.min(260, w - 64);
+        const elWidth = chatExpanded ? 300 : 56; // ball is 56px; expanded window is 300px
         const elHeight = chatExpanded ? 380 : 56;
 
-        // Original CSS positions it at left: 12px, bottom: 12px
-        // So default position is (0,0) offset from that.
-        // Screen bounds for offset:
-        const minX = -marginX; // touch left edge
-        const maxX = w - elWidth - marginX; // touch right edge
-        const maxY = h - elHeight - marginY - 60; // 60 for safe area approx
-        const minY = -marginY - 120; // Some upper bound
+        // Original CSS positions the ball/window at left: 12px, bottom: 12px,
+        // so offset (0,0) is that default spot. translate3d +x/+y goes right/down.
+        let targetX = currentX;
+        let targetY = currentY;
 
-        targetX = Math.max(minX, Math.min(targetX, maxX));
-        // Only apply strict Y bounding if it goes way out of bounds
-        // Since Y is from bottom, positive Y goes up, negative Y goes down
-        // Wait, translate3d positive Y goes DOWN visually.
-        // We'll just do a light bounding to ensure it doesn't disappear.
-        if (targetX !== chatOffset.x || targetY !== chatOffset.y) {
-            setChatOffset({ x: targetX, y: chatOffset.y });
+        if (!chatExpanded) {
+            // Ball / compact bar: snap horizontally to the nearest edge
+            const half = (w - elWidth) / 2 - marginX;
+            targetX = currentX < half ? -marginX : w - elWidth - marginX;
+            // Clamp Y so the ball can never be dragged out of the page
+            const minY = -(h - elHeight - marginY - 60);
+            const maxY = h - elHeight - marginY - 60;
+            targetY = Math.max(minY, Math.min(targetY, maxY));
+        } else {
+            // Expanded window: strictly bound within the viewport
+            const minX = -marginX;
+            const maxX = w - elWidth - marginX;
+            const minY = 48; // keep below the header area
+            const maxY = h - elHeight - marginY;
+            targetX = Math.max(minX, Math.min(targetX, maxX));
+            targetY = Math.max(minY, Math.min(targetY, maxY));
+        }
+
+        if (targetX !== currentX || targetY !== currentY) {
+            setChatOffset({ x: targetX, y: targetY });
+        } else if (last) {
+            setChatOffset({ x: targetX, y: targetY });
         }
     };
 
@@ -1286,6 +1468,28 @@ export function ReadingViewer({ book, onBack }: Props) {
             return;
         }
         handleOpenChat();
+    };
+
+    const handleResetChatPosition = () => {
+        if (chatRafRef.current != null) {
+            cancelAnimationFrame(chatRafRef.current);
+            chatRafRef.current = null;
+        }
+        pendingChatOffsetRef.current = null;
+        chatMovedRef.current = false;
+        setChatOffset({ x: 0, y: 0 });
+    };
+
+    const applyReadingMode = (mode: "paged" | "scroll") => {
+        if (mode === readingConfig.readingMode || isPdf) return;
+        // Switching into scroll mode: seed the ratio from the current paged position
+        if (mode === "scroll") {
+            const ratio = txtTotalPages > 1 ? txtPage / Math.max(1, txtTotalPages - 1) : 0;
+            pendingScrollRatioRef.current = ratio;
+        }
+        const next = { ...readingConfig, readingMode: mode };
+        setReadingConfig(next);
+        saveReadingInteractionConfig(next);
     };
 
     const chatFloatingStyle = {
@@ -1316,8 +1520,9 @@ export function ReadingViewer({ book, onBack }: Props) {
     }, [annotations, chapterIndex, currentChapter, isPdf]);
 
     // TXT pagination — split by actual rendered width/height so each page fits one screen.
+    // Scroll mode skips pagination entirely and renders a continuous paragraph flow.
     useEffect(() => {
-        if (isPdf || !currentChapter || !scrollRef.current || !txtMeasureLineRef.current || !txtMeasureGapRef.current || !txtMeasureAnnotationRef.current) {
+        if (isPdf || isScrollMode || !currentChapter || !scrollRef.current || !txtMeasureLineRef.current || !txtMeasureGapRef.current || !txtMeasureAnnotationRef.current) {
             setTxtPages([]);
             return;
         }
@@ -1445,7 +1650,59 @@ export function ReadingViewer({ book, onBack }: Props) {
 
         lastTxtPaginationSignatureRef.current = paginationSignature;
         setTxtPages(pages);
-    }, [annotations, bilingualTranslationEnabled, chapterIndex, currentChapter, isAnnotationTranslationExpanded, isPdf, txtLayoutVersion]);
+    }, [annotations, bilingualTranslationEnabled, chapterIndex, currentChapter, isAnnotationTranslationExpanded, isPdf, isScrollMode, txtLayoutVersion]);
+
+    // Restore a pending scroll ratio once the scroll-mode flow is ready
+    useEffect(() => {
+        if (!isScrollMode || !chaptersLoaded || !currentChapter) return;
+        const pending = pendingScrollRatioRef.current;
+        if (pending == null) return;
+        pendingScrollRatioRef.current = null;
+        // Wait one frame so the flow has actually been laid out
+        requestAnimationFrame(() => {
+            scrollToScrollRatio(pending);
+        });
+    }, [isScrollMode, chaptersLoaded, currentChapter, scrollToScrollRatio]);
+
+    // Scroll mode: throttle auto-annotation + progress persistence on user scroll
+    useEffect(() => {
+        if (!isScrollMode) return;
+        const body = scrollRef.current;
+        if (!body) return;
+
+        let lastProgressSave = 0;
+        const onScroll = () => {
+            const now = Date.now();
+            if (autoAnnotate && companionId && !generating && now - lastScrollAnnotateCheckRef.current > 900) {
+                lastScrollAnnotateCheckRef.current = now;
+                void (async () => {
+                    const request = await materializeBatchRequest(annotationBatchSize, "auto");
+                    if (!request) return;
+                    await executeBatchAnnotation(request);
+                })();
+            }
+            // Persist scroll progress (throttled ~1.2s, independent of annotation throttle)
+            if (now - lastProgressSave > 1200) {
+                lastProgressSave = now;
+                const max = body.scrollHeight - body.clientHeight;
+                if (max > 0) {
+                    const ratio = Math.min(1, Math.max(0, body.scrollTop / max));
+                    void saveProgress({
+                        bookId: book.id,
+                        chapterIndex,
+                        scrollPosition: 0,
+                        scrollRatio: ratio,
+                        companionCharacterId: companionId || undefined,
+                        progressFraction: Math.min(1, Math.max(0, (chapterIndex + ratio) / Math.max(1, chapters.length))),
+                        progressScope: "chapter",
+                        lastReadAt: new Date().toISOString(),
+                    });
+                }
+            }
+        };
+        body.addEventListener("scroll", onScroll, { passive: true });
+        return () => body.removeEventListener("scroll", onScroll);
+    }, [isScrollMode, autoAnnotate, companionId, generating, annotationBatchSize, materializeBatchRequest, executeBatchAnnotation, book.id, chapterIndex, chapters.length]);
 
     const txtTotalPages = txtPagesReadyForCurrentChapter ? txtPages.length : 1;
 
@@ -1476,8 +1733,15 @@ export function ReadingViewer({ book, onBack }: Props) {
     const txtBookSliderValue = (() => {
         if (chapters.length === 0) return 1;
         const boundedChapterIndex = Math.max(0, Math.min(chapters.length - 1, chapterIndex));
-        const boundedTxtPage = Math.max(0, Math.min(txtPage, txtTotalPages - 1));
-        const pageFraction = txtTotalPages > 1 ? boundedTxtPage / (txtTotalPages - 1) : 0;
+        let pageFraction = 0;
+        if (isScrollMode) {
+            const body = scrollRef.current;
+            const max = body ? body.scrollHeight - body.clientHeight : 0;
+            pageFraction = body && max > 0 ? Math.min(1, Math.max(0, body.scrollTop / max)) : 0;
+        } else {
+            const boundedTxtPage = Math.max(0, Math.min(txtPage, txtTotalPages - 1));
+            pageFraction = txtTotalPages > 1 ? boundedTxtPage / (txtTotalPages - 1) : 0;
+        }
         return Math.max(1, Math.min(txtBookSliderMax, boundedChapterIndex + 1 + pageFraction));
     })();
     useEffect(() => {
@@ -1498,10 +1762,21 @@ export function ReadingViewer({ book, onBack }: Props) {
             ? (pdfTotalPages > 0 ? Math.min(1, Math.max(0, pdfCurrentPage / pdfTotalPages)) : 0)
             : Math.min(1, Math.max(0, (chapterIndex + chapterPageCurrent / chapterPageTotal) / Math.max(1, chapters.length)));
 
+        // In scroll mode the page index is meaningless; persist a 0-1 scroll ratio instead.
+        let scrollRatio: number | undefined;
+        let scrollPosition = isPdf ? Math.max(0, pdfCurrentPage - 1) : txtPage;
+        if (!isPdf && isScrollMode) {
+            const body = scrollRef.current;
+            const max = body ? body.scrollHeight - body.clientHeight : 0;
+            scrollRatio = body && max > 0 ? Math.min(1, Math.max(0, body.scrollTop / max)) : 0;
+            scrollPosition = 0;
+        }
+
         const progress: ReadingProgress = {
             bookId: book.id,
             chapterIndex,
-            scrollPosition: isPdf ? Math.max(0, pdfCurrentPage - 1) : txtPage,
+            scrollPosition,
+            scrollRatio,
             companionCharacterId: companionId || undefined,
             progressFraction,
             progressCurrent: isPdf ? Math.max(1, pdfCurrentPage) : chapterPageCurrent,
@@ -1510,7 +1785,7 @@ export function ReadingViewer({ book, onBack }: Props) {
             lastReadAt: new Date().toISOString(),
         };
         saveProgress(progress);
-    }, [book.id, chapterIndex, chapters.length, companionId, isPdf, pdfCurrentPage, pdfTotalPages, txtPage, txtTotalPages]);
+    }, [book.id, chapterIndex, chapters.length, companionId, isPdf, isScrollMode, pdfCurrentPage, pdfTotalPages, txtPage, txtTotalPages]);
 
     useEffect(() => {
         setTxtPage((prev) => Math.min(prev, Math.max(0, txtTotalPages - 1)));
@@ -1617,7 +1892,7 @@ export function ReadingViewer({ book, onBack }: Props) {
             {/* Reading content */}
             <div
                 ref={scrollRef}
-                className={`relative flex-1 min-h-0 px-4 pt-1 pb-3 ${isPdf ? "overflow-auto" : "overflow-hidden"}`}
+                className={`relative flex-1 min-h-0 px-4 pt-1 pb-3 ${isPdf || isScrollMode ? "overflow-auto" : "overflow-hidden"}`}
                 data-ui="body"
                 onClick={handleReadingSurfaceClick}
             >
@@ -1659,24 +1934,32 @@ export function ReadingViewer({ book, onBack }: Props) {
                     </div>
                 ) : (
                     <>
-                        <div
-                            className="reading-page-stage"
-                            onTouchStart={handleTouchStart}
-                            onTouchEnd={handleTouchEnd}
-                        >
-                            <div className="reading-page-surface">
-                                {txtPagesReadyForCurrentChapter ? renderTxtPage(txtPage) : null}
+                        {isScrollMode ? (
+                            <div className="reading-scroll-wrap">
+                                {renderScrollContent()}
                             </div>
-                        </div>
+                        ) : (
+                            <>
+                                <div
+                                    className="reading-page-stage"
+                                    onTouchStart={handleTouchStart}
+                                    onTouchEnd={handleTouchEnd}
+                                >
+                                    <div className="reading-page-surface">
+                                        {txtPagesReadyForCurrentChapter ? renderTxtPage(txtPage) : null}
+                                    </div>
+                                </div>
 
-                        <div className="reading-page-measure" aria-hidden="true">
-                            <p ref={txtMeasureLineRef} className="reading-line">测</p>
-                            <div ref={txtMeasureGapRef} className="reading-line-gap" />
-                            <div ref={txtMeasureAnnotationRef} className="reading-annotation">
-                                <span className="reading-annotation-name">角色</span>
-                                <span className="reading-annotation-text">批注内容</span>
-                            </div>
-                        </div>
+                                <div className="reading-page-measure" aria-hidden="true">
+                                    <p ref={txtMeasureLineRef} className="reading-line">测</p>
+                                    <div ref={txtMeasureGapRef} className="reading-line-gap" />
+                                    <div ref={txtMeasureAnnotationRef} className="reading-annotation">
+                                        <span className="reading-annotation-name">角色</span>
+                                        <span className="reading-annotation-text">批注内容</span>
+                                    </div>
+                                </div>
+                            </>
+                        )}
                     </>
                 )}
 
@@ -1689,7 +1972,7 @@ export function ReadingViewer({ book, onBack }: Props) {
 
             {/* Immersive Page Number */}
             <span className={`reading-immersive-page ${immersive ? 'opacity-35' : 'opacity-0'}`}>
-                {isPdf ? `${pdfCurrentPage}/${pdfTotalPages || "?"}` : `${txtDisplayedPage}/${txtTotalPages}`}
+                {isPdf ? `${pdfCurrentPage}/${pdfTotalPages || "?"}` : isScrollMode ? `${chapterIndex + 1}/${chapters.length} 章` : `${txtDisplayedPage}/${txtTotalPages}`}
             </span>
 
             {/* Bottom bar — mirrors header style */}
@@ -1971,6 +2254,10 @@ export function ReadingViewer({ book, onBack }: Props) {
                                     <span>批注单位</span>
                                     <span>{annotationBatchSize}{isPdf ? " 页" : " 段"}</span>
                                 </div>
+                                <div className="reading-settings-inline-note">
+                                    <span>批注条数</span>
+                                    <span>{annotationLimit > 0 ? `每批最多 ${annotationLimit} 条` : "不限制"}</span>
+                                </div>
                             </>
                         ) : (
                             <>
@@ -1995,6 +2282,16 @@ export function ReadingViewer({ book, onBack }: Props) {
                                     <span>默认值</span>
                                     <span>{isPdf ? "5 页" : "50 段"}</span>
                                 </div>
+                                <label className="reading-settings-label">
+                                    <span>批注条数（每批最多输出几条，0 = 不限制，1-50）</span>
+                                    <input
+                                        value={annotationLimitInput}
+                                        onChange={(e) => setAnnotationLimitInput(e.target.value.replace(/[^\d]/g, ""))}
+                                        className="ui-input"
+                                        inputMode="numeric"
+                                        placeholder="0 = 不限制"
+                                    />
+                                </label>
                             </>
                         )}
                     </div>
@@ -2009,6 +2306,41 @@ export function ReadingViewer({ book, onBack }: Props) {
                     onCancel={() => setShowReadingSettings(false)}
                 >
                     <div className="reading-settings-grid">
+                        <div className="reading-settings-label">
+                            <span>翻页方式</span>
+                            <div className="reading-mode-switch">
+                                <button
+                                    type="button"
+                                    className={`reading-mode-btn${readingConfig.readingMode !== "scroll" ? " is-active" : ""}`}
+                                    onClick={() => applyReadingMode("paged")}
+                                >
+                                    左右翻页
+                                </button>
+                                <button
+                                    type="button"
+                                    className={`reading-mode-btn${readingConfig.readingMode === "scroll" ? " is-active" : ""}`}
+                                    onClick={() => applyReadingMode("scroll")}
+                                    disabled={isPdf}
+                                >
+                                    上下连续滚动
+                                </button>
+                            </div>
+                            {isPdf && (
+                                <div className="reading-settings-inline-note">
+                                    <span>PDF 暂不支持连续滚动</span>
+                                </div>
+                            )}
+                        </div>
+                        <div className="reading-settings-inline-note">
+                            <span>重置悬浮球位置</span>
+                            <button
+                                type="button"
+                                className="reading-settings-link-btn"
+                                onClick={handleResetChatPosition}
+                            >
+                                重置
+                            </button>
+                        </div>
                         <div className="reading-settings-inline-note">
                             <span>启用阅读双语翻译</span>
                             <Toggle
