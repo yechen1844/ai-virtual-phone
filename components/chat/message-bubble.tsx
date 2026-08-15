@@ -332,16 +332,28 @@ function ChatHtmlInlineFrame({
     // 是否收到过 iframe 的高度自适应消息（说明脚本已执行、内容已渲染）
     const receivedResizeRef = useRef(false);
     const rebuildCountRef = useRef(0);
-    // 延迟注入文档：生成完成瞬间页面最忙（插入回合 + 清 loading + 滚动锚定同帧），
-    // 那个瞬间创建的 iframe 文档会加载失败——整块卡片空白（连外壳都没有），
-    // 退出聊天 APP 重进（组件重建、页面已稳定）才成功。这里先挂空文档，
-    // 等下一帧（requestAnimationFrame）页面稳定后再注入真实 HTML，从根上避开繁忙帧。
-    const [docReady, setDocReady] = useState(false);
+    // 空白检测：iframe 加载后检查内容是否真的渲染出来了。
+    // 若空白（文档没加载 / 脚本没跑），通知聊天室强制重算离线回合的显示缓存——
+    // 因为首个空白回合的根因是「显示缓存第一次算出坏内容，任何触发缓存重算的
+    // 操作（发送新回合、退出重进）都能修复」，这里自动触发一次等效「发送」的重算。
+    const checkBlankAndNotify = useCallback(() => {
+        const frame = iframeRef.current;
+        if (!frame) return;
+        try {
+            const doc = frame.contentDocument;
+            const body = doc?.body;
+            const hasContent = body && (body.children.length > 0 || (body.textContent || "").trim().length > 0);
+            if (!hasContent) {
+                window.dispatchEvent(new CustomEvent("chat-html-inline-failed"));
+            }
+        } catch {
+            // 跨域或不可访问，跳过
+        }
+    }, []);
     useEffect(() => {
-        setDocReady(false);
-        const id = window.requestAnimationFrame(() => setDocReady(true));
-        return () => window.cancelAnimationFrame(id);
-    }, [reloadKey]);
+        const t = window.setTimeout(checkBlankAndNotify, 600);
+        return () => window.clearTimeout(t);
+    }, [reloadKey, checkBlankAndNotify]);
     useEffect(() => {
         const el = containerRef.current;
         if (!el || typeof IntersectionObserver === "undefined") return;
@@ -412,7 +424,7 @@ function ChatHtmlInlineFrame({
                 key={reloadKey}
                 ref={iframeRef}
                 className="chat-html-inline-frame"
-                srcDoc={docReady ? srcDoc : undefined}
+                srcDoc={srcDoc}
                 title="AI 生成互动内容"
                 style={{ height }}
             />

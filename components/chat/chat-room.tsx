@@ -1073,6 +1073,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
     const [editingOfflineTarget, setEditingOfflineTarget] = useState<OfflineActionTarget | null>(null);
     const [editingOfflineContent, setEditingOfflineContent] = useState("");
     const [regexRevision, setRegexRevision] = useState(0);
+    // 离线显示缓存强制重算信号：HTML 卡片空白（chat-html-inline-failed）时 +1
+    const [offlineDisplayTick, setOfflineDisplayTick] = useState(0);
     // Whether there are unsent user messages waiting for AI generation
     const [pendingGenerate, setPendingGenerate] = useState(false);
     const [chatToast, setChatToast] = useState<string | null>(null);
@@ -1645,6 +1647,14 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
             window.removeEventListener("settings-regexes-updated", refreshRegexes);
             window.removeEventListener("settings-bindings-updated", refreshRegexes);
         };
+    }, []);
+
+    // HTML 卡片检测到内容空白时，强制重算离线显示缓存（首个空白回合由此自愈，
+    // 等效于用户手动发一条新消息触发缓存重算）
+    useEffect(() => {
+        const handler = () => setOfflineDisplayTick(t => t + 1);
+        window.addEventListener("chat-html-inline-failed", handler);
+        return () => window.removeEventListener("chat-html-inline-failed", handler);
     }, []);
 
     const availableShoppingGifts = useMemo(
@@ -3811,7 +3821,9 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
             map.set(turn.id, getOfflineDisplayText(turn));
         }
         return map;
-    }, [getOfflineDisplayText, visibleOfflineTurns]);
+        // offlineDisplayTick：HTML 卡片检测到内容空白时 bump，强制重算全部离线回合的显示缓存
+        // （首个回合空白是「缓存第一次算出坏内容」，重算即修复，等效于用户发一条新消息）
+    }, [getOfflineDisplayText, visibleOfflineTurns, offlineDisplayTick]);
 
     const loadMoreOfflineTurns = useCallback(() => {
         if (!hasMoreOfflineTurns) return;
