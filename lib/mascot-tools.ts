@@ -541,7 +541,10 @@ const REGEX_RULE_OBJ = {
         disabled: { type: "boolean" },
         markdownOnly: { type: "boolean", description: "仅显示层应用，不影响存储" },
         promptOnly: { type: "boolean", description: "仅 prompt 应用，不影响显示" },
+        historyOnly: { type: "boolean", description: "仅历史消息（true=这条规则只作用于聊天历史消息，不碰系统提示词/预设/世界书）。与「用户输入」位置 + promptOnly 组合时，可精确剥离历史消息里的自定义标签（如 <thinking>/<pixel-console>），且不会误删系统提示词里的格式约束示例" },
         substituteRegex: { type: "string", enum: ["0", "1", "2"], description: "0=不替换 1=原始替换 2=转义后替换宏（如{{user}}）" },
+        minDepth: { type: "number", description: "最小消息深度（可选）。最近一条消息 depth=0，越旧数字越大；-1=不限制最小深度，即只看最新一条往前的范围下界。不传=不限" },
+        maxDepth: { type: "number", description: "最大消息深度（可选）。0=只处理最新一条消息；不传=不限（含 ∞ 语义）。只处理最近几条时配合 minDepth 使用" },
     },
     required: ["scriptName", "findRegex", "replaceString"],
 };
@@ -2094,6 +2097,8 @@ async function handleReadRegexGroup(args: Record<string, unknown>): Promise<Tool
         lines.push(`    replace: ${r.replaceString}`);
         lines.push(`    tags: ${JSON.stringify(r.tags || ["chat", "text"])}`);
         lines.push(`    placement: ${JSON.stringify(r.placement)}`);
+        lines.push(`    markdownOnly: ${r.markdownOnly ? "true" : "false"} / promptOnly: ${r.promptOnly ? "true" : "false"} / historyOnly: ${r.historyOnly ? "true" : "false"} / substituteRegex: ${r.substituteRegex ?? 0}`);
+        lines.push(`    minDepth: ${r.minDepth != null ? r.minDepth : "不限"} / maxDepth: ${r.maxDepth != null ? r.maxDepth : "不限"}`);
     });
     return { name: "读取正则组", success: true, data: lines.join("\n") };
 }
@@ -2123,12 +2128,23 @@ function normalizeRule(r: Record<string, unknown>): Record<string, unknown> {
         placement: r.placement || [2],
         markdownOnly: r.markdownOnly ?? false,
         promptOnly: r.promptOnly ?? false,
+        historyOnly: r.historyOnly ?? false,
         substituteRegex: numberOption(r.substituteRegex, 0),
         runOnEdit: r.runOnEdit ?? false,
         trimStrings: r.trimStrings || [],
-        minDepth: r.minDepth,
-        maxDepth: r.maxDepth,
+        minDepth: normalizeRegexDepth(r.minDepth),
+        maxDepth: normalizeRegexDepth(r.maxDepth),
     };
+}
+
+/** 把深度字段规范化为合法值：合法数字保留，否则视为不限（undefined）。 */
+function normalizeRegexDepth(value: unknown): number | undefined {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim() !== "") {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) return parsed;
+    }
+    return undefined;
 }
 
 async function handleCreateRegexGroup(args: Record<string, unknown>): Promise<ToolResult> {
@@ -2168,6 +2184,8 @@ async function handleUpdateRegexRule(args: Record<string, unknown>): Promise<Too
     const updates = { ...(args.updates as Record<string, unknown>) };
     if ("substituteRegex" in updates) updates.substituteRegex = numberOption(updates.substituteRegex, 0);
     if ("tags" in updates) updates.tags = normalizeMascotRegexRuleTags(updates.tags);
+    if ("minDepth" in updates) updates.minDepth = normalizeRegexDepth(updates.minDepth);
+    if ("maxDepth" in updates) updates.maxDepth = normalizeRegexDepth(updates.maxDepth);
     group.rules[ruleIdx] = { ...group.rules[ruleIdx], ...updates } as typeof group.rules[number];
     group.updatedAt = Date.now();
     groups[idx] = group;
