@@ -74,6 +74,71 @@ function CopyCodeButton({ text, className }: { text: string; className?: string 
     );
 }
 
+/** 从 ```html 围栏里提取真正的 HTML 文档（渲染预览用）。 */
+function extractHtmlForPreview(text: string): string {
+    const m = text.match(/```html\s*\n([\s\S]*?)```/);
+    return m ? m[1].trim() : text.trim();
+}
+
+/**
+ * 渲染预览 iframe：与聊天里真正的 HTML 卡片同机制（iframe + 脚本可执行 + 高度自适应）。
+ * 之前的预览用 dangerouslySetInnerHTML 直接把 HTML 塞进当前文档：
+ * <style> 会生效、<script> 永不执行，导致带脚本的卡片只显示空壳、文字全丢。
+ */
+function HtmlPreviewFrame({ html }: { html: string }) {
+    const iframeRef = useRef<HTMLIFrameElement>(null);
+    const [height, setHeight] = useState(360);
+    const srcDoc = useMemo(() => {
+        const action = `document.addEventListener("click",function(e){var t=e.target.closest("[data-action]");if(t){e.preventDefault();window.parent.postMessage({type:"_chat_action",text:t.getAttribute("data-action")},"*")}},true);`;
+        const resize = `
+            var n=0;
+            var send=function(){
+                if(n>=12)return;
+                n++;
+                var b=document.body;
+                if(!b)return;
+                var h=Math.max(Math.ceil(b.getBoundingClientRect().height),b.scrollHeight||0,80);
+                window.parent.postMessage({type:"_chat_inline_html_resize",h:h},"*");
+            };
+            window.addEventListener("load",send);
+            if(window.ResizeObserver&&document.body){new ResizeObserver(function(){n=0;send();}).observe(document.body);}
+            document.addEventListener("toggle",function(){n=0;setTimeout(send,50);},true);
+            setTimeout(send,300);
+            setTimeout(send,1200);
+            setTimeout(send,2500);`;
+        const inject = `<script>(function(){${action}${resize}})();<\/script>`;
+        let h = html;
+        if (h.includes("</body>")) h = h.replace("</body>", inject + "</body>");
+        else h = h + inject;
+        return h;
+    }, [html]);
+
+    useEffect(() => {
+        setHeight(360);
+    }, [srcDoc]);
+
+    useEffect(() => {
+        const handler = (e: MessageEvent) => {
+            if (!e.data || typeof e.data !== "object") return;
+            if (iframeRef.current && e.source !== iframeRef.current.contentWindow) return;
+            if (e.data.type === "_chat_inline_html_resize" && typeof e.data.h === "number") {
+                setHeight(Math.max(80, Math.ceil(e.data.h)));
+            }
+        };
+        window.addEventListener("message", handler);
+        return () => window.removeEventListener("message", handler);
+    }, []);
+
+    return (
+        <iframe
+            ref={iframeRef}
+            srcDoc={srcDoc}
+            title="正则渲染预览"
+            style={{ width: "100%", height, border: "none", borderRadius: 12, background: "transparent" }}
+        />
+    );
+}
+
 function getRuleTags(rule: Pick<RegexRule, "tags">): string[] {
     return rule.tags && rule.tags.length > 0 ? [...rule.tags] : [];
 }
@@ -1089,7 +1154,7 @@ export function RegexManager({ isActive = true }: { isActive?: boolean } = {}) {
                         </button>
                     </header>
                     <div className="flex-1 overflow-auto p-4">
-                        <div className="chat-markdown" dangerouslySetInnerHTML={{ __html: previewHtml }} />
+                        <HtmlPreviewFrame html={extractHtmlForPreview(previewHtml)} />
                     </div>
                 </div>
             )}
