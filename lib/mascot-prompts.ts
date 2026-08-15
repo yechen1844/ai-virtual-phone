@@ -188,6 +188,7 @@ export const REGEX_PROMPT = `===== 正则规则写作规范 =====
 · placement — 生效环节数组：[1]用户输入 / [2]AI输出(最常见；聊天/群聊/线下的状态栏、内心、状态值、自定义协议都在这里) / [5]世界书 / [6]思维链/推理(CoT，仅剧情·漫卷模式才会获取并渲染；聊天/群聊/线下不获取思维链，这些模式里写 [6] 不会命中任何内容，切勿用)
 · markdownOnly — true=仅显示层生效（样式美化用）；false=同时影响存储
 · promptOnly — true=仅组装 prompt 时生效（内容改写用）
+· historyOnly — true=仅历史消息：这条规则只作用于聊天历史消息，绝不碰系统提示词/预设/世界书。典型用途：用户想让"历史消息里的 <thinking>/<pixel-console> 等自定义标签"不进上下文，又怕正则误删系统提示词里的格式示例——用 historyOnly=true + placement=[1]（用户输入）+ promptOnly=true 组合即可精确剥离历史消息，系统提示词完全不受影响
 · substituteRegex — 0=不替换 / 1=RAW / 2=ESCAPED。匹配 {{char}}/{{user}} 时用 2
 · minDepth / maxDepth — 消息深度过滤（可选，一般不设）。最近一条消息 depth=0，越旧数字越大；minDepth=-1 表示不限制下界，maxDepth=0 表示只处理最新一条。只在用户明确要"只处理最新几条/最后一条"时才设置
 
