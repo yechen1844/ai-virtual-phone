@@ -442,6 +442,7 @@ export function RegexManager({ isActive = true }: { isActive?: boolean } = {}) {
         if (typeof obj.markdownOnly === "boolean") rule.markdownOnly = obj.markdownOnly;
         if (typeof obj.promptOnly === "boolean") rule.promptOnly = obj.promptOnly;
         if (typeof obj.runOnEdit === "boolean") rule.runOnEdit = obj.runOnEdit;
+        if (typeof obj.historyOnly === "boolean") rule.historyOnly = obj.historyOnly;
         if (typeof obj.substituteRegex === "number") rule.substituteRegex = obj.substituteRegex;
         if (typeof obj.minDepth === "number") rule.minDepth = obj.minDepth;
         if (typeof obj.maxDepth === "number") rule.maxDepth = obj.maxDepth;
@@ -927,6 +928,15 @@ export function RegexManager({ isActive = true }: { isActive?: boolean } = {}) {
                                                                         onChange={(e) => updateRule(rule.id, { runOnEdit: e.target.checked || undefined })} />
                                                                     编辑时执行
                                                                 </label>
+                                                            </div>
+                                                            <div className="flex items-center justify-between gap-6 mt-2">
+                                                                <label className="ui-checkbox-label whitespace-nowrap">
+                                                                    <input type="checkbox" checked={rule.historyOnly ?? false}
+                                                                        onChange={(e) => updateRule(rule.id, { historyOnly: e.target.checked || undefined })} />
+                                                                    仅历史消息
+                                                                </label>
+                                                                <span className="menu-desc !mt-0">勾选后只作用于聊天历史消息，不碰系统提示词/预设/世界书</span>
+                                                            </div>
                                                             </div>
                                                         </div>
 
