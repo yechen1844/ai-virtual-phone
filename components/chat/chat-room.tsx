@@ -40,6 +40,7 @@ import { deleteWeixinCloudMessagesFromCloud } from "@/lib/weixin-cloud-sync";
 import { loadBindingConfig, loadRegexes, resolveBinding, resolveUserIdentity } from "@/lib/settings-storage";
 import { generateGroupChatCompletion, generateGroupOfflineChatCompletion, parseGroupChatResponse, buildEditableGroupRoundText } from "@/lib/group-chat-engine";
 import { appendChatOfflineTurn, deleteChatOfflineTurn, deleteChatOfflineTurnsFrom, loadChatOfflineTurns, parseOfflineResponse, saveChatOfflineTurns, updateChatOfflineTurn, type ChatOfflineTurn } from "@/lib/chat-offline-storage";
+import { buildOfflinePromptHistory as buildOfflinePromptHistoryShared, formatOfflineTurnXml as formatOfflineTurnXmlShared } from "@/lib/offline-prompt-builder";
 import { applyDisplayRegex, applyEditRegex } from "@/lib/llm-prompt-assembler";
 import { scheduleFollowUp, cancelFollowUp } from "@/lib/follow-up-service";
 import { PENDING_REPLY_PREFIX } from "@/lib/friend-request-engine";
@@ -3768,55 +3769,11 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
     };
 
     const formatOfflineTurnXml = useCallback((turn: ChatOfflineTurn): string => {
-        if (turn.rawText?.trim()) return turn.rawText.trim();
-        const summaryTag = turn.summaryTag?.trim() || "summary";
-        return [
-            "<content>",
-            turn.assistantContent,
-            "</content>",
-            `<${summaryTag}>`,
-            turn.summary,
-            `</${summaryTag}>`,
-        ].join("\n");
+        return formatOfflineTurnXmlShared(turn);
     }, []);
 
     const buildOfflinePromptHistory = (turns: ChatOfflineTurn[], pendingUserContent: string): ChatMessage[] => {
-        const history: ChatMessage[] = [];
-        for (const turn of turns) {
-            const assistantAt = turn.createdAt;
-            const userAtMs = new Date(turn.createdAt).getTime() - 1;
-            const userAt = Number.isFinite(userAtMs) ? new Date(userAtMs).toISOString() : turn.createdAt;
-            if (turn.userContent.trim()) {
-                history.push({
-                    id: `${turn.id}_user`,
-                    sessionId: session.id,
-                    role: "user",
-                    content: turn.userContent,
-                    status: "sent",
-                    createdAt: userAt,
-                });
-            }
-            history.push({
-                id: `${turn.id}_assistant`,
-                sessionId: session.id,
-                role: "assistant",
-                content: formatOfflineTurnXml(turn),
-                status: "sent",
-                createdAt: assistantAt,
-                ...(session.isGroup ? { senderName: session.groupName || "群聊线下" } : {}),
-            });
-        }
-        if (pendingUserContent.trim()) {
-            history.push({
-                id: `offline_pending_${Date.now()}`,
-                sessionId: session.id,
-                role: "user",
-                content: pendingUserContent.trim(),
-                status: "sent",
-                createdAt: new Date().toISOString(),
-            });
-        }
-        return history;
+        return buildOfflinePromptHistoryShared(session, turns, pendingUserContent);
     };
 
     const getOfflineCopyText = (turn: ChatOfflineTurn, role: OfflineActionTarget["role"]): string => {
