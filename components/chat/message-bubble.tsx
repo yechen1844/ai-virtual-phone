@@ -332,6 +332,16 @@ function ChatHtmlInlineFrame({
     // 是否收到过 iframe 的高度自适应消息（说明脚本已执行、内容已渲染）
     const receivedResizeRef = useRef(false);
     const rebuildCountRef = useRef(0);
+    // 延迟注入文档：生成完成瞬间页面最忙（插入回合 + 清 loading + 滚动锚定同帧），
+    // 那个瞬间创建的 iframe 文档会加载失败——整块卡片空白（连外壳都没有），
+    // 退出聊天 APP 重进（组件重建、页面已稳定）才成功。这里先挂空文档，
+    // 等下一帧（requestAnimationFrame）页面稳定后再注入真实 HTML，从根上避开繁忙帧。
+    const [docReady, setDocReady] = useState(false);
+    useEffect(() => {
+        setDocReady(false);
+        const id = window.requestAnimationFrame(() => setDocReady(true));
+        return () => window.cancelAnimationFrame(id);
+    }, [reloadKey]);
     useEffect(() => {
         const el = containerRef.current;
         if (!el || typeof IntersectionObserver === "undefined") return;
@@ -402,7 +412,7 @@ function ChatHtmlInlineFrame({
                 key={reloadKey}
                 ref={iframeRef}
                 className="chat-html-inline-frame"
-                srcDoc={srcDoc}
+                srcDoc={docReady ? srcDoc : undefined}
                 title="AI 生成互动内容"
                 style={{ height }}
             />
