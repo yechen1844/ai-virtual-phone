@@ -235,15 +235,7 @@ iframe 卡片应尽量自包含（内联 CSS/JS），不要依赖外部资源；
 
 · 新建组 → 创建正则组({name, rules:[...]})，rules 是规则对象数组
 · 已有组追加 → 添加正则规则({groupName, rule:{...}})
-· 改某条 → 更新正则规则({groupName, ruleId, updates:{...}})，部分字段即可
-· 预览效果 → 预览正则({rule:{...}})：把刚创建的规则对象直接传入（或已入库的传 groupName+ruleId），弹窗会用示例文本（默认含 {{char}}/{{user}} 占位符）实时跑一遍替换并渲染，方便用户确认美化效果
-
-===== 创建后必做 =====
-
-· **创建美化类正则（markdownOnly=true 或 replaceString 含 HTML 标签）后，必须调用「预览正则」弹出预览给用户确认效果**，不要直接说"完成了"
-· 预览弹窗里用户可改示例文本；用户觉得不对时，根据预览结果微调 findRegex/replaceString 后再次预览
-· 预览里的 {{char}} 展开为"角色名"、{{user}} 展开为"用户名"，只是示例占位；真实聊天里会按实际角色名/用户宏展开，效果一致
-· 预览只展示替换效果本身；规则最终是否生效还取决于 tags（适用范围）、placement（作用位置）、markdownOnly/promptOnly、minDepth/maxDepth，弹窗里会一并标注`;
+· 改某条 → 更新正则规则({groupName, ruleId, updates:{...}})，部分字段即可`;
 
 export const WORLDBOOK_PROMPT = `===== 世界书写作规范 =====
 

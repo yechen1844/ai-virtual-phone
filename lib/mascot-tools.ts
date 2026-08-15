@@ -579,17 +579,6 @@ const UPDATE_REGEX_RULE_SCHEMA = {
     additionalProperties: false,
 };
 
-const PREVIEW_REGEX_SCHEMA = {
-    type: "object",
-    properties: {
-        groupName: { type: "string", description: "正则组名（可选，配合 ruleId 从存储读取）" },
-        ruleId: { type: "string", description: "规则 id，从「读取正则组」结果获取。传了会读取存储里的最新规则内容" },
-        rule: { type: "object", description: "或直接传完整规则对象（至少含 scriptName/findRegex/replaceString）。刚创建、还没入库的规则用这个" },
-        sampleText: { type: "string", description: "可选：弹窗初始示例文本。不传则用内置示例（含 {{char}}/{{user}} 占位符）" },
-    },
-    additionalProperties: false,
-};
-
 // ── 桌面组件工具 ──
 const WIDGET_SIZE_ENUM = ["1x1", "1x2", "1x4", "2x1", "2x2", "2x3", "2x4", "3x2", "3x3", "3x4", "4x2", "4x3", "4x4", "5x4", "6x4"];
 
@@ -787,7 +776,6 @@ export const MASCOT_TOOL_PACKAGES: MascotToolPackage[] = [
             { name: "创建正则组", description: "新建正则组并填入规则。", parameterSchema: CREATE_REGEX_GROUP_SCHEMA },
             { name: "添加正则规则", description: "向现有组追加一条规则。", parameterSchema: ADD_REGEX_RULE_SCHEMA },
             { name: "更新正则规则", description: "修改某规则的字段（updates 里传部分字段即可）。", parameterSchema: UPDATE_REGEX_RULE_SCHEMA },
-            { name: "预览正则", description: "在对话里弹出该规则的实时预览：用示例文本（可含 {{char}}/{{user}} 等占位符）跑一遍查找替换并渲染结果，方便确认美化效果。创建美化类正则后建议顺手预览给用户确认；用户想改效果时也可用它边调边看。", parameterSchema: PREVIEW_REGEX_SCHEMA },
         ],
         usageGuide: REGEX_PROMPT,
     },
@@ -950,7 +938,6 @@ const MASCOT_NATIVE_TOOL_NAMES: Record<string, string> = {
     "创建正则组": "mascot_create_regex_group",
     "添加正则规则": "mascot_add_regex_rule",
     "更新正则规则": "mascot_update_regex_rule",
-    "预览正则": "mascot_preview_regex",
     "列出组件目录": "mascot_list_widget_catalog",
     "查看桌面布局": "mascot_read_desktop_layout",
     "创建DIY组件": "mascot_create_diy_widget",
@@ -1105,7 +1092,6 @@ export async function executeMascotToolCall(call: ToolCall, ctx: MascotToolConte
             case "创建正则组": return await handleCreateRegexGroup(call.args);
             case "添加正则规则": return await handleAddRegexRule(call.args);
             case "更新正则规则": return await handleUpdateRegexRule(call.args);
-            case "预览正则": return await handlePreviewRegex(call.args);
 
             // ─── 桌面组件 ───
             case "列出组件目录": return await handleListWidgetCatalog();
@@ -2195,55 +2181,6 @@ async function handleUpdateRegexRule(args: Record<string, unknown>): Promise<Too
     groups[idx] = group;
     saveRegexes(groups);
     return { name: "更新正则规则", success: true, data: `已更新规则 ${args.ruleId}` };
-}
-
-async function handlePreviewRegex(args: Record<string, unknown>): Promise<ToolResult> {
-    const groupName = typeof args.groupName === "string" && args.groupName.trim() ? args.groupName.trim() : undefined;
-    const ruleId = typeof args.ruleId === "string" && args.ruleId.trim() ? args.ruleId.trim() : undefined;
-    const ruleArg = args.rule as Record<string, unknown> | undefined;
-
-    let rule: Record<string, unknown> | null = null;
-    let foundGroupName = groupName;
-
-    if (ruleId) {
-        // 优先从存储读最新规则：先按组名精确找，找不到就在所有组里搜该 ruleId
-        const { loadRegexes } = await import("./settings-storage");
-        const groups = loadRegexes();
-        const target = groupName
-            ? groups.find((g) => g.name === groupName || g.name.includes(groupName))
-            : null;
-        const candidates = target ? [target] : groups;
-        for (const group of candidates) {
-            const hit = (group.rules || []).find((r) => r.id === ruleId);
-            if (hit) {
-                rule = hit as unknown as Record<string, unknown>;
-                foundGroupName = group.name;
-                break;
-            }
-        }
-        if (!rule) return { name: "预览正则", success: false, error: `找不到规则 id：${ruleId}${groupName ? `（组：${groupName}）` : ""}。可用「读取正则组」确认。` };
-    } else if (ruleArg && typeof ruleArg === "object") {
-        if (typeof ruleArg.findRegex !== "string" && typeof ruleArg.scriptName !== "string") {
-            return { name: "预览正则", success: false, error: "rule 参数缺少 findRegex/scriptName，无法预览" };
-        }
-        rule = normalizeRule(ruleArg);
-    } else {
-        return { name: "预览正则", success: false, error: "需要传 ruleId（从「读取正则组」获取）或完整 rule 对象" };
-    }
-
-    if (!rule || !rule.findRegex) {
-        return { name: "预览正则", success: false, error: "该规则没有 findRegex，无法预览" };
-    }
-
-    const { requestRegexPreview } = await import("./mascot-events");
-    const handled = requestRegexPreview({
-        title: (rule.scriptName as string) || "正则预览",
-        groupName: foundGroupName,
-        rule: rule as unknown as import("./mascot-events").RegexPreviewRequest["rule"],
-        sampleText: typeof args.sampleText === "string" ? args.sampleText : undefined,
-    });
-    if (!handled) return { name: "预览正则", success: false, error: "预览弹窗当前不可用（桌宠界面未挂载）" };
-    return { name: "预览正则", success: true, data: `已弹出「${(rule.scriptName as string) || "正则"}」的实时预览，可在弹窗里编辑示例文本确认渲染效果。` };
 }
 
 // ── 桌面组件 Handlers ─────────────────────────

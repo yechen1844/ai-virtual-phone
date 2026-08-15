@@ -13,11 +13,9 @@ import {
   deactivateMascot,
 } from "@/lib/mascot-state";
 import { getMascotContext, subscribeMascotContext } from "@/lib/mascot-context";
-import { mascotNavigate, DIY_WIDGET_PREVIEW_EVENT, REGEX_PREVIEW_EVENT, type DiyWidgetPreviewEventDetail, type DiyWidgetPreviewRequest, type RegexPreviewEventDetail, type RegexPreviewRequest } from "@/lib/mascot-events";
+import { mascotNavigate, DIY_WIDGET_PREVIEW_EVENT, type DiyWidgetPreviewEventDetail, type DiyWidgetPreviewRequest } from "@/lib/mascot-events";
 import { DIY_WIDGET_GUARD_STYLE } from "@/components/widgets/diy-widget-renderer";
 import { MediaPreviewOverlay } from "@/components/chat/media-preview-overlay";
-import { testRegexRule } from "@/lib/llm-prompt-assembler";
-import type { RegexRule } from "@/lib/settings-types";
 import {
   clearMascotToolHistoryMessages,
   deleteMascotMessageWithLinkedTools,
@@ -490,89 +488,6 @@ function NineSliceCalibrationDialog({
   );
 }
 
-/** 正则预览默认示例：覆盖常见美化模板（内心独白/动作/状态值），含占位符宏。 */
-const DEFAULT_REGEX_SAMPLE = [
-  "{{char}}：（今天也要好好吃饭哦）说完轻轻摸了摸{{user}}的头。",
-  "*她笑了笑*，然后认真地说：我们明天去看海吧！",
-  "[好感度:75]",
-].join("\n");
-
-function RegexPreviewDialog({ request, onClose }: { request: RegexPreviewRequest; onClose: () => void }) {
-  const rule = request.rule;
-  const [sample, setSample] = useState(request.sampleText ?? DEFAULT_REGEX_SAMPLE);
-  const [showRendered, setShowRendered] = useState(true);
-  // 预览直接复用生产引擎 testRegexRule：占位符 {{char}}/{{user}} 展开为示例角色名/用户名，替换逻辑与聊天一致
-  const result = useMemo(() => testRegexRule(rule as RegexRule, sample), [rule, sample]);
-  const looksHtml = /<[a-z][\s\S]*?>/i.test(result.output);
-  const placementLabel = (rule.placement && rule.placement.length > 0 ? rule.placement : [2])
-    .map((p) => ({ 1: "用户输入", 2: "AI输出", 5: "世界书", 6: "思维链" })[p] ?? String(p))
-    .join(" / ");
-  const tagLabel = rule.tags && rule.tags.length > 0 ? rule.tags.join(" · ") : "通用";
-  return (
-    <div className="mascot-regex-overlay" role="dialog" aria-modal="true" onContextMenu={(event) => event.preventDefault()}>
-      <div className="mascot-regex-dialog">
-        <div className="mascot-regex-head">
-          <div className="mascot-regex-headtext">
-            <div className="mascot-regex-title">正则预览{request.groupName ? ` · ${request.groupName}` : ""}</div>
-            <div className="mascot-regex-sub">{request.title || "规则"}：<span className="mascot-regex-find">{rule.findRegex || "(无匹配正则)"}</span></div>
-          </div>
-          <button type="button" onClick={onClose} className="mascot-regex-close" aria-label="关闭">×</button>
-        </div>
-
-        <div className="mascot-regex-meta">
-          <span className="mascot-regex-chip">范围：{tagLabel}</span>
-          <span className="mascot-regex-chip">位置：{placementLabel}</span>
-          {rule.markdownOnly && <span className="mascot-regex-chip">仅显示时</span>}
-          {rule.promptOnly && <span className="mascot-regex-chip">仅Prompt</span>}
-          {!rule.markdownOnly && !rule.promptOnly && <span className="mascot-regex-chip">存储+显示</span>}
-          {rule.minDepth != null && <span className="mascot-regex-chip">最小深度 {rule.minDepth}</span>}
-          {rule.maxDepth != null && <span className="mascot-regex-chip">最大深度 {rule.maxDepth}</span>}
-        </div>
-
-        <div className="mascot-regex-field">
-          <div className="mascot-regex-label">示例文本（可用 {"{{char}}"}、{"{{user}}"}、{"{{match}}"} 占位符，修改即实时替换）</div>
-          <textarea
-            value={sample}
-            onChange={(event) => setSample(event.target.value)}
-            rows={5}
-            className="mascot-regex-textarea"
-            spellCheck={false}
-          />
-        </div>
-
-        {result.error ? (
-          <div className="mascot-regex-error">{result.error}</div>
-        ) : (
-          <div className="mascot-regex-field">
-            <div className="mascot-regex-resulthead">
-              <span className="mascot-regex-label">替换结果</span>
-              <span className={`mascot-regex-count${result.matchCount > 0 ? " is-hit" : ""}`}>
-                {result.matchCount > 0 ? `${result.matchCount} 处匹配` : "无匹配"}
-              </span>
-              {looksHtml && (
-                <button type="button" className="mascot-regex-toggle" onClick={() => setShowRendered((v) => !v)}>
-                  {showRendered ? "查看原文" : "渲染预览"}
-                </button>
-              )}
-            </div>
-            <div className="mascot-regex-output">
-              {looksHtml && showRendered ? (
-                <div className="mascot-regex-rendered" dangerouslySetInnerHTML={{ __html: result.output }} />
-              ) : (
-                <pre className="mascot-regex-plain">{result.output || "(空)"}</pre>
-              )}
-            </div>
-          </div>
-        )}
-
-        <div className="mascot-regex-foot">
-          预览用示例宏展开（{"{{char}}"}→角色名、{"{{user}}"}→用户名），与聊天内渲染一致；最终是否生效还取决于范围/位置/深度等开关。
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export function MascotFloat() {
   const state = useSyncExternalStore(subscribeMascot, getMascotState, () => "widget" as const);
   const panelOpen = useSyncExternalStore(subscribeMascot, isMascotPanelOpen, () => false);
@@ -702,7 +617,6 @@ export function MascotFloat() {
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
   const [nineSliceCalibration, setNineSliceCalibration] = useState<NineSliceCalibrationEventDetail | null>(null);
   const [diyWidgetPreview, setDiyWidgetPreview] = useState<DiyWidgetPreviewRequest | null>(null);
-  const [regexPreview, setRegexPreview] = useState<RegexPreviewRequest | null>(null);
   const [activeMascotMessageIndex, setActiveMascotMessageIndex] = useState<number | null>(null);
   const msgLongPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const msgLongPressStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -847,18 +761,6 @@ export function MascotFloat() {
     };
     window.addEventListener(DIY_WIDGET_PREVIEW_EVENT, handler);
     return () => window.removeEventListener(DIY_WIDGET_PREVIEW_EVENT, handler);
-  }, []);
-
-  useEffect(() => {
-    const handler = (event: Event) => {
-      const detail = (event as CustomEvent<RegexPreviewEventDetail>).detail;
-      if (!detail?.request || !detail.request.rule) return;
-      detail.handled = true;
-      setRegexPreview(detail.request);
-      if (!isMascotPanelOpen()) toggleMascotPanel();
-    };
-    window.addEventListener(REGEX_PREVIEW_EVENT, handler);
-    return () => window.removeEventListener(REGEX_PREVIEW_EVENT, handler);
   }, []);
 
   const chatScrollRef = useRef<HTMLDivElement>(null);
@@ -1690,178 +1592,6 @@ export function MascotFloat() {
           }
         }
 
-        /* ── Regex preview ── */
-        .mascot-regex-overlay {
-          position: absolute;
-          inset: 0;
-          z-index: 10020;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          padding: 16px;
-          background: rgba(0,0,0,0.5);
-          backdrop-filter: blur(10px);
-          user-select: none;
-          -webkit-user-select: none;
-          -webkit-touch-callout: none;
-        }
-        .mascot-regex-dialog {
-          width: min(440px, 96vw);
-          max-height: 92vh;
-          display: flex;
-          flex-direction: column;
-          gap: 10px;
-          padding: 18px;
-          border-radius: 20px;
-          background: linear-gradient(180deg, rgba(33,30,48,0.98), rgba(22,20,34,0.98));
-          border: 1px solid rgba(255,255,255,0.1);
-          box-shadow: 0 24px 60px rgba(0,0,0,0.55);
-          color: rgba(255,255,255,0.9);
-          overflow: auto;
-        }
-        .mascot-regex-head {
-          display: flex;
-          align-items: flex-start;
-          justify-content: space-between;
-          gap: 10px;
-        }
-        .mascot-regex-headtext { min-width: 0; }
-        .mascot-regex-title {
-          font-weight: 700;
-          font-size: calc(15px*var(--app-text-scale,1));
-          letter-spacing: 0.01em;
-        }
-        .mascot-regex-sub {
-          margin-top: 4px;
-          color: rgba(255,255,255,0.45);
-          font-size: calc(11px*var(--app-text-scale,1));
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-        }
-        .mascot-regex-find {
-          font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-          color: rgba(255,255,255,0.65);
-        }
-        .mascot-regex-close {
-          flex: none;
-          width: 30px;
-          height: 30px;
-          border: 0;
-          border-radius: 10px;
-          background: rgba(255,255,255,0.07);
-          color: rgba(255,255,255,0.7);
-          cursor: pointer;
-          font-size: 18px;
-          line-height: 1;
-          transition: background 0.15s;
-        }
-        .mascot-regex-close:hover { background: rgba(255,255,255,0.14); }
-        .mascot-regex-meta {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 6px;
-        }
-        .mascot-regex-chip {
-          padding: 3px 8px;
-          border-radius: 999px;
-          background: rgba(255,255,255,0.07);
-          color: rgba(255,255,255,0.55);
-          font-size: calc(10.5px*var(--app-text-scale,1));
-          font-weight: 600;
-        }
-        .mascot-regex-field {
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-        }
-        .mascot-regex-label {
-          color: rgba(255,255,255,0.55);
-          font-size: calc(11px*var(--app-text-scale,1));
-          font-weight: 600;
-        }
-        .mascot-regex-textarea {
-          width: 100%;
-          box-sizing: border-box;
-          padding: 10px 12px;
-          border: 1px solid rgba(255,255,255,0.12);
-          border-radius: 12px;
-          background: rgba(0,0,0,0.28);
-          color: rgba(255,255,255,0.88);
-          font-family: inherit;
-          font-size: calc(12.5px*var(--app-text-scale,1));
-          line-height: 1.55;
-          resize: vertical;
-          outline: none;
-        }
-        .mascot-regex-textarea:focus { border-color: rgba(178,150,255,0.55); }
-        .mascot-regex-textarea::placeholder { color: rgba(255,255,255,0.25); }
-        .mascot-regex-error {
-          padding: 10px 12px;
-          border-radius: 12px;
-          background: rgba(220,90,90,0.12);
-          border: 1px solid rgba(220,90,90,0.35);
-          color: rgba(255,160,160,0.95);
-          font-size: calc(12px*var(--app-text-scale,1));
-        }
-        .mascot-regex-resulthead {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-        .mascot-regex-count {
-          margin-left: auto;
-          padding: 2px 8px;
-          border-radius: 999px;
-          background: rgba(255,255,255,0.06);
-          color: rgba(255,255,255,0.4);
-          font-size: calc(10.5px*var(--app-text-scale,1));
-          font-weight: 700;
-        }
-        .mascot-regex-count.is-hit {
-          background: rgba(120,200,140,0.16);
-          color: rgba(150,225,170,0.95);
-        }
-        .mascot-regex-toggle {
-          border: 0;
-          padding: 4px 10px;
-          border-radius: 8px;
-          background: rgba(178,150,255,0.18);
-          color: rgba(200,180,240,0.95);
-          font-size: calc(10.5px*var(--app-text-scale,1));
-          font-weight: 600;
-          cursor: pointer;
-        }
-        .mascot-regex-output {
-          max-height: 220px;
-          overflow: auto;
-          border-radius: 12px;
-          background: rgba(0,0,0,0.28);
-          border: 1px solid rgba(255,255,255,0.08);
-        }
-        .mascot-regex-plain {
-          margin: 0;
-          padding: 10px 12px;
-          color: rgba(255,255,255,0.85);
-          font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-          font-size: calc(12px*var(--app-text-scale,1));
-          line-height: 1.55;
-          white-space: pre-wrap;
-          word-break: break-word;
-        }
-        .mascot-regex-rendered {
-          padding: 12px 14px;
-          color: rgba(255,255,255,0.9);
-          font-size: calc(13px*var(--app-text-scale,1));
-          line-height: 1.6;
-          word-break: break-word;
-        }
-        .mascot-regex-foot {
-          color: rgba(255,255,255,0.35);
-          font-size: calc(10px*var(--app-text-scale,1));
-          line-height: 1.5;
-        }
-
         /* ── Thinking indicator ── */
         .mascot-thinking {
           color: var(--mascot-accent, rgba(200,180,240,0.95));
@@ -2404,13 +2134,6 @@ export function MascotFloat() {
         <DiyWidgetPreviewDialog
           request={diyWidgetPreview}
           onClose={() => setDiyWidgetPreview(null)}
-        />
-      )}
-
-      {regexPreview && (
-        <RegexPreviewDialog
-          request={regexPreview}
-          onClose={() => setRegexPreview(null)}
         />
       )}
 
