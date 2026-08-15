@@ -13,6 +13,7 @@ import { EmojiPanel, StickerPanel } from "./emoji-panel";
 import { StickerSearchSuggest } from "./sticker-search-suggest";
 import { StateValuesPanel } from "./state-values-panel";
 import { generateChatCompletion, generateOfflineChatCompletion, flattenCompletionResult, ChatEngineError } from "@/lib/chat-engine";
+import { formatOfflineTurnXml as formatOfflineTurnXmlShared, buildOfflinePromptHistory as buildOfflinePromptHistoryShared } from "@/lib/offline-prompt-builder";
 import { sendBrowserNotification } from "@/lib/browser-notification";
 import { dispatchChatMessageNotice } from "@/lib/chat-notification-events";
 import { shouldSendChatInputOnEnter } from "@/lib/chat-input-keyboard";
@@ -40,7 +41,6 @@ import { deleteWeixinCloudMessagesFromCloud } from "@/lib/weixin-cloud-sync";
 import { loadBindingConfig, loadRegexes, resolveBinding, resolveUserIdentity } from "@/lib/settings-storage";
 import { generateGroupChatCompletion, generateGroupOfflineChatCompletion, parseGroupChatResponse, buildEditableGroupRoundText } from "@/lib/group-chat-engine";
 import { appendChatOfflineTurn, deleteChatOfflineTurn, deleteChatOfflineTurnsFrom, loadChatOfflineTurns, parseOfflineResponse, saveChatOfflineTurns, updateChatOfflineTurn, type ChatOfflineTurn } from "@/lib/chat-offline-storage";
-import { buildOfflinePromptHistory as buildOfflinePromptHistoryShared, formatOfflineTurnXml as formatOfflineTurnXmlShared } from "@/lib/offline-prompt-builder";
 import { applyDisplayRegex, applyEditRegex } from "@/lib/llm-prompt-assembler";
 import { scheduleFollowUp, cancelFollowUp } from "@/lib/follow-up-service";
 import { PENDING_REPLY_PREFIX } from "@/lib/friend-request-engine";
@@ -762,11 +762,7 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
                 <StickerSearchSuggest
                     query={inputText}
                     characterIds={suggestCharacterIds}
-                    onSend={(name, url) => {
-                        onSendSticker(name, url);
-                        setInputText("");
-                        resetTextareaHeight();
-                    }}
+                    onSend={(name, url) => onSendSticker(name, url)}
                     onClose={() => setSuggestClosed(true)}
                 />
             )}
@@ -3768,14 +3764,12 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
         return true;
     };
 
-    const formatOfflineTurnXml = useCallback((turn: ChatOfflineTurn): string => {
-        return formatOfflineTurnXmlShared(turn);
-    }, []);
+    // 线下 XML 构造与提示词查看器共用 lib/offline-prompt-builder（社区 #108），
+    // 保证「预览 = 真实发出的提示词」；此处仅包一层稳定引用。
+    const formatOfflineTurnXml = useCallback((turn: ChatOfflineTurn): string => formatOfflineTurnXmlShared(turn), []);
 
-    const buildOfflinePromptHistory = (turns: ChatOfflineTurn[], pendingUserContent: string): ChatMessage[] => {
-        return buildOfflinePromptHistoryShared(session, turns, pendingUserContent);
-    };
-
+    const buildOfflinePromptHistory = (turns: ChatOfflineTurn[], pendingUserContent: string): ChatMessage[] =>
+        buildOfflinePromptHistoryShared(session, turns, pendingUserContent);
     const getOfflineCopyText = (turn: ChatOfflineTurn, role: OfflineActionTarget["role"]): string => {
         if (role === "user") return turn.userContent;
         return formatOfflineTurnXml(turn);

@@ -326,12 +326,8 @@ export function DebugPromptPanel() {
             if (offlinePreviewMode) {
                 // 线下模式：历史来自「线下轮次」，assistant 内容为 <content>+摘要 XML，
                 // 与 chat-room 真实线下生成完全一致（appTags 带 offline）。
+                // 空历史也允许预览：看的就是首条线下消息发出前的完整提示词
                 const offlineTurns = loadChatOfflineTurns(activeChatSession.id);
-                if (offlineTurns.length === 0 && !offlinePendingText.trim()) {
-                    setError("该会话还没有线下记录，请先在输入框填写一条线下消息再预览");
-                    setLoading(false);
-                    return;
-                }
                 const offlineHistory = buildOfflinePromptHistory(activeChatSession, offlineTurns, offlinePendingText);
                 if (activeChatSession.isGroup) {
                     await previewGroupPromptRequestSnapshot(activeChatSession, offlineHistory, {

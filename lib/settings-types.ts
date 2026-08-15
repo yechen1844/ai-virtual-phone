@@ -138,6 +138,8 @@ export type VoiceApiConfig = {
     sttModel?: string;
     defaultVoice: string;
     languageBoost?: string;
+    /** Minimax voice_setting.speed. Missing values keep the legacy 1.0x behavior. */
+    speechSpeed?: number;
     customVoices?: { id: string; name: string; createdAt?: number }[];
     enableSTT: boolean;
     enableTTS: boolean;
