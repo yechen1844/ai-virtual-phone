@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useContext, useCallback, useMemo } from "react";
-import { Plus, Trash2, Download, Database, Play, Upload, ChevronLeft, AlertCircle, Maximize2, X, Replace } from "lucide-react";
+import { Plus, Trash2, Download, Database, Play, Upload, ChevronLeft, AlertCircle, Maximize2, X, Replace, Copy, Check } from "lucide-react";
 import {
     loadRegexes,
     saveRegexes,
@@ -20,6 +20,59 @@ import { SettingsContext } from "../phone-settings-app";
 import { BottomSheet, ConfirmDialog, TextExpandModal } from "@/components/ui/modal";
 import { SwipeActionRow, useSwipeActions } from "@/components/ui/swipe-actions";
 import { notifyMascotPageContext } from "@/lib/mascot-events";
+
+function copyTextToClipboard(text: string): void {
+    const fallbackCopy = () => {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.cssText = "position:fixed;left:-9999px;top:-9999px;opacity:0";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        try { document.execCommand("copy"); } catch {}
+        document.body.removeChild(ta);
+    };
+    if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).catch(fallbackCopy);
+    } else {
+        fallbackCopy();
+    }
+}
+
+/** 复制「起效后的代码」（正则替换结果）的小按钮：点击后短暂显示「已复制」。 */
+function CopyCodeButton({ text, className }: { text: string; className?: string }) {
+    const [copied, setCopied] = useState(false);
+    return (
+        <button
+            type="button"
+            className={className}
+            disabled={!text}
+            title={text ? "复制起效后的代码" : "无内容可复制"}
+            onClick={(e) => {
+                e.stopPropagation();
+                copyTextToClipboard(text);
+                setCopied(true);
+                window.setTimeout(() => setCopied(false), 1200);
+            }}
+            style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+                border: "1px solid var(--c-panel-border)",
+                background: "var(--c-card)",
+                borderRadius: 8,
+                padding: "2px 8px",
+                cursor: text ? "pointer" : "not-allowed",
+                color: "var(--c-icon)",
+                opacity: text ? 1 : 0.4,
+                flexShrink: 0,
+            }}
+        >
+            {copied ? <Check size={12} /> : <Copy size={12} />}
+            <span className="ts-11">{copied ? "已复制" : "复制"}</span>
+        </button>
+    );
+}
 
 function getRuleTags(rule: Pick<RegexRule, "tags">): string[] {
     return rule.tags && rule.tags.length > 0 ? [...rule.tags] : [];
@@ -569,8 +622,13 @@ export function RegexManager({ isActive = true }: { isActive?: boolean } = {}) {
                                                                     {step.skipped && <span className="ts-11" style={{ color: "var(--c-icon)", opacity: 0.6 }}>{step.skipped}</span>}
                                                                 </button>
                                                                 {groupTestExpandStep === i && !step.skipped && (
-                                                                    <div className="ui-code-block" style={{ maxHeight: 200, overflow: "auto", whiteSpace: "pre-wrap", fontSize: "calc(12px*var(--app-text-scale,1))", margin: "4px 0 8px" }}>
-                                                                        {step.output || <span className="menu-desc !mt-0">(空)</span>}
+                                                                    <div className="flex flex-col gap-1" style={{ margin: "4px 0 8px" }}>
+                                                                        <div className="flex items-center justify-end">
+                                                                            <CopyCodeButton text={step.output} />
+                                                                        </div>
+                                                                        <div className="ui-code-block" style={{ maxHeight: 200, overflow: "auto", whiteSpace: "pre-wrap", fontSize: "calc(12px*var(--app-text-scale,1))" }}>
+                                                                            {step.output || <span className="menu-desc !mt-0">(空)</span>}
+                                                                        </div>
                                                                     </div>
                                                                 )}
                                                             </div>
@@ -578,7 +636,10 @@ export function RegexManager({ isActive = true }: { isActive?: boolean } = {}) {
                                                     </div>
                                                 </div>
                                                 <div className="flex flex-col gap-1">
-                                                    <label className="menu-desc">最终输出</label>
+                                                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                                                        <label className="menu-desc !mt-0">最终输出</label>
+                                                        <CopyCodeButton text={groupOutput} />
+                                                    </div>
                                                     <div className="ui-code-block" style={{ maxHeight: 300, overflow: "auto", whiteSpace: "pre-wrap", fontSize: "calc(13px*var(--app-text-scale,1))" }}>
                                                         {groupOutput || <span className="menu-desc !mt-0">(空)</span>}
                                                     </div>
@@ -902,6 +963,8 @@ export function RegexManager({ isActive = true }: { isActive?: boolean } = {}) {
                                                                                 <span className="ui-tag" data-variant={matchCount > 0 ? "success" : "muted"}>
                                                                                     {matchCount > 0 ? `${matchCount} 处匹配` : "无匹配"}
                                                                                 </span>
+                                                                                <span className="flex-1" />
+                                                                                <CopyCodeButton text={output} />
                                                                             </div>
                                                                             <div className="ui-code-block">{output || <span className="menu-desc !mt-0">(空)</span>}</div>
                                                                         </div>
