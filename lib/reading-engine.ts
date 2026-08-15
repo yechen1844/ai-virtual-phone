@@ -37,6 +37,8 @@ export type AnnotationTarget = {
     chapterIndex: number;
     paragraphIndex: number;
     text: string;
+    /** 全书唯一段落号（跨章/跨 PDF 合成章节唯一），批注序号以此为锚，防止段落号重复错位 */
+    absoluteIndex?: number;
 };
 
 export type ReadingDiscussContext = {
@@ -166,21 +168,23 @@ function formatAnnotationHistory(annotations: ReadingAnnotation[]): string {
 }
 
 function formatBatchChapterContent(targets: AnnotationTarget[]): string {
-    return targets.map((target, index) => `[${index + 1}] ${target.text}`).join("\n\n");
+    // 序号以「全书唯一段落号」为锚（absoluteIndex，缺省回退章节内段落号），
+    // 避免批次数组下标/章节内段落号跨章重复导致批注落到错误段落或错误章节。
+    return targets.map((target) => `[${(target.absoluteIndex ?? target.paragraphIndex) + 1}] ${target.text}`).join("\n\n");
 }
 
 function formatBatchAnnotationHistory(annotations: ReadingAnnotation[], targets: AnnotationTarget[]): string {
     if (annotations.length === 0) return "（暂无批注）";
 
-    const targetIndexMap = new Map<string, number>();
-    targets.forEach((target, index) => {
-        targetIndexMap.set(`${target.chapterIndex}:${target.paragraphIndex}`, index + 1);
+    const targetParagraphMap = new Map<string, number>();
+    targets.forEach((target) => {
+        targetParagraphMap.set(`${target.chapterIndex}:${target.paragraphIndex}`, (target.absoluteIndex ?? target.paragraphIndex) + 1);
     });
 
     const lines = annotations.flatMap((annotation) => {
-        const relativeIndex = targetIndexMap.get(`${annotation.chapterIndex}:${annotation.paragraphIndex}`);
-        if (!relativeIndex) return [];
-        return [`[批注:${relativeIndex}][角色:${annotation.characterName}] ${annotation.content}`];
+        const paragraphNo = targetParagraphMap.get(`${annotation.chapterIndex}:${annotation.paragraphIndex}`);
+        if (!paragraphNo) return [];
+        return [`[批注:${paragraphNo}][角色:${annotation.characterName}] ${annotation.content}`];
     });
 
     return lines.length > 0 ? lines.join("\n") : "（暂无批注）";
@@ -346,13 +350,21 @@ export async function generateAnnotationBatch(
     if (responseText.includes("[无批注]")) return [];
 
     // Parse [批注:N]...[/批注]
+    // N 是正文标注的「全书唯一段落号」（absoluteIndex+1，缺省回退章节内段落号），
+    // 解析时按同一锚点精确匹配目标段落，杜绝数组下标/跨章重复导致的错位。
     const pattern = /\[批注[:：](\d+)\]([\s\S]*?)\[\/批注\]/g;
     const results: ReadingAnnotation[] = [];
     let match;
     while ((match = pattern.exec(responseText)) !== null) {
-        const relativeIndex = parseInt(match[1], 10) - 1;
+        const wanted = parseInt(match[1], 10) - 1;
         const content = match[2].trim();
-        const target = targets[relativeIndex];
+        // 优先按全书唯一段落号匹配；AI 若按章节直觉输出了小序号，回退按章节内
+        // 段落号匹配（批次严格单章，段落号唯一，不会错位）。
+        let target = targets.find((t) => (t.absoluteIndex ?? t.paragraphIndex) === wanted);
+        if (!target) {
+            const byParagraph = targets.filter((t) => t.paragraphIndex === wanted);
+            if (byParagraph.length === 1) target = byParagraph[0];
+        }
         if (content && target) {
             results.push({
                 id: `ra_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,

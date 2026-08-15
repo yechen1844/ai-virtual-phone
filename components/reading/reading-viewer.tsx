@@ -731,28 +731,39 @@ export function ReadingViewer({ book, onBack }: Props) {
         const visibleRefs = paragraphRefs.filter((item) => item.chapterIndex === chapterIndex && item.paragraphIndex >= minParagraphIndex && item.paragraphIndex <= maxParagraphIndex);
         if (visibleRefs.length === 0) return null;
 
+        // 章节第一段（含空段）的全书绝对索引作为批起点基准
+        const chapterStartRef = paragraphRefs.find((item) => item.chapterIndex === chapterIndex);
+        if (!chapterStartRef) return null;
+        const chapterBaseAbs = chapterStartRef.absoluteIndex;
+
+        // 批起点统一按「章节内段落下标」对齐（而非全书绝对索引），
+        // 否则自动批注的批次会从上一章漂移过来，段落序号错位。
         const startCandidates: number[] = [];
         if (mode === "manual") {
-            startCandidates.push(visibleRefs[0].absoluteIndex);
+            startCandidates.push(visibleRefs[0].paragraphIndex);
         } else if (mode === "auto-current") {
-            startCandidates.push(Math.floor(visibleRefs[0].absoluteIndex / size) * size);
+            startCandidates.push(Math.floor(visibleRefs[0].paragraphIndex / size) * size);
         } else {
-            for (let start = Math.floor(visibleRefs[0].absoluteIndex / size) * size; start <= visibleRefs[visibleRefs.length - 1].absoluteIndex; start += size) {
-                if (start >= visibleRefs[0].absoluteIndex && start <= visibleRefs[visibleRefs.length - 1].absoluteIndex) {
+            for (let start = Math.floor(visibleRefs[0].paragraphIndex / size) * size; start <= visibleRefs[visibleRefs.length - 1].paragraphIndex; start += size) {
+                if (start >= visibleRefs[0].paragraphIndex && start <= visibleRefs[visibleRefs.length - 1].paragraphIndex) {
                     startCandidates.push(start);
                     break;
                 }
             }
         }
 
-        const startAbsoluteIndex = startCandidates[0];
-        if (startAbsoluteIndex === undefined) return null;
-        const items = paragraphRefs.slice(startAbsoluteIndex, startAbsoluteIndex + size).filter((item) => item.text.trim());
+        const startInChapter = startCandidates[0];
+        if (startInChapter === undefined) return null;
+        // 批次必须严格限制在当前章节内：章节剩余段落不足 size 时 slice 会混入
+        // 下一章段落，导致 AI 输出的段落序号与真实段落错位、批注落错章节。
+        const items = paragraphRefs
+            .slice(chapterBaseAbs + startInChapter, chapterBaseAbs + startInChapter + size)
+            .filter((item) => item.chapterIndex === chapterIndex && item.text.trim());
         if (items.length === 0) return null;
 
         return {
-            key: `txt:${startAbsoluteIndex}:${size}`,
-            title: `第${items[0].absoluteIndex + 1}-${items[items.length - 1].absoluteIndex + 1}段`,
+            key: `txt:${chapterIndex}:${startInChapter}:${size}`,
+            title: `第${items[0].paragraphIndex + 1}-${items[items.length - 1].paragraphIndex + 1}段`,
             size,
             items,
         };
@@ -784,16 +795,20 @@ export function ReadingViewer({ book, onBack }: Props) {
         if (!currentChapter) return null;
         const topIndex = getTopVisibleParagraphIndex();
         if (topIndex < 0) return null;
-        const chapterRefs = paragraphRefs.filter((item) => item.chapterIndex === chapterIndex && item.text.trim());
-        if (chapterRefs.length === 0) return null;
-        const baseAbsolute = chapterRefs[0].absoluteIndex;
+        // 章节第一段（含空段）的全书绝对索引作为基准，避免章节开头有空段时整体偏移
+        const chapterStartRef = paragraphRefs.find((item) => item.chapterIndex === chapterIndex);
+        if (!chapterStartRef) return null;
+        const baseAbsolute = chapterStartRef.absoluteIndex;
         const startInChapter = mode === "manual" ? topIndex : Math.floor(topIndex / size) * size;
         const startAbsolute = baseAbsolute + startInChapter;
-        const items = paragraphRefs.slice(startAbsolute, startAbsolute + size).filter((item) => item.chapterIndex === chapterIndex && item.text.trim());
+        // 严格单章：章节剩余段落不足 size 时只取本章段落，保证段落序号唯一、无跨章错位
+        const items = paragraphRefs
+            .slice(startAbsolute, startAbsolute + size)
+            .filter((item) => item.chapterIndex === chapterIndex && item.text.trim());
         if (items.length === 0) return null;
         return {
             key: `scroll:${chapterIndex}:${startInChapter}:${size}`,
-            title: `第${items[0].absoluteIndex + 1}-${items[items.length - 1].absoluteIndex + 1}段`,
+            title: `第${items[0].paragraphIndex + 1}-${items[items.length - 1].paragraphIndex + 1}段`,
             size,
             items,
         };
@@ -866,6 +881,7 @@ export function ReadingViewer({ book, onBack }: Props) {
                     chapterIndex: item.chapterIndex,
                     paragraphIndex: item.paragraphIndex,
                     text: item.text,
+                    absoluteIndex: item.absoluteIndex,
                 })),
                 existing,
                 companionId,
