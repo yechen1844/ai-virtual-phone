@@ -329,6 +329,9 @@ function ChatHtmlInlineFrame({
     // 挂载时的可见性（首次 IO 回调记录）与最近一次可见性
     const mountedVisibleRef = useRef<boolean | null>(null);
     const prevVisibleRef = useRef<boolean | null>(null);
+    // 是否收到过 iframe 的高度自适应消息（说明脚本已执行、内容已渲染）
+    const receivedResizeRef = useRef(false);
+    const rebuildCountRef = useRef(0);
     useEffect(() => {
         const el = containerRef.current;
         if (!el || typeof IntersectionObserver === "undefined") return;
@@ -353,6 +356,24 @@ function ChatHtmlInlineFrame({
         io.observe(el);
         return () => io.disconnect();
     }, []);
+    // 兜底：生成完成瞬间页面正忙（插入回合 + 清 loading + 滚动锚定同帧），
+    // 首个 iframe 可能加载异常——脚本没跑、高度测不到，表现为「空一块」；
+    // 页面稳定后创建的新 iframe 都正常。这里在挂载后定时检查，
+    // 若始终收不到高度自适应消息（正常 300ms 内必有），就强制重建一次（此时页面已稳定）。
+    useEffect(() => {
+        receivedResizeRef.current = false;
+        const timers: number[] = [];
+        const maybeRebuild = () => {
+            if (receivedResizeRef.current) return;
+            if (rebuildCountRef.current >= 2) return;
+            rebuildCountRef.current += 1;
+            setReloadKey(k => k + 1);
+            setHeight(240);
+        };
+        timers.push(window.setTimeout(maybeRebuild, 1200));
+        timers.push(window.setTimeout(maybeRebuild, 3200));
+        return () => timers.forEach(t => window.clearTimeout(t));
+    }, [reloadKey]);
     const srcDoc = useMemo(() => buildChatHtmlDocument(html, true), [html]);
 
     useEffect(() => {
@@ -364,6 +385,7 @@ function ChatHtmlInlineFrame({
             if (!e.data || typeof e.data !== "object") return;
             if (iframeRef.current && e.source !== iframeRef.current.contentWindow) return;
             if (e.data.type === "_chat_inline_html_resize" && typeof e.data.h === "number") {
+                receivedResizeRef.current = true;
                 setHeight(Math.max(80, Math.ceil(e.data.h)));
             }
             if (e.data.type === "_chat_action" && typeof e.data.text === "string") {
