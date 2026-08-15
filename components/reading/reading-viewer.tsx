@@ -1168,6 +1168,12 @@ export function ReadingViewer({ book, onBack }: Props) {
                     .filter((item) => item.chapterIndex === focusChapterIndex)
                     .map((item) => item.paragraphIndex),
             )].sort((a, b) => a - b);
+        } else if (isScrollMode) {
+            // Scroll mode has no paged layout; anchor the discussion to the topmost
+            // visible paragraph in the continuous flow.
+            const topIndex = getTopVisibleParagraphIndex();
+            if (topIndex < 0) return null;
+            focusParagraphIndexes = [topIndex];
         } else {
             const pageItems = txtPages[txtPage] || [];
             focusParagraphIndexes = [...new Set(
@@ -1232,7 +1238,7 @@ export function ReadingViewer({ book, onBack }: Props) {
             chapterContent,
             annotations: contextAnnotations,
         };
-    }, [annotations, book.title, chapterIndex, chapters, currentChapter?.title, isPdf, pdfCurrentPage, txtPage, txtPages]);
+    }, [annotations, book.title, chapterIndex, chapters, currentChapter?.title, getTopVisibleParagraphIndex, isPdf, isScrollMode, pdfCurrentPage, txtPage, txtPages]);
 
     // Chat send — parse AI response like chat-room does
     const handleSend = async () => {
@@ -1418,6 +1424,12 @@ export function ReadingViewer({ book, onBack }: Props) {
         e.currentTarget.releasePointerCapture?.(e.pointerId);
         setIsDragging(false);
 
+        // A plain tap (no movement) must not snap or move the ball at all.
+        if (!chatMovedRef.current) {
+            pendingChatOffsetRef.current = null;
+            return;
+        }
+
         // Flush the last pending position before snapping/clamping
         const last = pendingChatOffsetRef.current;
         pendingChatOffsetRef.current = null;
@@ -1429,35 +1441,28 @@ export function ReadingViewer({ book, onBack }: Props) {
         const w = window.innerWidth;
         const h = window.innerHeight;
 
-        const elWidth = chatExpanded ? 300 : 56; // ball is 56px; expanded window is 300px
+        const elWidth = chatExpanded ? 300 : (showChat ? Math.min(280, w - 24) : 56); // expanded window / compact bar / ball
         const elHeight = chatExpanded ? 380 : 56;
 
-        // Original CSS positions the ball/window at left: 12px, bottom: 12px,
-        // so offset (0,0) is that default spot. translate3d +x/+y goes right/down.
-        let targetX = currentX;
-        let targetY = currentY;
+        // The float is positioned with left:12px / bottom:12px, so offset (0,0) is the
+        // bottom-left default spot and translate3d +x/+y goes right/down.
+        // Because the element already sits at the bottom, a POSITIVE Y pushes it below
+        // the screen — the only valid direction is up, i.e. negative Y in [-maxUp, 0].
+        const minX = -marginX;
+        const maxX = w - elWidth - marginX;
+        const maxY = 0; // never below the bottom edge
+        const minY = -(h - elHeight - marginY - 60); // up to near the top
 
+        let targetX = Math.max(minX, Math.min(currentX, maxX));
+        let targetY = Math.max(minY, Math.min(currentY, maxY));
+
+        // Ball / compact bar: snap horizontally to the nearest edge
         if (!chatExpanded) {
-            // Ball / compact bar: snap horizontally to the nearest edge
             const half = (w - elWidth) / 2 - marginX;
-            targetX = currentX < half ? -marginX : w - elWidth - marginX;
-            // Clamp Y so the ball can never be dragged out of the page
-            const minY = -(h - elHeight - marginY - 60);
-            const maxY = h - elHeight - marginY - 60;
-            targetY = Math.max(minY, Math.min(targetY, maxY));
-        } else {
-            // Expanded window: strictly bound within the viewport
-            const minX = -marginX;
-            const maxX = w - elWidth - marginX;
-            const minY = 48; // keep below the header area
-            const maxY = h - elHeight - marginY;
-            targetX = Math.max(minX, Math.min(targetX, maxX));
-            targetY = Math.max(minY, Math.min(targetY, maxY));
+            targetX = currentX < half ? minX : maxX;
         }
 
         if (targetX !== currentX || targetY !== currentY) {
-            setChatOffset({ x: targetX, y: targetY });
-        } else if (last) {
             setChatOffset({ x: targetX, y: targetY });
         }
     };
