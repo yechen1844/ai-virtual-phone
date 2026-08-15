@@ -307,16 +307,21 @@ export async function generateAnnotationBatch(
     const { input, apiConfig, preset } = resolved;
     const llmMessages = assemblePromptPayload(input);
     if (annotationLimit && annotationLimit > 0) {
-        llmMessages.push({
-            role: "system",
-            content: [
-                "<reading_batch_limit>",
-                `本次批注任务上限：整批最多输出 ${annotationLimit} 条批注（即 [批注:N] 块的总数不能超过 ${annotationLimit} 条）。`,
-                "优先选择本批次里最值得评论的段落；可以针对同一段落输出多条批注，但每条必须使用独立的 [批注:N] 块，段落序号相同即可。",
-                "条数到达上限后立即停止，不要凑数。如果本批内容确实没什么值得评论的，输出 [无批注]。",
-                "</reading_batch_limit>",
-            ].join("\n"),
-        });
+        // 批次上限指令必须作为 user 消息追加：Anthropic 等 API 严格要求最后一条是
+        // user 消息，直接 push system 到末尾会导致整个批注请求 400 失败。
+        const limitText = [
+            "<reading_batch_limit>",
+            `本次批注任务上限：整批最多输出 ${annotationLimit} 条批注（即 [批注:N] 块的总数不能超过 ${annotationLimit} 条）。`,
+            "优先选择本批次里最值得评论的段落；可以针对同一段落输出多条批注，但每条必须使用独立的 [批注:N] 块，段落序号相同即可。",
+            "条数到达上限后立即停止，不要凑数。如果本批内容确实没什么值得评论的，输出 [无批注]。",
+            "</reading_batch_limit>",
+        ].join("\n");
+        const lastMsg = llmMessages[llmMessages.length - 1];
+        if (lastMsg && lastMsg.role === "user" && typeof lastMsg.content === "string") {
+            lastMsg.content = `${lastMsg.content}\n\n${limitText}`;
+        } else {
+            llmMessages.push({ role: "user", content: limitText });
+        }
     }
     const responseText = await callReadingLLM(
         apiConfig!,
