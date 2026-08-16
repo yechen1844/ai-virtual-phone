@@ -299,6 +299,10 @@ export function ReadingViewer({ book, onBack }: Props) {
     const txtMeasureAnnotationRef = useRef<HTMLDivElement>(null);
     const generatedBatchesRef = useRef<Set<string>>(new Set());
     const autoBootstrapInFlightRef = useRef(false);
+    /** 同步「生成中」锁：防止 auto/prefetch 竞态导致同一帧内并发发起多个批注生成任务 */
+    const annotationInFlightRef = useRef(false);
+    /** 正在生成中的批次 key：防止同一批在生成完成前被再次发起 */
+    const inFlightBatchesRef = useRef<Set<string>>(new Set());
     const pendingTxtPageFractionRef = useRef<number | null>(null);
     const lastTxtPaginationSignatureRef = useRef("");
     // 滚动阅读模式：连续滚动（多章窗口无缝衔接）
@@ -819,11 +823,17 @@ export function ReadingViewer({ book, onBack }: Props) {
         return buildPdfBatchRequest(size, mode, refs);
     }, [buildPdfBatchRequest, buildTxtBatchRequest, ensurePdfPageRangeParsed, getPdfBatchWindow, isPdf]);
 
-    const executeBatchAnnotation = useCallback(async (request: AnnotationBatchRequest, options?: { force?: boolean }) => {
-        if (!companionId || generating) return;
+    const executeBatchAnnotation = useCallback(async (request: AnnotationBatchRequest, options?: { force?: boolean }): Promise<boolean> => {
+        if (!companionId) return false;
         const batchKey = `${book.id}:${companionId}:${request.key}`;
-        if (!options?.force && generatedBatchesRef.current.has(batchKey)) return;
-
+        if (!options?.force && generatedBatchesRef.current.has(batchKey)) return false;
+        // 同步锁：同一时间只允许一个批注生成任务（auto/prefetch 竞态时后面的请求直接跳过，
+        // 避免闭包里的 generating 旧值放行并发请求，导致同一批被重复生成）
+        if (annotationInFlightRef.current) return false;
+        // 同一批已在生成中：跳过（生成完成前 generatedBatchesRef 尚未写入，需用 in-flight 集合兜底）
+        if (!options?.force && inFlightBatchesRef.current.has(batchKey)) return false;
+        annotationInFlightRef.current = true;
+        inFlightBatchesRef.current.add(batchKey);
         setGenerating(true);
         setAnnotationError(null);
 
@@ -831,7 +841,7 @@ export function ReadingViewer({ book, onBack }: Props) {
             const existing = await loadExistingAnnotationsForItems(request.items);
             if (!options?.force && existing.length > 0) {
                 generatedBatchesRef.current.add(batchKey);
-                return;
+                return true;
             }
 
             const newAnnotations = await withAnnotationRetry(
@@ -861,13 +871,17 @@ export function ReadingViewer({ book, onBack }: Props) {
             } else {
                 setAnnotationError("AI 没有返回批注（可能返回了[无批注]或API调用失败）");
             }
+            return true;
         } catch (err) {
             console.error("[Reading] Annotation error:", err);
             setAnnotationError(`批注失败: ${err instanceof Error ? err.message : String(err)}`);
+            return false;
         } finally {
+            inFlightBatchesRef.current.delete(batchKey);
+            annotationInFlightRef.current = false;
             setGenerating(false);
         }
-    }, [book, companionId, generating, loadExistingAnnotationsForItems, readingConfig.annotationRetryCount]);
+    }, [book, companionId, loadExistingAnnotationsForItems, readingConfig.annotationRetryCount]);
 
     const openAnnotationDialog = (mode: AnnotationDialogMode) => {
         const nextSize = annotationBatchSize || (isPdf ? 5 : 50);
@@ -1124,7 +1138,10 @@ export function ReadingViewer({ book, onBack }: Props) {
             size,
             items,
         };
-        void executeBatchAnnotation(request);
+        // 若被跳过（自动批注正在生成/该批已生成），重置标记让下一轮滚动再试，避免预生成丢失
+        void executeBatchAnnotation(request).then((started) => {
+            if (!started) prefetchedBatchStartRef.current = -1;
+        });
     }, [annotationBatchSize, autoAnnotate, chapterIndex, companionId, executeBatchAnnotation, generating, isPdf, isScrollMode, paragraphRefs, readingConfig.autoAnnotatePrefetch, readingConfig.annotationPrefetchThreshold, scrollFraction, txtPage, txtPages]);
 
     useEffect(() => {
