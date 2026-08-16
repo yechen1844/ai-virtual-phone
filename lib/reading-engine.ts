@@ -168,9 +168,11 @@ function formatAnnotationHistory(annotations: ReadingAnnotation[]): string {
 }
 
 function formatBatchChapterContent(targets: AnnotationTarget[]): string {
-    // 序号以「全书唯一段落号」为锚（absoluteIndex，缺省回退章节内段落号），
-    // 避免批次数组下标/章节内段落号跨章重复导致批注落到错误段落或错误章节。
-    return targets.map((target) => `[${(target.absoluteIndex ?? target.paragraphIndex) + 1}] ${target.text}`).join("\n\n");
+    // 正文序号必须用「章节内真实段落号」paragraphIndex+1：数字小、从 1 开始、
+    // 单章内唯一、与目标段落一一对应，AI 会照抄这个号。
+    // 绝不能给 AI 全书绝对号（absoluteIndex）：中间章节绝对号是几千上万，
+    // AI 不会跟，解析必然失败（表现为开头章节碰巧成功、中间章节全部失败）。
+    return targets.map((target) => `[${target.paragraphIndex + 1}] ${target.text}`).join("\n\n");
 }
 
 function formatBatchAnnotationHistory(annotations: ReadingAnnotation[], targets: AnnotationTarget[]): string {
@@ -178,7 +180,7 @@ function formatBatchAnnotationHistory(annotations: ReadingAnnotation[], targets:
 
     const targetParagraphMap = new Map<string, number>();
     targets.forEach((target) => {
-        targetParagraphMap.set(`${target.chapterIndex}:${target.paragraphIndex}`, (target.absoluteIndex ?? target.paragraphIndex) + 1);
+        targetParagraphMap.set(`${target.chapterIndex}:${target.paragraphIndex}`, target.paragraphIndex + 1);
     });
 
     const lines = annotations.flatMap((annotation) => {
@@ -313,12 +315,20 @@ export async function generateAnnotationBatch(
     const { input, apiConfig, preset } = resolved;
     const llmMessages = assemblePromptPayload(input);
 
-    // 批注输出格式指令：始终作为 user 消息注入，不依赖预设条目（兼容自定义预设/条目
-    // 被禁用/版本差异导致的指令缺失），并确保 Anthropic 等 API 最后一条是 user 消息。
+    // 关键：把「带全量段落号的完整正文」直接写进本请求的 user 消息，
+    // 不再依赖预设 {{chapterContent}} 宏注入（那条路径会导致每段序号丢失、
+    // 只剩第一段有 [N]，模型根本看不到完整段落号 → 批注解析失败）。
+    const bodyText = formatBatchChapterContent(targets); // 每段 [N] 前缀，N 为章节内段落号
     const instructionParts = [
+        "<reading_annotation_input>",
+        "以下是本批次正文，每段前的 [N] 是「段落号」，从 1 开始编号，批注时必须引用这里的段落号：",
+        "",
+        bodyText,
+        "</reading_annotation_input>",
+        "",
         "<reading_annotation_output>",
-        "请为上文正文中你有感触的段落写批注，尽量输出多条（通常 2-6 条）。",
-        "每条必须严格使用格式：[批注:段落序号]批注内容[/批注]，段落序号是正文每段前的 [N] 序号，从 1 开始。",
+        "请为上述正文中有感触的段落写批注，尽量输出多条（通常 2-6 条）。",
+        "每条必须严格使用格式：[批注:段落号]批注内容[/批注]，段落号必须来自正文 [N]。",
         "可以吐槽、感叹、分析、联想、共情、提问，但不要复述原文。",
         "如果本批内容确实没什么值得评论的，只输出 [无批注]。",
         "不要输出批注标签以外的解释、前言或结尾。",
@@ -350,21 +360,19 @@ export async function generateAnnotationBatch(
     if (responseText.includes("[无批注]")) return [];
 
     // Parse [批注:N]...[/批注]
-    // N 是正文标注的「全书唯一段落号」（absoluteIndex+1，缺省回退章节内段落号），
-    // 解析时按同一锚点精确匹配目标段落，杜绝数组下标/跨章重复导致的错位。
+    // N 与正文标注一致：章节内真实段落号（paragraphIndex+1，1 开始）。
+    // 解析按 paragraphIndex 精确匹配：正文出现过的号必然在批次里唯一存在，
+    // 空段被过滤也不影响（按段落号查而非数组位置）。保留 absoluteIndex 兜底。
     const pattern = /\[批注[:：](\d+)\]([\s\S]*?)\[\/批注\]/g;
     const results: ReadingAnnotation[] = [];
     let match;
     while ((match = pattern.exec(responseText)) !== null) {
-        const wanted = parseInt(match[1], 10) - 1;
+        const wantedParagraphIndex = parseInt(match[1], 10) - 1;
         const content = match[2].trim();
-        // 优先按全书唯一段落号匹配；AI 若按章节直觉输出了小序号，回退按章节内
-        // 段落号匹配（批次严格单章，段落号唯一，不会错位）。
-        let target = targets.find((t) => (t.absoluteIndex ?? t.paragraphIndex) === wanted);
-        if (!target) {
-            const byParagraph = targets.filter((t) => t.paragraphIndex === wanted);
-            if (byParagraph.length === 1) target = byParagraph[0];
-        }
+        const byParagraph = targets.filter((t) => t.paragraphIndex === wantedParagraphIndex);
+        // 段落号匹配优先且要求唯一（单章内段落号本应唯一）；找不到再回退全书绝对号
+        let target = byParagraph.length === 1 ? byParagraph[0] : undefined;
+        if (!target) target = targets.find((t) => t.absoluteIndex === wantedParagraphIndex);
         if (content && target) {
             results.push({
                 id: `ra_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
