@@ -298,7 +298,6 @@ export function ReadingViewer({ book, onBack }: Props) {
     const txtMeasureGapRef = useRef<HTMLDivElement>(null);
     const txtMeasureAnnotationRef = useRef<HTMLDivElement>(null);
     const generatedBatchesRef = useRef<Set<string>>(new Set());
-    const autoBootstrapInFlightRef = useRef(false);
     /** 同步「生成中」锁：防止 auto/prefetch 竞态导致同一帧内并发发起多个批注生成任务 */
     const annotationInFlightRef = useRef(false);
     /** 正在生成中的批次 key：防止同一批在生成完成前被再次发起 */
@@ -838,11 +837,10 @@ export function ReadingViewer({ book, onBack }: Props) {
         setAnnotationError(null);
 
         try {
+            // 历史已有批注仅作为生成参考传入（generateAnnotationBatch 接收 existingAnnotations），
+            // 不用于跳过：重新开启自动批注/重读书籍时，用户期望生成新的批注。
+            // 「本次阅读体验内不重复」由 generatedBatchesRef（内存）保证。
             const existing = await loadExistingAnnotationsForItems(request.items);
-            if (!options?.force && existing.length > 0) {
-                generatedBatchesRef.current.add(batchKey);
-                return true;
-            }
 
             const newAnnotations = await withAnnotationRetry(
                 () => generateAnnotationBatch(
@@ -904,13 +902,8 @@ export function ReadingViewer({ book, onBack }: Props) {
             setAutoAnnotate(true);
             generatedBatchesRef.current.clear();
             prefetchedBatchStartRef.current = -1; // 新的阅读体验：预生成触发标记一并重置
-            autoBootstrapInFlightRef.current = true;
-            try {
-                const request = await materializeBatchRequest(size, "auto-current");
-                if (request) await executeBatchAnnotation(request);
-            } finally {
-                autoBootstrapInFlightRef.current = false;
-            }
+            const request = await materializeBatchRequest(size, "auto-current");
+            if (request) await executeBatchAnnotation(request);
             return;
         }
 
@@ -1087,7 +1080,10 @@ export function ReadingViewer({ book, onBack }: Props) {
     };
 
     useEffect(() => {
-        if (!autoAnnotate || generating || !companionId || autoBootstrapInFlightRef.current) return;
+        // 自动批注：跟随阅读位置推进，为当前批生成批注。
+        // 与开启时的 bootstrap 并发时由 executeBatchAnnotation 的同步锁去重；
+        // 若 bootstrap 未拿到批次（书刚打开数据未就绪），本 effect 会随阅读位置变化持续兜底触发。
+        if (!autoAnnotate || generating || !companionId) return;
         void (async () => {
             const request = await materializeBatchRequest(annotationBatchSize, "auto");
             if (!request) return;
