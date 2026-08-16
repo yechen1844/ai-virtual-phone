@@ -8,7 +8,7 @@ import { ChatEngineError, sendLLMRequest } from "../chat-engine";
 import type { LLMMessage } from "../llm-prompt-assembler";
 import { loadApiConfigs, loadBindingConfig } from "../settings-storage";
 import type { ApiConfig } from "../settings-types";
-import { assembleMixPrompt, MIX_ENCORE_CLOSE, MIX_ENCORE_OPEN, MIX_TICKET_CLOSE, MIX_TICKET_OPEN, type MixAssembledPrompt } from "./assembler";
+import { applyMixMacros, assembleMixPrompt, MIX_ENCORE_CLOSE, MIX_ENCORE_OPEN, MIX_TICKET_CLOSE, MIX_TICKET_OPEN, type MixAssembledPrompt } from "./assembler";
 import { extractMixBlocks } from "./prose";
 import {
     getMixMaterial,
@@ -21,6 +21,7 @@ import {
     type MixCharacterCard,
     type MixRecipe,
     type MixSession,
+    type MixTicketMaterial,
     type MixTurn,
 } from "./types";
 
@@ -40,27 +41,37 @@ export function resolveMixApiConfig(): ApiConfig | null {
 }
 
 /** 从方案快照装配提示词（材料从酒柜按 id 现取；角色卡被删则报错） */
-function assembleFromSession(session: MixSession): MixAssembledPrompt {
+function assembleFromSession(session: MixSession): { prompt: MixAssembledPrompt; ticket?: MixTicketMaterial } {
     const { materials } = resolveMixRecipeMaterials(session.recipe);
     const character = materials.character;
     if (!character || character.kind !== "character") {
         throw new ChatEngineError("这杯特调的角色卡已不在酒柜里，无法继续对局。");
     }
-    return assembleMixPrompt({
+    const prompt = assembleMixPrompt({
         character: character as MixCharacterCard,
         materials,
         userName: session.userName,
         openingIndex: session.openingIndex,
     });
+    const ticket = materials.ticket?.kind === "ticket" ? (materials.ticket as MixTicketMaterial) : undefined;
+    return { prompt, ticket };
 }
 
-/** 历史回放时给 assistant 消息补回状态栏/小剧场块，让模型看得到自己之前的输出习惯 */
-function turnToHistoryContent(turn: MixTurn): string {
+/**
+ * 还原一条消息的"原始输出"：assistant 轮把剥掉的状态栏/小剧场块拼回去。
+ * 历史回放与「编辑原始输出」共用——编辑时看到的就是模型当初写的完整样子。
+ */
+export function mixTurnRawText(turn: MixTurn): string {
     if (turn.role !== "assistant") return turn.text;
     const parts = [turn.text];
     if (turn.ticketRaw) parts.push(`${MIX_TICKET_OPEN}\n${turn.ticketRaw}\n${MIX_TICKET_CLOSE}`);
     if (turn.encoreRaw) parts.push(`${MIX_ENCORE_OPEN}\n${turn.encoreRaw}\n${MIX_ENCORE_CLOSE}`);
-    return parts.join("\n\n");
+    return parts.filter(Boolean).join("\n\n");
+}
+
+/** 历史回放时给 assistant 消息补回状态栏/小剧场块，让模型看得到自己之前的输出习惯 */
+function turnToHistoryContent(turn: MixTurn): string {
+    return mixTurnRawText(turn);
 }
 
 function buildMixMessages(
@@ -116,7 +127,7 @@ export function startMixSession(
         createdAt: Date.now(),
         updatedAt: Date.now(),
     };
-    const assembled = assembleFromSession(session);
+    const assembled = assembleFromSession(session).prompt;
     if (assembled.opening) {
         session.turns.push({
             id: createMixId("mixturn"),
@@ -134,6 +145,59 @@ export type MixReplyResult = {
     turn: MixTurn;
 };
 
+/**
+ * 状态栏补写：不少模型（实测 DeepSeek）在长篇角色扮演里经常把回复末尾的
+ * 状态栏块整个漏掉，提示词层面救不稳。漏块时用一次小请求单独把状态栏要
+ * 回来——而且补出的块会随历史回放形成先例，后续轮次的自发服从率会明显上升。
+ */
+async function repairMixTicket(
+    apiConfig: ApiConfig,
+    session: MixSession,
+    ticket: MixTicketMaterial,
+    proseText: string,
+    signal?: AbortSignal,
+): Promise<string | undefined> {
+    const charName = session.charName;
+    const userName = session.userName || "你";
+    const contract = applyMixMacros(ticket.contract.trim(), charName, userName);
+    if (!contract) return undefined;
+    const lastUser = [...session.turns].reverse().find((t) => t.role === "user")?.text ?? "";
+    const messages: LLMMessage[] = [
+        {
+            role: "system",
+            content: [
+                `你在为一场角色扮演对局补写状态栏，角色是${charName}。根据本轮正文，按「输出内容」的要求逐行填写本轮的实际数据。只输出状态栏块本身，不要输出任何其他内容。`,
+                "输出内容：",
+                contract,
+                `输出格式：第一行 ${MIX_TICKET_OPEN}，随后逐行填写，最后一行 ${MIX_TICKET_CLOSE}。`,
+            ].join("\n"),
+            _debugMeta: { marker: "mixology_ticket_repair" },
+        },
+        {
+            role: "user",
+            content: `${lastUser ? `本轮${userName}的发言：\n${lastUser}\n\n` : ""}本轮${charName}的正文：\n${proseText}`,
+        },
+    ];
+    try {
+        const raw = await sendLLMRequest(
+            apiConfig,
+            null,
+            messages,
+            [],
+            { characterName: charName, userName },
+            { appId: MIX_PROMPT_APP_ID, appTags: MIX_PROMPT_TAGS, skipOutputRegex: true, signal },
+        );
+        const { ticketRaw } = extractMixBlocks(raw);
+        if (ticketRaw) return ticketRaw;
+        // 有的模型只回数据不带壳：没有任何标签痕迹且长度合理时直接采用
+        const bare = raw.trim();
+        if (bare && !/[\[\]【】]/.test(bare) && bare.length < 1200) return bare;
+    } catch {
+        // 补写失败不拦主回复——顶多这一轮没有状态栏
+    }
+    return undefined;
+}
+
 async function runMixGeneration(
     session: MixSession,
     nudge: string | undefined,
@@ -143,7 +207,7 @@ async function runMixGeneration(
     if (!apiConfig) {
         throw new ChatEngineError("还没有配置 API 接口，请先到设置里添加。");
     }
-    const assembled = assembleFromSession(session);
+    const { prompt: assembled, ticket } = assembleFromSession(session);
     const messages = buildMixMessages(session, assembled, nudge);
     const raw = await sendLLMRequest(
         apiConfig,
@@ -153,9 +217,14 @@ async function runMixGeneration(
         { characterName: session.charName, userName: session.userName || "你" },
         { appId: MIX_PROMPT_APP_ID, appTags: MIX_PROMPT_TAGS, skipOutputRegex: true, signal },
     );
-    const { text, ticketRaw, encoreRaw } = extractMixBlocks(raw);
+    const extracted = extractMixBlocks(raw);
+    const { text, encoreRaw } = extracted;
+    let { ticketRaw } = extracted;
     if (!text && !ticketRaw) {
         throw new ChatEngineError("模型没有给出内容，请再试一次。");
+    }
+    if (assembled.hasTicket && !ticketRaw && ticket && text) {
+        ticketRaw = await repairMixTicket(apiConfig, session, ticket, text, signal);
     }
     const turn: MixTurn = {
         id: createMixId("mixturn"),
@@ -214,6 +283,49 @@ export async function continueMix(sessionId: string, signal?: AbortSignal): Prom
     const current = getMixSession(sessionId);
     if (!current) throw new ChatEngineError("对局不存在。");
     return runMixGeneration(current, "（请接着上文继续推进剧情，直接续写，不要重复已写过的内容。）", signal);
+}
+
+/** 回溯到某条消息：保留它，删除其后的全部内容 */
+export function truncateMixAfterTurn(sessionId: string, turnId: string): MixSession {
+    const current = getMixSession(sessionId);
+    if (!current) throw new ChatEngineError("对局不存在。");
+    const idx = current.turns.findIndex((t) => t.id === turnId);
+    if (idx < 0) throw new ChatEngineError("消息不存在。");
+    const updated: MixSession = { ...current, turns: current.turns.slice(0, idx + 1) };
+    saveMixSession(updated);
+    return updated;
+}
+
+/**
+ * 编辑某条消息并删除其后的全部内容。
+ * assistant 轮编辑的是"原始输出"（含 [状态栏]/[小剧场] 块）——保存时重新剥块解析，
+ * 模型输出掉了格式也能手动修好重渲染；玩家发言仍是纯文本。
+ * 编辑的是玩家发言时，调用方应随后用 regenerateMixTail 重新生成回复。
+ */
+export function editMixTurn(sessionId: string, turnId: string, newText: string): MixSession {
+    const current = getMixSession(sessionId);
+    if (!current) throw new ChatEngineError("对局不存在。");
+    const idx = current.turns.findIndex((t) => t.id === turnId);
+    if (idx < 0) throw new ChatEngineError("消息不存在。");
+    const trimmed = newText.trim();
+    if (!trimmed) throw new ChatEngineError("消息不能为空。");
+    let edited: MixTurn;
+    if (current.turns[idx].role === "assistant") {
+        const { text, ticketRaw, encoreRaw } = extractMixBlocks(trimmed);
+        edited = { ...current.turns[idx], text, ticketRaw, encoreRaw };
+    } else {
+        edited = { ...current.turns[idx], text: trimmed };
+    }
+    const updated: MixSession = { ...current, turns: [...current.turns.slice(0, idx), edited] };
+    saveMixSession(updated);
+    return updated;
+}
+
+/** 对当前历史直接生成回复（编辑玩家发言后的重新生成） */
+export async function regenerateMixTail(sessionId: string, signal?: AbortSignal): Promise<MixReplyResult> {
+    const current = getMixSession(sessionId);
+    if (!current) throw new ChatEngineError("对局不存在。");
+    return runMixGeneration(current, undefined, signal);
 }
 
 /** 撤回最后一轮：删掉最后一条玩家发言及其后的全部回复 */

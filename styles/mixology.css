@@ -180,6 +180,53 @@
     font-weight: 600;
 }
 
+/* 双行 TAB：上行比喻名，下行小字标它在提示词里的正规段名 */
+.mix-chip[data-two-line="true"] {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1px;
+    padding: 6px 13px 5px;
+    border-radius: 13px;
+    line-height: 1.3;
+}
+
+.mix-chip[data-two-line="true"] small {
+    font-size: 9px;
+    font-weight: 400;
+    color: var(--mix-faint);
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+}
+
+.mix-chip[data-two-line="true"][data-active="true"] small {
+    color: rgba(141, 123, 245, 0.75);
+}
+
+/* 右下角悬浮创建按钮：当前 TAB 是哪类就建哪类 */
+.mix-fab {
+    position: absolute;
+    right: 16px;
+    bottom: 78px;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 52px;
+    height: 52px;
+    border: none;
+    border-radius: 50%;
+    background: var(--mix-violet);
+    color: #fff;
+    cursor: pointer;
+    box-shadow: 0 6px 20px rgba(141, 123, 245, 0.45), 0 2px 6px rgba(0, 0, 0, 0.35);
+    transition: transform 0.15s;
+}
+
+.mix-fab:active {
+    transform: scale(0.92);
+}
+
 /* ── 双列瀑布（CSS columns） ── */
 .mix-waterfall {
     column-count: 2;
@@ -891,6 +938,65 @@
     margin: 14px 0;
 }
 
+/* 带操作行时纵向排：气泡在上、图标行贴在下 */
+.mix-user-turn[data-with-actions="true"] {
+    flex-direction: column;
+    align-items: flex-end;
+}
+
+/* ── 每条消息下方的操作行（复制/回溯/编辑）── */
+.mix-turn-actions {
+    display: flex;
+    gap: 16px;
+    margin: 5px 2px 2px;
+    opacity: 0.42;
+    transition: opacity 0.15s;
+}
+
+.mix-turn-actions:hover {
+    opacity: 0.8;
+}
+
+.mix-turn-actions[data-align="right"] {
+    justify-content: flex-end;
+}
+
+.mix-turn-act {
+    display: flex;
+    align-items: center;
+    padding: 3px;
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+}
+
+.mix-turn-act:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
+
+.mix-turn-act:active {
+    transform: scale(0.9);
+}
+
+/* AI 轮外层：只作分组，不改排版 */
+.mix-assistant-turn {
+    margin: 0 0 6px;
+}
+
+/* 消息就地编辑 */
+.mix-turn-edit {
+    margin: 10px 0;
+}
+
+.mix-turn-edit-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 8px;
+}
+
 .mix-user-bubble {
     max-width: 82%;
     padding: 10px 14px;
@@ -1062,6 +1168,17 @@
 .mix-comment {
     padding: 10px 0 2px;
     border-bottom: 1px solid var(--mix-line);
+}
+
+/* 删除请求在途：整条压暗防止误触，按钮文字改「删除中…」 */
+.mix-comment[data-deleting="true"] {
+    opacity: 0.45;
+    pointer-events: none;
+}
+
+/* 点赞请求在途：微暗示意，防连点 */
+.mix-like-btn[data-pending="true"] {
+    opacity: 0.5;
 }
 
 .mix-comment[data-depth="1"] {
@@ -1505,6 +1622,75 @@
 /* 无封面材料：图标区加高，别矮成一条 */
 .mix-mat-glyph {
     height: 104px;
+}
+
+/* 技法类视觉材料（小票/装饰/尾调）：同为海报卡，比角色卡矮一档 */
+.mix-mat-card[data-poster="true"]:not([data-kind="character"]) {
+    aspect-ratio: 3 / 3.8;
+}
+
+/* ── 纯文本材料（基底/风味/杯型/苦精）：不配图，单列横条 ── */
+.mix-mat-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding-top: 10px;
+}
+
+.mix-mat-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 13px 14px;
+    border-radius: 14px;
+    background: var(--mix-panel);
+    cursor: pointer;
+    transition: transform 0.15s;
+}
+
+.mix-mat-row:active {
+    transform: scale(0.98);
+}
+
+.mix-mat-row-glyph {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    color: var(--mix-violet);
+    background: var(--mix-panel-2);
+}
+
+.mix-mat-row[data-kind="strength"] .mix-mat-row-glyph {
+    color: var(--mix-gold);
+}
+
+/* 对局内修改方案：角色卡槽锁定态（卡槽轮与横条两种形态都认） */
+.mix-mat-row[data-locked="true"],
+.mix-slot[data-locked="true"] {
+    opacity: 0.55;
+    cursor: default;
+}
+
+.mix-mat-row[data-locked="true"]:active {
+    transform: none;
+}
+
+/* 消息编辑大弹窗的输入区 */
+.mix-edit-large {
+    min-height: 52vh;
+    margin-top: 10px;
+    font-size: 13px;
+    line-height: 1.8;
+}
+
+.mix-mat-row .mix-mat-info {
+    flex: 1;
+    min-width: 0;
+    padding: 0;
 }
 
 /* ── 确认弹窗 ── */

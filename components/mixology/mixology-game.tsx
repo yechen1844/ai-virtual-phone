@@ -4,13 +4,14 @@
 // 玩家右侧气泡、小票全宽卡；全程无任何标签徽章，保沉浸。
 // 装饰材料的 CSS 以 <style> 注入本画面容器（认 .mix-* 官方语义类）。
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronLeft, CornerDownRight, RotateCcw, Send, Undo2 } from "lucide-react";
-import { continueMix, generateMixReply, rerollMixReply, undoMixLastRound } from "@/lib/mixology/engine";
-import { getMixMaterial, getMixSession } from "@/lib/mixology/storage";
-import { mixEncoreRenderHtml, type MixCharacterCard, type MixSession, type MixTurn } from "@/lib/mixology/types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronLeft, Copy, CornerDownRight, History, Pencil, Plus, RotateCcw, Send, SlidersHorizontal, X } from "lucide-react";
+import { continueMix, editMixTurn, generateMixReply, mixTurnRawText, regenerateMixTail, rerollMixReply, truncateMixAfterTurn } from "@/lib/mixology/engine";
+import { getMixMaterial, getMixSession, listMixMaterials, saveMixSession } from "@/lib/mixology/storage";
+import { MIX_KIND_LABELS, MIX_SLOT_ORDER, mixEncoreRenderHtml, type MixCharacterCard, type MixMaterialKind, type MixSession, type MixTurn } from "@/lib/mixology/types";
 import { MixProseView } from "./prose-view";
 import { MixRichText } from "./rich-text";
+import { KindGlyph, MixConfirm } from "./mixology-shared";
 import { MixTicketFrame } from "./ticket-frame";
 
 type GameProps = {
@@ -38,12 +39,60 @@ function AssistantTurn({ turn, ticketHtml, encoreHtml }: { turn: MixTurn; ticket
     );
 }
 
+/** 每条消息下方的操作行：复制 / 回溯到这里 / 编辑 */
+function TurnActions({
+    align,
+    disabled,
+    canRewind,
+    onCopy,
+    onRewind,
+    onEdit,
+}: {
+    align: "left" | "right";
+    disabled: boolean;
+    canRewind: boolean;
+    onCopy: () => void;
+    onRewind: () => void;
+    onEdit: () => void;
+}) {
+    return (
+        <div className="mix-turn-actions" data-align={align}>
+            <button type="button" className="mix-turn-act" onClick={onCopy} disabled={disabled} aria-label="复制"><Copy size={13} /></button>
+            {canRewind ? (
+                <button type="button" className="mix-turn-act" onClick={onRewind} disabled={disabled} aria-label="回溯到这里"><History size={13} /></button>
+            ) : null}
+            <button type="button" className="mix-turn-act" onClick={onEdit} disabled={disabled} aria-label="编辑"><Pencil size={13} /></button>
+        </div>
+    );
+}
+
 export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
     const [session, setSession] = useState<MixSession | null>(() => getMixSession(sessionId));
     const [input, setInput] = useState("");
     const [busy, setBusy] = useState(false);
+    const [editing, setEditing] = useState<{ id: string; draft: string } | null>(null);
+    const [confirm, setConfirm] = useState<{ type: "rewind" | "edit"; turnId: string } | null>(null);
+    const [recipeOpen, setRecipeOpen] = useState(false);
+    const [slotPick, setSlotPick] = useState<MixMaterialKind | null>(null);
+    const [wheelIndex, setWheelIndex] = useState(0);
     const scrollRef = useRef<HTMLDivElement | null>(null);
     const abortRef = useRef<AbortController | null>(null);
+    const wheelRef = useRef<HTMLDivElement | null>(null);
+
+    const handleWheelScroll = useCallback(() => {
+        const el = wheelRef.current;
+        if (!el) return;
+        const center = el.scrollLeft + el.clientWidth / 2;
+        let best = 0;
+        let bestDist = Infinity;
+        Array.from(el.children).forEach((child, i) => {
+            const c = child as HTMLElement;
+            const mid = c.offsetLeft + c.offsetWidth / 2;
+            const dist = Math.abs(mid - center);
+            if (dist < bestDist) { bestDist = dist; best = i; }
+        });
+        setWheelIndex(best);
+    }, []);
 
     // 封面 / 小票渲染代码 / 装饰 CSS：按方案槽位从酒柜现取
     const assets = useMemo(() => {
@@ -115,9 +164,65 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
         void run((signal) => generateMixReply(sessionId, text, signal));
     };
 
+    const copyTurn = (turn: MixTurn) => {
+        const done = () => onToast("已复制");
+        if (navigator.clipboard?.writeText) {
+            navigator.clipboard.writeText(turn.text).then(done, () => onToast("复制失败"));
+            return;
+        }
+        const ta = document.createElement("textarea");
+        ta.value = turn.text;
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand("copy"); done(); } catch { onToast("复制失败"); }
+        document.body.removeChild(ta);
+    };
+
+    const laterCount = (turnId: string) => {
+        const idx = session.turns.findIndex((t) => t.id === turnId);
+        return idx < 0 ? 0 : session.turns.length - idx - 1;
+    };
+
+    const doRewind = (turnId: string) => {
+        try {
+            truncateMixAfterTurn(sessionId, turnId);
+            setSession(getMixSession(sessionId));
+        } catch (error) {
+            onToast(error instanceof Error ? error.message : "回溯失败");
+        }
+    };
+
+    const saveEdit = () => {
+        if (!editing) return;
+        const target = session.turns.find((t) => t.id === editing.id);
+        setEditing(null);
+        try {
+            editMixTurn(sessionId, editing.id, editing.draft);
+            setSession(getMixSession(sessionId));
+        } catch (error) {
+            onToast(error instanceof Error ? error.message : "保存失败");
+            return;
+        }
+        // 编辑的是玩家发言：直接续生成新回复；编辑角色回复则到此为止
+        if (target?.role === "user") {
+            void run((signal) => regenerateMixTail(sessionId, signal));
+        }
+    };
+
+    /** 换料：改本局方案快照的槽位，下一轮装配时生效 */
+    const setSlot = (kind: MixMaterialKind, materialId: string | undefined) => {
+        const slots = { ...session.recipe.slots };
+        if (materialId) slots[kind] = materialId;
+        else delete slots[kind];
+        const updated: MixSession = { ...session, recipe: { ...session.recipe, slots }, updatedAt: Date.now() };
+        saveMixSession(updated);
+        setSession(getMixSession(sessionId));
+        setSlotPick(null);
+        onToast("方案已更新，下一轮生效。");
+    };
+
     const lastTurn = session.turns[session.turns.length - 1];
     const canReroll = !busy && lastTurn?.role === "assistant" && session.turns.length > 1;
-    const canUndo = !busy && session.turns.some((t) => t.role === "user");
 
     return (
         <div className="mix-game">
@@ -126,21 +231,8 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
             <div className="mix-game-header">
                 <button type="button" className="mix-icon-btn" onClick={onBack} aria-label="返回"><ChevronLeft size={20} /></button>
                 <div className="mix-game-title">{session.charName}</div>
-                <button
-                    type="button"
-                    className="mix-icon-btn"
-                    onClick={() => {
-                        try {
-                            undoMixLastRound(sessionId);
-                            setSession(getMixSession(sessionId));
-                        } catch (error) {
-                            onToast(error instanceof Error ? error.message : "撤回失败");
-                        }
-                    }}
-                    disabled={!canUndo}
-                    aria-label="撤回上一轮"
-                >
-                    <Undo2 size={17} />
+                <button type="button" className="mix-icon-btn" onClick={() => setRecipeOpen(true)} disabled={busy} aria-label="修改方案" title="修改方案">
+                    <SlidersHorizontal size={17} />
                 </button>
             </div>
             <div className="mix-game-scroll" ref={scrollRef}>
@@ -149,15 +241,31 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
                         <MixRichText text={assets.canvasHtml} />
                     </div>
                 ) : null}
-                {session.turns.map((turn) =>
-                    turn.role === "user" ? (
-                        <div className="mix-user-turn" key={turn.id}>
+                {session.turns.map((turn, idx) => {
+                    const isLast = idx === session.turns.length - 1;
+                    const actions = (
+                        <TurnActions
+                            align={turn.role === "user" ? "right" : "left"}
+                            disabled={busy}
+                            canRewind={!isLast}
+                            onCopy={() => copyTurn(turn)}
+                            onRewind={() => setConfirm({ type: "rewind", turnId: turn.id })}
+                            onEdit={() => setEditing({ id: turn.id, draft: mixTurnRawText(turn) })}
+                            key={`act-${turn.id}`}
+                        />
+                    );
+                    return turn.role === "user" ? (
+                        <div className="mix-user-turn" data-with-actions="true" key={turn.id}>
                             <div className="mix-user-bubble">{turn.text}</div>
+                            {actions}
                         </div>
                     ) : (
-                        <AssistantTurn turn={turn} ticketHtml={assets.ticketHtml} encoreHtml={assets.encoreTurnHtml} key={turn.id} />
-                    ),
-                )}
+                        <div className="mix-assistant-turn" key={turn.id}>
+                            <AssistantTurn turn={turn} ticketHtml={assets.ticketHtml} encoreHtml={assets.encoreTurnHtml} />
+                            {actions}
+                        </div>
+                    );
+                })}
                 {busy ? (
                     <div className="mix-game-thinking" aria-label="生成中">
                         <span /><span /><span />
@@ -208,6 +316,169 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
                     <Send size={16} />
                 </button>
             </div>
+
+            {/* 修改方案：换本局的槽位材料 */}
+            {recipeOpen ? (
+                <div className="mix-sheet-mask" onClick={() => setRecipeOpen(false)}>
+                    <div className="mix-sheet" onClick={(e) => e.stopPropagation()}>
+                        <div className="mix-sheet-head">
+                            <div className="mix-sheet-title">修改方案</div>
+                            <button type="button" className="mix-icon-btn" onClick={() => setRecipeOpen(false)} aria-label="关闭"><X size={18} /></button>
+                        </div>
+                        <div className="mix-sheet-body">
+                            <div className="mix-struct-note">只改这一局，下一轮生成时生效，已写出的内容不变；不影响吧台里保存的方案。</div>
+                            <div className="mix-bar-hint">左右滑动切换槽位 · 点击槽位换材料</div>
+                            <div className="mix-wheel" ref={wheelRef} onScroll={handleWheelScroll}>
+                                {MIX_SLOT_ORDER.map((kind) => {
+                                    const id = session.recipe.slots[kind];
+                                    const mat = id ? getMixMaterial(id) : null;
+                                    const locked = kind === "character";
+                                    return (
+                                        <div
+                                            className="mix-slot"
+                                            data-filled={mat ? "true" : undefined}
+                                            data-locked={locked ? "true" : undefined}
+                                            key={kind}
+                                            onClick={() => { if (!locked) setSlotPick(kind); }}
+                                        >
+                                            <div className="mix-slot-kind">
+                                                <b>{MIX_KIND_LABELS[kind]}</b>
+                                                {locked ? <i>本局不可换</i> : <i>可留空</i>}
+                                            </div>
+                                            <div className="mix-slot-body">
+                                                {mat ? (
+                                                    <>
+                                                        {mat.cover ? (
+                                                            // eslint-disable-next-line @next/next/no-img-element
+                                                            <img className="mix-slot-cover" src={mat.cover} alt={mat.name} />
+                                                        ) : (
+                                                            <div className="mix-slot-glyph"><KindGlyph kind={kind} size={34} /></div>
+                                                        )}
+                                                        <div className="mix-slot-name">{mat.name}</div>
+                                                        {mat.hook ? <div className="mix-slot-hook">{mat.hook}</div> : null}
+                                                    </>
+                                                ) : locked ? (
+                                                    <>
+                                                        <div className="mix-slot-glyph"><KindGlyph kind={kind} size={34} /></div>
+                                                        <div className="mix-slot-name">{session.charName}</div>
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <div className="mix-slot-plus"><Plus size={26} /></div>
+                                                        <div className="mix-slot-empty-text">从酒柜里挑一件{MIX_KIND_LABELS[kind]}</div>
+                                                    </>
+                                                )}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                            <div className="mix-wheel-dots">
+                                {MIX_SLOT_ORDER.map((kind, i) => (
+                                    <span className="mix-wheel-dot" data-active={i === wheelIndex ? "true" : undefined} key={kind} />
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            ) : null}
+
+            {slotPick ? (
+                <div className="mix-sheet-mask" onClick={() => setSlotPick(null)}>
+                    <div className="mix-sheet" onClick={(e) => e.stopPropagation()}>
+                        <div className="mix-sheet-head">
+                            <div className="mix-sheet-title">选一件{MIX_KIND_LABELS[slotPick]}</div>
+                            <button type="button" className="mix-icon-btn" onClick={() => setSlotPick(null)} aria-label="关闭"><X size={18} /></button>
+                        </div>
+                        <div className="mix-sheet-body">
+                            <div className="mix-mat-list">
+                                {session.recipe.slots[slotPick] ? (
+                                    <div className="mix-mat-row" onClick={() => setSlot(slotPick, undefined)}>
+                                        <div className="mix-mat-row-glyph"><X size={18} /></div>
+                                        <div className="mix-mat-info">
+                                            <div className="mix-mat-name"><span>不用这味 · 清空槽位</span></div>
+                                        </div>
+                                    </div>
+                                ) : null}
+                                {listMixMaterials(slotPick).map((m) => (
+                                    <div className="mix-mat-row" data-kind={m.kind} onClick={() => setSlot(slotPick, m.id)} key={m.id}>
+                                        <div className="mix-mat-row-glyph"><KindGlyph kind={m.kind} size={22} /></div>
+                                        <div className="mix-mat-info">
+                                            <div className="mix-mat-name">
+                                                <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{m.name}</span>
+                                                {session.recipe.slots[slotPick] === m.id ? <span className="mix-mat-badge">当前</span> : null}
+                                            </div>
+                                            {m.hook ? <div className="mix-mat-hook">{m.hook}</div> : null}
+                                        </div>
+                                    </div>
+                                ))}
+                                {listMixMaterials(slotPick).length === 0 ? (
+                                    <div className="mix-comment-empty">酒柜里还没有{MIX_KIND_LABELS[slotPick]}——去酒柜页自建一件。</div>
+                                ) : null}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            ) : null}
+
+            {/* 编辑消息：大弹窗，assistant 轮编辑的是含格式块的原始输出 */}
+            {editing ? (() => {
+                const editingTurn = session.turns.find((t) => t.id === editing.id);
+                return (
+                    <div className="mix-sheet-mask" onClick={() => setEditing(null)}>
+                        <div className="mix-sheet" onClick={(e) => e.stopPropagation()}>
+                            <div className="mix-sheet-head">
+                                <div className="mix-sheet-title">编辑消息</div>
+                                <button type="button" className="mix-icon-btn" onClick={() => setEditing(null)} aria-label="关闭"><X size={18} /></button>
+                            </div>
+                            <div className="mix-sheet-body">
+                                {editingTurn?.role === "assistant" ? (
+                                    <div className="mix-struct-note">
+                                        这里是这一轮的<b>原始输出</b>——[状态栏]/[小剧场] 块也在里面。
+                                        模型输出掉了格式可以在这儿手动修，保存后会重新解析渲染。
+                                    </div>
+                                ) : null}
+                                <textarea
+                                    className="mix-textarea mix-edit-large"
+                                    value={editing.draft}
+                                    onChange={(e) => setEditing({ id: editing.id, draft: e.target.value })}
+                                />
+                                <div className="mix-turn-edit-actions">
+                                    <button type="button" className="mix-pill-btn" data-tone="ghost" onClick={() => setEditing(null)}>取消</button>
+                                    <button
+                                        type="button"
+                                        className="mix-pill-btn"
+                                        onClick={() => {
+                                            if (laterCount(editing.id) > 0) setConfirm({ type: "edit", turnId: editing.id });
+                                            else saveEdit();
+                                        }}
+                                    >
+                                        保存{editingTurn?.role === "user" ? "并重新生成" : ""}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })() : null}
+
+            {confirm ? (
+                <MixConfirm
+                    title={confirm.type === "rewind" ? "回溯到这条消息？" : "保存修改？"}
+                    body={confirm.type === "rewind"
+                        ? `这条消息之后的 ${laterCount(confirm.turnId)} 条内容将被删除。`
+                        : `保存后，这条消息之后的 ${laterCount(confirm.turnId)} 条内容将被删除${session.turns.find((t) => t.id === confirm.turnId)?.role === "user" ? "，并重新生成回复" : ""}。`}
+                    confirmText={confirm.type === "rewind" ? "回溯" : "保存"}
+                    tone="danger"
+                    onCancel={() => setConfirm(null)}
+                    onConfirm={() => {
+                        const target = confirm;
+                        setConfirm(null);
+                        if (target.type === "rewind") doRewind(target.turnId);
+                        else saveEdit();
+                    }}
+                />
+            ) : null}
         </div>
     );
 }

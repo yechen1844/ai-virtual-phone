@@ -26,7 +26,9 @@ import {
 import { saveMixMaterial, saveMixRecipe } from "@/lib/mixology/storage";
 import {
     MIX_KIND_LABELS,
+    MIX_KIND_SECTION_LABELS,
     MIX_SLOT_ORDER,
+    mixKindHasCover,
     type MixCharacterCard,
     type MixMaterial,
     type MixMaterialKind,
@@ -62,6 +64,7 @@ function CommentThread({
     const [input, setInput] = useState("");
     const [replyTo, setReplyTo] = useState<MixHallComment | null>(null);
     const [busy, setBusy] = useState(false);
+    const [deletingIds, setDeletingIds] = useState<string[]>([]);
 
     useEffect(() => {
         let cancelled = false;
@@ -91,12 +94,15 @@ function CommentThread({
     };
 
     const handleDelete = async (comment: MixHallComment) => {
+        setDeletingIds((prev) => [...prev, comment.id]);
         try {
             const deletedIds = await deleteHallComment(comment.id);
             setComments((prev) => prev.filter((c) => !deletedIds.includes(c.id)));
             onCountChange(-deletedIds.length);
         } catch (error) {
             onToast(error instanceof Error ? error.message : "删除失败");
+        } finally {
+            setDeletingIds((prev) => prev.filter((id) => id !== comment.id));
         }
     };
 
@@ -115,23 +121,28 @@ function CommentThread({
     const childrenOf = (id: string) => comments.filter((c) => c.parentId === id);
     const nameOf = (id?: string) => comments.find((c) => c.id === id)?.authorName;
 
-    const renderComment = (comment: MixHallComment, depth: number) => (
-        <div className="mix-comment" data-depth={depth > 0 ? "1" : undefined} key={comment.id}>
-            <div className="mix-comment-head">
-                <span className="mix-comment-author">{comment.authorName}</span>
-                {depth > 0 && comment.parentId && nameOf(comment.parentId) ? (
-                    <span className="mix-comment-replyto">回复 {nameOf(comment.parentId)}</span>
-                ) : null}
-                <span style={{ flex: 1 }} />
-                <button type="button" className="mix-comment-op" onClick={() => setReplyTo(comment)}>回复</button>
-                {comment.authorId === myId ? (
-                    <button type="button" className="mix-comment-op" onClick={() => onConfirmDelete(comment)}>删除</button>
-                ) : null}
+    const renderComment = (comment: MixHallComment, depth: number) => {
+        const deleting = deletingIds.includes(comment.id);
+        return (
+            <div className="mix-comment" data-depth={depth > 0 ? "1" : undefined} data-deleting={deleting ? "true" : undefined} key={comment.id}>
+                <div className="mix-comment-head">
+                    <span className="mix-comment-author">{comment.authorName}</span>
+                    {depth > 0 && comment.parentId && nameOf(comment.parentId) ? (
+                        <span className="mix-comment-replyto">回复 {nameOf(comment.parentId)}</span>
+                    ) : null}
+                    <span style={{ flex: 1 }} />
+                    <button type="button" className="mix-comment-op" onClick={() => setReplyTo(comment)} disabled={deleting}>回复</button>
+                    {comment.authorId === myId ? (
+                        <button type="button" className="mix-comment-op" onClick={() => onConfirmDelete(comment)} disabled={deleting}>
+                            {deleting ? "删除中…" : "删除"}
+                        </button>
+                    ) : null}
+                </div>
+                <div className="mix-comment-content">{comment.content}</div>
+                {childrenOf(comment.id).map((child) => renderComment(child, depth + 1))}
             </div>
-            <div className="mix-comment-content">{comment.content}</div>
-            {childrenOf(comment.id).map((child) => renderComment(child, depth + 1))}
-        </div>
-    );
+        );
+    };
 
     return (
         <div className="mix-comments">
@@ -158,7 +169,7 @@ function CommentThread({
                     placeholder={replyTo ? `回复 ${replyTo.authorName}…` : "说点什么…"}
                     disabled={busy}
                 />
-                <button type="button" className="mix-pill-btn" onClick={() => void handlePost()} disabled={busy || !input.trim()}>发送</button>
+                <button type="button" className="mix-pill-btn" onClick={() => void handlePost()} disabled={busy || !input.trim()}>{busy ? "发送中…" : "发送"}</button>
             </div>
         </div>
     );
@@ -183,6 +194,7 @@ export function MixologyHall({
     const [detailMaterial, setDetailMaterial] = useState<MixHallMaterial | null>(null);
     const [detailRecipe, setDetailRecipe] = useState<MixHallRecipe | null>(null);
     const [busy, setBusy] = useState(false);
+    const [likePending, setLikePending] = useState<string[]>([]);
     const [myId, setMyId] = useState("");
     const [confirm, setConfirm] = useState<{
         title: string;
@@ -240,11 +252,16 @@ export function MixologyHall({
     };
 
     const handleLike = async (type: MixHallType, id: string) => {
+        const key = `${type}:${id}`;
+        if (likePending.includes(key)) return;
+        setLikePending((prev) => [...prev, key]);
         try {
             const { liked, likeCount } = await toggleHallLike(type, id);
             patchEntry(type, id, { likedByMe: liked, likeCount });
         } catch (error) {
             onToast(error instanceof Error ? error.message : "点赞失败");
+        } finally {
+            setLikePending((prev) => prev.filter((k) => k !== key));
         }
     };
 
@@ -320,6 +337,9 @@ export function MixologyHall({
     };
 
     const handleRemove = async (type: MixHallType, id: string, name: string) => {
+        if (busy) return;
+        setBusy(true);
+        onToast("正在下架…");
         try {
             await removeHallEntry(type, id);
             if (type === "material") {
@@ -332,6 +352,8 @@ export function MixologyHall({
             onToast(`「${name}」已下架。`);
         } catch (error) {
             onToast(error instanceof Error ? error.message : "下架失败");
+        } finally {
+            setBusy(false);
         }
     };
 
@@ -340,7 +362,9 @@ export function MixologyHall({
             type="button"
             className="mix-like-btn"
             data-on={entry.likedByMe ? "true" : undefined}
+            data-pending={likePending.includes(`${type}:${entry.id}`) ? "true" : undefined}
             onClick={() => void handleLike(type, entry.id)}
+            disabled={likePending.includes(`${type}:${entry.id}`)}
             aria-label="点赞"
         >
             <Heart size={15} fill={entry.likedByMe ? "currentColor" : "none"} />
@@ -354,8 +378,9 @@ export function MixologyHall({
     const chipRow = mode === "menu" ? (
         <div className="mix-chip-row">
             {MIX_SLOT_ORDER.map((k) => (
-                <button type="button" className="mix-chip" data-active={kind === k ? "true" : undefined} onClick={() => setKind(k)} key={k}>
-                    {MIX_KIND_LABELS[k]}
+                <button type="button" className="mix-chip" data-two-line="true" data-active={kind === k ? "true" : undefined} onClick={() => setKind(k)} key={k}>
+                    <span>{MIX_KIND_LABELS[k]}</span>
+                    <small>{MIX_KIND_SECTION_LABELS[k]}</small>
                 </button>
             ))}
         </div>
@@ -387,7 +412,7 @@ export function MixologyHall({
                 );
             }
             return (
-                <div className="mix-waterfall">
+                <div className={mixKindHasCover(kind) ? "mix-waterfall" : "mix-mat-list"}>
                     {materials.map((entry) => (
                         <MatCard
                             kind={entry.kind}
@@ -486,7 +511,7 @@ export function MixologyHall({
                                             : <MaterialDetail material={detailMaterial.payload} />}
                                     </div>
                                     <button type="button" className="mix-brew-btn" onClick={() => void importMaterial(detailMaterial)} disabled={busy}>
-                                        <CornerDownRight size={16} />{detailMaterial.savedByMe ? "再次入柜" : "加入酒柜"}
+                                        <CornerDownRight size={16} />{busy ? "处理中…" : detailMaterial.savedByMe ? "再次入柜" : "加入酒柜"}
                                     </button>
                                 </>
                             ) : (
@@ -555,7 +580,7 @@ export function MixologyHall({
                                         })}
                                         disabled={busy}
                                     >
-                                        <CornerDownRight size={16} />{detailRecipe.savedByMe ? "再次导入" : "连料入柜"}
+                                        <CornerDownRight size={16} />{busy ? "处理中…" : detailRecipe.savedByMe ? "再次导入" : "连料入柜"}
                                     </button>
                                 </>
                             ) : (

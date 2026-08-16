@@ -32,8 +32,30 @@ export const MIX_SLOT_ORDER: MixMaterialKind[] = [
     "character", "base", "flavor", "glass", "strength", "ticket", "garnish", "encore",
 ];
 
+/** 每类材料在提示词里的正规段名（装饰不进提示词，标它的实际职责） */
+export const MIX_KIND_SECTION_LABELS: Record<MixMaterialKind, string> = {
+    character: "角色资料",
+    base: "扮演总纲",
+    flavor: "文风",
+    glass: "正文输出要求",
+    strength: "最高优先级",
+    ticket: "状态栏",
+    garnish: "界面样式",
+    encore: "小剧场",
+};
+
 /** 必选槽：没配齐不能开局；其余槽可留空 */
 export const MIX_REQUIRED_KINDS: MixMaterialKind[] = ["character"];
+
+/**
+ * 支持配图的种类：角色卡 + 三类"看效果"的视觉材料（小票/装饰/尾调），
+ * 列表里走双列海报瀑布；其余纯文本材料不配图，走单列列表。
+ */
+export const MIX_VISUAL_KINDS: MixMaterialKind[] = ["character", "ticket", "garnish", "encore"];
+
+export function mixKindHasCover(kind: MixMaterialKind): boolean {
+    return MIX_VISUAL_KINDS.includes(kind);
+}
 
 /** 所有材料共有的元信息 */
 export type MixMaterialMeta = {

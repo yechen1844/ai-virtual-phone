@@ -15,7 +15,7 @@ import {
     UserRound,
 } from "lucide-react";
 import type { MixCharacterCard, MixMaterial, MixMaterialKind } from "@/lib/mixology/types";
-import { MIX_KIND_LABELS, mixEncoreRenderHtml } from "@/lib/mixology/types";
+import { MIX_KIND_LABELS, mixEncoreRenderHtml, mixKindHasCover } from "@/lib/mixology/types";
 import { MixRichText } from "./rich-text";
 
 const KIND_ICONS: Record<MixMaterialKind, typeof UserRound> = {
@@ -60,8 +60,9 @@ export function MatCard({
     onClick: () => void;
 }) {
     // 卡型只看种类，不看有没有配图——否则同一类里配了图的高、没配图的矮，
-    // 双列瀑布会参差。角色卡一律海报式（缺图时用同尺寸的占位面），其余一律紧凑式。
-    if (kind === "character") {
+    // 双列瀑布会参差。视觉类（角色卡/小票/装饰/尾调）一律海报式（缺图时用
+    // 同尺寸的占位面），纯文本类（基底/文风/杯型/苦精）一律单列横条。
+    if (mixKindHasCover(kind)) {
         return (
             <div className="mix-mat-card" data-kind={kind} data-poster="true" onClick={onClick}>
                 {cover ? (
@@ -82,21 +83,17 @@ export function MatCard({
     }
 
     return (
-        <div className="mix-mat-card" data-kind={kind} onClick={onClick}>
-            {cover ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img className="mix-mat-thumb" src={cover} alt={name} />
-            ) : (
-                <div className="mix-mat-glyph"><KindGlyph kind={kind} size={30} /></div>
-            )}
+        <div className="mix-mat-row" data-kind={kind} onClick={onClick}>
+            <div className="mix-mat-row-glyph"><KindGlyph kind={kind} size={22} /></div>
             <div className="mix-mat-info">
                 <div className="mix-mat-name">
                     <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{name}</span>
                     {badge ? <span className="mix-mat-badge">{badge}</span> : null}
                 </div>
                 {hook ? <div className="mix-mat-hook">{hook}</div> : null}
-                {author ? <div className="mix-mat-author">@{author}</div> : null}
-                {stats ? <div className="mix-mat-stats">{stats}</div> : null}
+                {author || stats ? (
+                    <div className="mix-mat-author">{[author ? `@${author}` : null, stats].filter(Boolean).join(" · ")}</div>
+                ) : null}
             </div>
         </div>
     );

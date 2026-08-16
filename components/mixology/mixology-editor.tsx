@@ -11,7 +11,7 @@ import type {
     MixMaterialKind,
     MixTextMaterial,
 } from "@/lib/mixology/types";
-import { createMixId, MIX_KIND_LABELS } from "@/lib/mixology/types";
+import { createMixId, MIX_KIND_LABELS, mixKindHasCover } from "@/lib/mixology/types";
 import { MixPreviewSheet, MixStructureSheet, type MixPreviewTarget } from "./mixology-preview";
 
 const OPENING_SEPARATOR = "\n---\n";
@@ -262,7 +262,7 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
             <Field label="一句话介绍">
                 <input className="mix-input" value={hook} onChange={(e) => setHook(e.target.value)} placeholder="一句话说清它的特点，会显示在卡片上" />
             </Field>
-            {isCharacter || kind === "encore" ? (
+            {mixKindHasCover(kind) ? (
                 <Field label="封面图" hint={isCharacter ? "对局背景，强烈建议配" : undefined}>
                     <div className="mix-cover-picker">
                         {cover ? (
