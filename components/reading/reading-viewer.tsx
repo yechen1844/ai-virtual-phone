@@ -903,6 +903,7 @@ export function ReadingViewer({ book, onBack }: Props) {
             }
             setAutoAnnotate(true);
             generatedBatchesRef.current.clear();
+            prefetchedBatchStartRef.current = -1; // 新的阅读体验：预生成触发标记一并重置
             autoBootstrapInFlightRef.current = true;
             try {
                 const request = await materializeBatchRequest(size, "auto-current");
@@ -1992,7 +1993,7 @@ export function ReadingViewer({ book, onBack }: Props) {
                             <div
                                 key={c.characterId}
                                 className="chat-contact-item"
-                                onClick={() => { setCompanionId(c.characterId); closeCharPicker(); generatedBatchesRef.current.clear(); }}
+                                onClick={() => { setCompanionId(c.characterId); closeCharPicker(); generatedBatchesRef.current.clear(); prefetchedBatchStartRef.current = -1; }}
                             >
                                 <div className="chat-contact-avatar"
                                     style={companionId === c.characterId ? { outline: "3px solid var(--c-success)", outlineOffset: "2px" } : undefined}
