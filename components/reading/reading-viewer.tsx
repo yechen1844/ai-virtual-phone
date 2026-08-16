@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from "react";
 import { Bot, ChevronDown, ChevronRight, Languages, Menu, Minus, PenLine, SendHorizontal, X } from "lucide-react";
 import {
     loadChapters,
@@ -301,12 +301,17 @@ export function ReadingViewer({ book, onBack }: Props) {
     const autoBootstrapInFlightRef = useRef(false);
     const pendingTxtPageFractionRef = useRef<number | null>(null);
     const lastTxtPaginationSignatureRef = useRef("");
-    // 滚动阅读模式：章节内滚动比例(0-1)、恢复标记、待跳转比例
+    // 滚动阅读模式：连续滚动（多章窗口无缝衔接）
     const scrollFractionRef = useRef(0);
-    const scrollModeRestoredRef = useRef(false);
-    const initialScrollFractionRef = useRef<number | null>(null);
-    const pendingScrollFractionRef = useRef<number | null>(null);
-    const autoNextChapterRef = useRef(false); // 滚动到底自动进入下一章的去重标记
+    const initialScrollFractionRef = useRef<number | null>(null); // 打开书时保存的章节内比例
+    const pendingScrollFractionRef = useRef<number | null>(null); // 滑块跨章待定位比例
+    const scrollContentRef = useRef<HTMLDivElement>(null);        // 滚动内容容器（含多章块）
+    const chapterMetricsRef = useRef<Map<number, { top: number; height: number }>>(new Map()); // 各章块在滚动坐标系中的 top/height
+    const pendingScrollActionRef = useRef<{ kind: "shift-forward"; oldScrollTop: number; removedHeight: number } | { kind: "shift-backward"; oldScrollTop: number } | null>(null);
+    const shiftCooldownRef = useRef(false);                      // 窗口平移后的冷却期，防止边界来回抖动
+    const scrollPositionedKeyRef = useRef("");                   // 已做过初始定位的「书+模式」标识
+    const chapterIndexRef = useRef(0);
+    const chaptersLenRef = useRef(0);
     const [txtLayoutVersion, setTxtLayoutVersion] = useState(0);
     const [txtPages, setTxtPages] = useState<TxtPageItem[][]>([]);
     const [scrollFraction, setScrollFraction] = useState(0);
@@ -339,6 +344,32 @@ export function ReadingViewer({ book, onBack }: Props) {
     const bilingualTranslationEnabled = readingConfig.bilingualTranslationEnabled === true;
     const defaultTranslationExpanded = readingConfig.collapseBilingualTranslation !== true;
     const isScrollMode = !isPdf && readingConfig.readingMode === "scroll";
+    // 保持 ref 与最新状态同步（供长生命周期滚动回调读取）
+    chapterIndexRef.current = chapterIndex;
+    chaptersLenRef.current = chapters.length;
+    // 滚动模式渲染的章节窗口：上一章 + 当前章 + 下一章（无缝衔接用）
+    const windowChapters = useMemo(() => {
+        if (chapters.length === 0) return [] as BookChapter[];
+        const start = Math.max(0, chapterIndex - 1);
+        const end = Math.min(chapters.length - 1, chapterIndex + 1);
+        const out: BookChapter[] = [];
+        for (let i = start; i <= end; i++) out.push(chapters[i]);
+        return out;
+    }, [chapters, chapterIndex]);
+    // 滚动模式：将「章节内比例(0-1)」换算为具体滚动位置（窗口布局下按当前章块定位）
+    const scrollToChapterFraction = useCallback((fraction: number, targetChapterIndex: number) => {
+        const body = scrollRef.current;
+        if (!body) return;
+        const metrics = chapterMetricsRef.current.get(targetChapterIndex);
+        if (!metrics) return;
+        const maxScroll = Math.max(0, body.scrollHeight - body.clientHeight);
+        const span = Math.max(0, metrics.height - body.clientHeight);
+        const target = Math.max(0, Math.min(maxScroll, metrics.top + Math.max(0, Math.min(1, fraction)) * span));
+        body.scrollTop = target;
+        const actual = span > 0 ? Math.min(1, Math.max(0, (target - metrics.top) / span)) : 0;
+        scrollFractionRef.current = actual;
+        setScrollFraction(actual);
+    }, []);
     const currentChapter = chapters[chapterIndex];
     const txtPagesChapterIndex = txtPages[0]?.find((item) => item.kind !== "gap")?.chapterIndex ?? txtPages[0]?.[0]?.chapterIndex;
     const txtPagesReadyForCurrentChapter = !isPdf && !isScrollMode && txtPages.length > 0 && txtPagesChapterIndex === chapterIndex;
@@ -495,6 +526,12 @@ export function ReadingViewer({ book, onBack }: Props) {
 
     // Load book data
     useEffect(() => {
+        // 清空上一本书遗留的滚动定位状态
+        initialScrollFractionRef.current = null;
+        pendingScrollFractionRef.current = null;
+        pendingScrollActionRef.current = null;
+        shiftCooldownRef.current = false;
+        scrollPositionedKeyRef.current = "";
         setChaptersLoaded(false);
         (async () => {
             let chs = await loadChapters(book.id);
@@ -994,13 +1031,7 @@ export function ReadingViewer({ book, onBack }: Props) {
 
             if (targetChapterIndex === chapterIndex) {
                 if (isScrollMode) {
-                    const body = scrollRef.current;
-                    if (body) {
-                        const maxScroll = Math.max(0, body.scrollHeight - body.clientHeight);
-                        body.scrollTop = Math.max(0, Math.min(maxScroll, pageFraction * maxScroll));
-                        scrollFractionRef.current = pageFraction;
-                        setScrollFraction(pageFraction);
-                    }
+                    scrollToChapterFraction(pageFraction, chapterIndex);
                 } else {
                     pendingTxtPageFractionRef.current = null;
                     setTxtPage(Math.round(pageFraction * Math.max(0, txtTotalPages - 1)));
@@ -1103,14 +1134,12 @@ export function ReadingViewer({ book, onBack }: Props) {
     const goToChapter = (idx: number, startFromEnd = false) => {
         if (idx < 0 || idx >= chapters.length) return;
         pendingTxtPageFractionRef.current = startFromEnd ? 1 : null;
-        pendingScrollFractionRef.current = startFromEnd ? 1 : null;
+        // 滚动模式：显式跳章后定位到新章节的起点（0）或终点（1），而非窗口顶部（可能是上一章）
+        // 实际滚动位置由渲染后的 useLayoutEffect 依据章节块度量换算
+        pendingScrollFractionRef.current = startFromEnd ? 1 : 0;
         setChapterIndex(idx);
         setTxtPage(0);
-        scrollRef.current?.scrollTo(0, 0);
     };
-    // 始终指向最新 goToChapter（供滚动监听这类长生命周期回调使用，避免监听器反复重建）
-    const goToChapterRef = useRef(goToChapter);
-    goToChapterRef.current = goToChapter;
 
     const buildDiscussContext = useCallback((sourceChapters: BookChapter[] = chapters): ReadingDiscussContext | null => {
         const sourceParagraphRefs = buildParagraphRefsFromChapters(sourceChapters);
@@ -1741,18 +1770,15 @@ export function ReadingViewer({ book, onBack }: Props) {
         setTxtPage((prev) => Math.min(prev, Math.max(0, txtTotalPages - 1)));
     }, [txtTotalPages]);
 
-    // Scroll to top when page changes
-    useEffect(() => { scrollRef.current?.scrollTo(0, 0); }, [txtPage]);
-
-    // 滚动模式：章节切换时重置恢复标记与滚动比例
+    // Scroll to top when page changes (仅翻页模式；滚动模式的位置由 useLayoutEffect 统一管理)
     useEffect(() => {
-        scrollModeRestoredRef.current = false;
-        autoNextChapterRef.current = false;
-        setScrollFraction(0);
-        scrollFractionRef.current = 0;
-    }, [chapterIndex, isScrollMode]);
+        if (isScrollMode) return;
+        scrollRef.current?.scrollTo(0, 0);
+    }, [txtPage, isScrollMode]);
 
-    // 滚动模式：监听滚动，节流更新章节内滚动比例；接近底部时自动进入下一章（连续阅读）
+    // 滚动模式：监听滚动 —— 更新章节内滚动比例；无缝衔接（多章窗口平移，保持视觉连续）
+    // 前向：当前章内容读完（章底滚到视口顶部/底部）→ 移除顶部章块 + 补偿滚动位置，自然过渡到下一章
+    // 后向：滚到窗口顶部 → 顶部前插上一章块 + 补偿滚动位置，自然回到上一章（无需「上一章」按钮）
     useEffect(() => {
         if (!isScrollMode) return;
         const body = scrollRef.current;
@@ -1762,16 +1788,47 @@ export function ReadingViewer({ book, onBack }: Props) {
             if (rafId) return;
             rafId = window.requestAnimationFrame(() => {
                 rafId = 0;
-                const maxScroll = Math.max(0, body.scrollHeight - body.clientHeight);
-                const fraction = maxScroll > 0 ? Math.min(1, Math.max(0, body.scrollTop / maxScroll)) : 0;
+                const ci = chapterIndexRef.current;
+                const len = chaptersLenRef.current;
+                const viewport = body.clientHeight;
+                const maxScroll = Math.max(0, body.scrollHeight - viewport);
+                const metrics = chapterMetricsRef.current.get(ci);
+                let fraction = 0;
+                if (metrics) {
+                    const span = Math.max(1, metrics.height - viewport);
+                    fraction = Math.min(1, Math.max(0, (body.scrollTop - metrics.top) / span));
+                } else {
+                    fraction = maxScroll > 0 ? Math.min(1, Math.max(0, body.scrollTop / maxScroll)) : 0;
+                }
                 scrollFractionRef.current = fraction;
                 setScrollFraction(fraction);
-                // 连续阅读：本章可滚动、用户确实往下滚过、且接近底部时，自动切入下一章
-                if (maxScroll > 0 && body.scrollTop > 0 && !autoNextChapterRef.current
-                    && chapterIndex < chapters.length - 1
-                    && body.scrollTop + body.clientHeight >= body.scrollHeight - 96) {
-                    autoNextChapterRef.current = true;
-                    goToChapterRef.current(chapterIndex + 1);
+                if (!metrics) return;
+
+                // 离开顶部后解除平移冷却
+                if (body.scrollTop > 2) shiftCooldownRef.current = false;
+
+                const bottom = metrics.top + metrics.height;
+                // 高章节（超一屏）：章底滚到视口底部即衔接下一章，header 同步更新；
+                // 矮章节（不足一屏）：等章底滚到视口顶部再衔接，避免移除顶部章块后滚动位置为负导致跳动
+                const triggerAt = metrics.height >= viewport ? bottom - viewport - 2 : bottom - 2;
+                // 前向：当前章已读完 → 移除顶部章块，窗口后移
+                if (!shiftCooldownRef.current && ci < len - 1 && body.scrollTop >= triggerAt) {
+                    shiftCooldownRef.current = true;
+                    const prevMetrics = chapterMetricsRef.current.get(ci - 1);
+                    pendingScrollActionRef.current = {
+                        kind: "shift-forward",
+                        oldScrollTop: body.scrollTop,
+                        removedHeight: prevMetrics ? prevMetrics.height : 0,
+                    };
+                    setChapterIndex(ci + 1);
+                    return;
+                }
+                // 后向：已滚到窗口顶部 → 顶部前插上一章块，窗口前移
+                if (!shiftCooldownRef.current && ci > 0 && body.scrollTop <= 2) {
+                    shiftCooldownRef.current = true;
+                    pendingScrollActionRef.current = { kind: "shift-backward", oldScrollTop: body.scrollTop };
+                    setChapterIndex(ci - 1);
+                    return;
                 }
             });
         };
@@ -1780,34 +1837,56 @@ export function ReadingViewer({ book, onBack }: Props) {
             body.removeEventListener("scroll", onScroll);
             if (rafId) window.cancelAnimationFrame(rafId);
         };
-    }, [isScrollMode, chapterIndex, currentChapter, chapters.length]);
+    }, [isScrollMode]);
 
-    // 滚动模式：内容渲染后恢复/跳转滚动位置
-    useEffect(() => {
-        if (!isScrollMode || !currentChapter || !chaptersLoaded || !scrollRef.current) return;
+    // 滚动模式：渲染后测量各章块位置，并应用窗口平移补偿 / 显式定位（useLayoutEffect 保证在绘制前执行，无闪跳）
+    useLayoutEffect(() => {
+        if (!isScrollMode || !chaptersLoaded) return;
+        const content = scrollContentRef.current;
         const body = scrollRef.current;
-        let target: number | null = null;
-        if (pendingScrollFractionRef.current !== null) {
-            target = pendingScrollFractionRef.current;
-            pendingScrollFractionRef.current = null;
-        } else if (!scrollModeRestoredRef.current) {
-            if (initialScrollFractionRef.current !== null) {
-                target = initialScrollFractionRef.current;
-                initialScrollFractionRef.current = null;
-            }
-            scrollModeRestoredRef.current = true;
-        }
-        if (target === null) return;
+        if (!content || !body || windowChapters.length === 0) return;
 
-        const rafId = window.requestAnimationFrame(() => {
-            const maxScroll = Math.max(0, body.scrollHeight - body.clientHeight);
-            body.scrollTop = Math.max(0, Math.min(maxScroll, target * maxScroll));
-            const fraction = maxScroll > 0 ? Math.min(1, Math.max(0, body.scrollTop / maxScroll)) : 0;
-            scrollFractionRef.current = fraction;
-            setScrollFraction(fraction);
-        });
-        return () => window.cancelAnimationFrame(rafId);
-    }, [isScrollMode, chapterIndex, currentChapter, chaptersLoaded]);
+        // 1. 测量窗口内各章块在滚动坐标系中的位置（top 与 body.scrollTop 同坐标系）
+        const bodyRect = body.getBoundingClientRect();
+        const metrics = new Map<number, { top: number; height: number }>();
+        for (const chunk of content.querySelectorAll<HTMLElement>("[data-chapter-index]")) {
+            const idx = Number(chunk.getAttribute("data-chapter-index"));
+            if (!Number.isFinite(idx)) continue;
+            const rect = chunk.getBoundingClientRect();
+            metrics.set(idx, { top: rect.top - bodyRect.top + body.scrollTop, height: rect.height });
+        }
+        chapterMetricsRef.current = metrics;
+
+        // 2. 窗口平移补偿（保持视觉位置不动，实现无缝衔接）
+        const action = pendingScrollActionRef.current;
+        if (action) {
+            pendingScrollActionRef.current = null;
+            if (action.kind === "shift-forward") {
+                body.scrollTop = Math.max(0, action.oldScrollTop - action.removedHeight);
+            } else {
+                const newPrev = metrics.get(chapterIndex - 1);
+                body.scrollTop = Math.max(0, action.oldScrollTop + (newPrev ? newPrev.height : 0));
+            }
+            return;
+        }
+
+        // 3. 显式跳章 / 打开恢复 / 默认定位到当前章起点
+        const positionKey = `${book.id}:${isScrollMode}`;
+        const pendingFraction = pendingScrollFractionRef.current;
+        const initialFraction = initialScrollFractionRef.current;
+        if (pendingFraction !== null) {
+            pendingScrollFractionRef.current = null;
+            scrollPositionedKeyRef.current = positionKey;
+            scrollToChapterFraction(pendingFraction, chapterIndex);
+        } else if (initialFraction !== null) {
+            initialScrollFractionRef.current = null;
+            scrollPositionedKeyRef.current = positionKey;
+            scrollToChapterFraction(initialFraction, chapterIndex);
+        } else if (scrollPositionedKeyRef.current !== positionKey) {
+            scrollPositionedKeyRef.current = positionKey;
+            scrollToChapterFraction(0, chapterIndex);
+        }
+    }, [isScrollMode, chapterIndex, windowChapters, chaptersLoaded, annotations, txtLayoutVersion, book.id]);
 
     // Swipe handlers for TXT
     const handleTouchStart = (e: React.TouchEvent) => {
@@ -1948,26 +2027,30 @@ export function ReadingViewer({ book, onBack }: Props) {
                         <div className="reading-debug-hint">章节数据存在，但当前索引取不到正文。这个状态不是“正在加载”，而是本地章节数据和进度状态不一致。</div>
                     </div>
                 ) : isScrollMode ? (
-                    <div className="reading-scroll-content">
-                        {currentChapter.paragraphs.map((paragraph, pIndex) => {
-                            const segmentCount = paragraph.split("\n").length;
-                            const paragraphAnnotations = annotations.filter(
-                                (annotation) => annotation.chapterIndex === chapterIndex && annotation.paragraphIndex === pIndex
-                            );
-                            return (
-                                <div key={pIndex} className="reading-scroll-block">
-                                    {paragraph.split("\n").map((segment, sIndex) => (
-                                        <p
-                                            key={sIndex}
-                                            className={`reading-line reading-line-indent${sIndex === segmentCount - 1 ? " reading-line-seg-end" : ""}`}
-                                        >
-                                            {segment}
-                                        </p>
-                                    ))}
-                                    {paragraphAnnotations.map((annotation) => renderAnnotationItem(annotation))}
-                                </div>
-                            );
-                        })}
+                    <div ref={scrollContentRef} className="reading-scroll-content">
+                        {windowChapters.map((chapter) => (
+                            <div key={chapter.id} data-chapter-index={chapter.index}>
+                                {chapter.paragraphs.map((paragraph, pIndex) => {
+                                    const segmentCount = paragraph.split("\n").length;
+                                    const paragraphAnnotations = annotations.filter(
+                                        (annotation) => annotation.chapterIndex === chapter.index && annotation.paragraphIndex === pIndex
+                                    );
+                                    return (
+                                        <div key={pIndex} className="reading-scroll-block">
+                                            {paragraph.split("\n").map((segment, sIndex) => (
+                                                <p
+                                                    key={sIndex}
+                                                    className={`reading-line reading-line-indent${sIndex === segmentCount - 1 ? " reading-line-seg-end" : ""}`}
+                                                >
+                                                    {segment}
+                                                </p>
+                                            ))}
+                                            {paragraphAnnotations.map((annotation) => renderAnnotationItem(annotation))}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        ))}
                         <div className="h-[72px]" aria-hidden="true" />
                     </div>
                 ) : (
