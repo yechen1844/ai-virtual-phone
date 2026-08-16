@@ -328,6 +328,8 @@ export type McpServerConfig = {
     description?: string;
     url: string;
     enabled: boolean;
+    /** 直连模式：浏览器直接请求（本机/内网 MCP 用），不走服务端代理 */
+    directFetch?: boolean;
     headers?: Record<string, string>;
     discoveredTools?: McpDiscoveredTool[];
     // Session state (runtime, not persisted across page refresh)

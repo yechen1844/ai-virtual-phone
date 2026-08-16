@@ -20,6 +20,7 @@ import {
     loadRegexes, saveRegexes, parseRegexFromJson,
 } from "./settings-storage";
 import { saveScheme } from "./css-scheme-storage";
+import { STATUS_REGION_SCHEME_TARGET } from "./chat-status-region";
 import { createOrGetSession, loadChatSessions, saveChatSessions } from "./chat-storage";
 import { readThemeProfile, writeThemeProfile } from "./theme-storage";
 import { loadGameDrafts, saveGameDrafts } from "./game-storage";
@@ -328,6 +329,7 @@ export function checkImportFileForDestination(destination: ImportDestination, pa
         case "worldbook":
         case "game":
         case "theater":
+        case "status_bar":
             return isJson ? null : "该目的地需要 JSON 文件";
         case "character":
             return isJson || lower.endsWith(".png") ? null : "角色卡需要 JSON 或 PNG 文件";
@@ -450,6 +452,18 @@ export async function importResourceHubFile(
             savePresets([preset, ...loadPresets()]);
             dispatch("settings-presets-updated");
             return `预设「${preset.name}」已导入`;
+        }
+        case "status_bar": {
+            const statusText = await fetchResourceHubText(source, path);
+            let statusParsed: Record<string, unknown>;
+            try { statusParsed = JSON.parse(statusText) as Record<string, unknown>; }
+            catch { throw new Error("状态栏解析失败，请确认文件是聊天信息页导出的 JSON"); }
+            const statusContract = typeof statusParsed.contract === "string" ? statusParsed.contract : "";
+            const statusRender = typeof statusParsed.renderHtml === "string" ? statusParsed.renderHtml : "";
+            if (!statusContract.trim() || !statusRender.trim()) throw new Error("状态栏解析失败，缺少输出契约或渲染代码");
+            const statusPreview = typeof statusParsed.previewRaw === "string" ? statusParsed.previewRaw : "";
+            saveScheme(STATUS_REGION_SCHEME_TARGET, displayName, JSON.stringify({ contract: statusContract, renderHtml: statusRender, previewRaw: statusPreview }));
+            return `状态栏方案「${displayName}」已存入方案库，在聊天信息 → 自定义状态栏中应用`;
         }
         case "regex": {
             const regexText = await fetchResourceHubText(source, path);

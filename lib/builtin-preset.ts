@@ -6,7 +6,7 @@ import type { PresetConfig } from "./settings-types";
 import { getCheckPhonePromptTags } from "./checkphone-config";
 
 export const BUILTIN_PRESET_ID = "builtin_default_v1";
-export const BUILTIN_PRESET_VERSION = 258; // 升版本会用出厂内容重写用户的内置预设副本（自定义会丢），非必要不升
+export const BUILTIN_PRESET_VERSION = 260; // 升版本会用出厂内容重写用户的内置预设副本（自定义会丢），非必要不升
 
 export function createBuiltinPreset(): PresetConfig {
     const now = Date.now();
@@ -372,17 +372,10 @@ export function createBuiltinPreset(): PresetConfig {
                     "当前正在进行的日程：{{当前日程}}",
                     "你正在即时通讯app中与{{user}}进行实时微信聊天。",
                     "# 文字聊天模式",
-                    "【输出构成】输出格式由四个部分组成：状态数值、内心想法、聊天消息、富媒体动作（可选）。",
+                    "{{statusRegionComposition}}",
                     "{{chatBilingualInstruction}}",
                     "",
-                    "## 状态数值",
-                    "【逻辑】基于当前状态 {{state}}，根据本轮对话的情绪起伏进行实时增减（范围 0-100）。",
-                    "【格式】[好感度:X][占有欲:X][焦虑值:X]",
-                    "【示例】[好感度:85][占有欲:60][焦虑值:45]",
-                    "",
-                    "## 内心想法",
-                    "【逻辑】反映角色在回复前的真实心理活动、潜台词或情绪波动。",
-                    "【格式】[内心]在此处填写内心的潜台词[/内心]",
+                    "{{statusRegionSection}}",
                     "",
                     "## Chat Messages",
                     "Logic:",
@@ -481,9 +474,7 @@ export function createBuiltinPreset(): PresetConfig {
                     "{{timeContext}}",
                     "你已经在未收到{{user}}回复的情况下主动发送了{{count}}条消息。距你上次发消息已过{{delay}}秒。请根据{{char}}的性格决定是静默还是继续发消息。",
                     "如果继续发消息，内容应该自然，遵循chat_output_format的格式，不要重复之前说过的话。",
-                    "如果决定静默，按照以下格式输出：",
-                    "[好感度:X][占有欲:X][焦虑值:X]",
-                    "[内心]你的所有内心想法写在这里。[/内心]",
+                    "{{statusRegionExampleLine}}",
                     "</follow_up_instruction>",
                 ].join("\n"),
                 injection_position: 0,
@@ -500,9 +491,7 @@ export function createBuiltinPreset(): PresetConfig {
                     "{{timeContext}}",
                     "到了你之前打算主动找 {{user}} 的时间点（约 {{timedWakeElapsedMinutes}} 分钟前你这么决定的）——你当时想着：“{{timedWakeIntent}}”。这不是睡醒，而是你之前约好这会儿主动联系。现在你可以主动发消息，或先按住不发。",
                     "如果发送消息，内容必须自然，遵循chat_output_format的格式，不要机械复述当时的想法。",
-                    "如果决定静默，按照以下格式输出：",
-                    "[好感度:X][占有欲:X][焦虑值:X]",
-                    "[内心]你的所有内心想法写在这里。[/内心]",
+                    "{{statusRegionExampleLine}}",
                     "</timed_wake_instruction>",
                 ].join("\n"),
                 injection_position: 0,
@@ -881,8 +870,7 @@ export function createBuiltinPreset(): PresetConfig {
                     "【要求】只在有合理理由联系群聊时使用；群聊名称必须是{{char}}所在的群聊名；消息短、自然。",
                     "",
                     "## 完整示例",
-                    "[好感度:72][占有欲:25][焦虑值:15]",
-                    "[内心]等了{{user}}一整晚，回复这么冷淡，心里有点堵得慌。[/内心]",
+                    "{{statusRegionFullExample}}",
                     "怎么才回我？",
                     "",
                     "😤",

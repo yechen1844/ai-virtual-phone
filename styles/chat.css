@@ -2492,12 +2492,14 @@
   transform: scale(0.96);
 }
 
-.chat-thought-card .chat-html-inline {
+.chat-thought-card .chat-html-inline,
+.chat-status-bare .chat-html-inline {
   border-radius: 10px;
   box-shadow: none;
 }
 
-.chat-thought-card .chat-html-inline-frame {
+.chat-thought-card .chat-html-inline-frame,
+.chat-status-bare .chat-html-inline-frame {
   min-height: 100px;
   max-height: min(52vh, 420px);
 }
@@ -2522,6 +2524,27 @@
   aspect-ratio: 1 / 1.618;
   border: none;
   background: transparent;
+}
+
+/* ── Status bar area (bare: no sticky-note frame) ──
+   [状态栏] 的内容自己就是卡片（AI 直出的 HTML / 正则渲染的排版 / 自定义渲染代码），
+   这里只负责对齐到气泡左缘，不加任何背景、边框与标题。 */
+.chat-status-bare {
+  margin-left: 52px;
+  margin-top: -8px;
+  max-width: calc(100% - 64px);
+  animation: thoughtCardIn 0.3s ease-out;
+}
+
+/* 纯文字状态栏（没被正则/HTML 接管时）沿用折叠区原来的小字号，颜色跟随主题 */
+.chat-status-bare .chat-markdown {
+  font-size: calc(11.7px*var(--app-text-scale,1));
+  line-height: 1.7;
+}
+
+/* 状态栏和内心便利贴同时出现时，便利贴的负上边距会压到状态栏上，这里收回来 */
+.chat-status-bare + .chat-thought-card {
+  margin-top: 8px;
 }
 
 /* ── Inner monologue card (sticky-note style) ── */

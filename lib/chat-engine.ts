@@ -34,6 +34,7 @@ import {
 } from "./settings-storage";
 import { assemblePromptPayload, applyOutputRegex, type LLMMessage, type LLMContentPart } from "./llm-prompt-assembler";
 import { MacroEngine, postProcessTrim } from "./macro-engine";
+import { getStatusRegionConfig, resolveStatusRegionSection, resolveStatusRegionExampleLine, resolveStatusRegionComposition, resolveStatusRegionFullExample } from "./chat-status-region";
 import {
     buildProviderDebugMessages,
     buildProviderRequest,
@@ -1874,6 +1875,8 @@ export async function buildChatPromptMessages(
     const chatBilingualInstruction = !session.isGroup
         ? buildChatBilingualInstruction(session.bilingualTranslationEnabled !== false, "single", session.bilingualTranslationPrompt)
         : "";
+    // 状态区宏：按会话配置解析（native=原文/off=空/custom=契约）；群聊条目不含宏，不受影响
+    const statusRegionCfg = getStatusRegionConfig(session.id);
     const offlineBilingualInstruction = !session.isGroup
         ? buildOfflineBilingualInstruction(
             session.bilingualTranslationEnabled !== false,
@@ -1917,6 +1920,10 @@ export async function buildChatPromptMessages(
         tools: toolsPrompt,
         customAppRichMediaDirectives,
         chatBilingualInstruction,
+        statusRegionSection: resolveStatusRegionSection(statusRegionCfg),
+        statusRegionExampleLine: resolveStatusRegionExampleLine(statusRegionCfg),
+        statusRegionComposition: resolveStatusRegionComposition(statusRegionCfg),
+        statusRegionFullExample: resolveStatusRegionFullExample(statusRegionCfg),
         offlineBilingualInstruction,
         offlineSummaryTag: preset?.story_summary_tag?.trim() || "summary",
         nativeToolHistory: usesNativeActions,

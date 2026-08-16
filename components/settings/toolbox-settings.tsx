@@ -1297,7 +1297,6 @@ export function ToolboxSettings() {
                 const onConfirm = () => { if (isNewRest) confirmDraftRest(); else setEditRestId(null); };
                 const onCancel = () => { if (isNewRest) cancelDraftRest(); else setEditRestId(null); };
                 const title = editRest.builtIn ? editRest.name : (isNewRest ? "添加工具" : "编辑工具");
-                const directFetchInputId = `direct-fetch-${editRest.id}`;
 
                 if (editRest.builtIn) {
                     // Only tools that carry a key in fixedParams (weather/search) need an
@@ -1318,10 +1317,9 @@ export function ToolboxSettings() {
                                     </span>
                                 </div>
                                 )}
-                                <div className="flex items-center gap-2">
-                                    <input type="checkbox" id={directFetchInputId} checked={editRest.directFetch ?? true}
-                                        onChange={e => setR({ directFetch: e.target.checked })} />
-                                    <label htmlFor={directFetchInputId} className="menu-desc">直连模式（跳过服务端代理，无超时限制）</label>
+                                <div className="flex items-center justify-between gap-3">
+                                    <span className="menu-desc">直连模式（跳过服务端代理，无超时限制）</span>
+                                    <Toggle checked={editRest.directFetch ?? true} onChange={c => setR({ directFetch: c })} />
                                 </div>
                             </div>
                         </ContentDialog>
@@ -1359,10 +1357,9 @@ export function ToolboxSettings() {
                                     <option value="POST">POST</option>
                                 </Select>
                             </div>
-                            <div className="flex items-center gap-2">
-                                <input type="checkbox" id={directFetchInputId} checked={editRest.directFetch ?? true}
-                                    onChange={e => setR({ directFetch: e.target.checked })} />
-                                <label htmlFor={directFetchInputId} className="menu-desc">直连模式（跳过服务端代理，无超时限制）</label>
+                            <div className="flex items-center justify-between gap-3">
+                                <span className="menu-desc">直连模式（跳过服务端代理，无超时限制）</span>
+                                <Toggle checked={editRest.directFetch ?? true} onChange={c => setR({ directFetch: c })} />
                             </div>
                             <div className="flex flex-col gap-1">
                                 <label className="menu-desc ml-1">固定参数（API Key 等，不暴露给 AI）</label>
@@ -1574,6 +1571,10 @@ export function ToolboxSettings() {
                             <div className="flex flex-col gap-1">
                                 <label className="menu-desc ml-1">服务器 URL</label>
                                 <Input value={editMcp.url} placeholder="https://mcp-server.example.com" onChange={e => setM({ url: e.target.value })} />
+                            </div>
+                            <div className="flex items-center justify-between gap-3">
+                                <span className="menu-desc">直连模式（浏览器直接请求，本机/内网 MCP 必开；需服务器允许 CORS，仅支持 Streamable HTTP）</span>
+                                <Toggle className="flex-none" checked={editMcp.directFetch ?? false} onChange={c => setM({ directFetch: c })} />
                             </div>
                             <div className="flex flex-col gap-1">
                                 <label className="menu-desc ml-1">工具描述</label>

@@ -224,6 +224,7 @@ export type ChatMessage = {
     };
     isTyping?: boolean; // temporary flag for UI rendering
     statusPanel?: string; // AI display-only status content from [状态栏] tags
+    statusRegionMode?: "custom"; // 该消息生成时会话处于自定义状态栏模式（缺省=原生渲染）
     innerMonologue?: string; // AI inner monologue content from [内心] tags
     reasoningText?: string; // 模型思维链（reasoning/CoT）内容，挂在回复批次的第一条气泡上
     stateValues?: StateValue[]; // parsed character state values from inner monologue
@@ -1858,6 +1859,7 @@ export function replaceResponseBatchWithParts(
     parts: { content: string; mediaType?: ChatMessage["mediaType"]; mediaData?: ChatMessage["mediaData"] }[],
     options?: {
         statusPanel?: string;
+        statusRegionMode?: "custom";
         innerMonologue?: string;
         reasoningText?: string;
         stateValues?: StateValue[];
@@ -1900,6 +1902,7 @@ export function replaceResponseBatchWithParts(
         responseRoundId: firstMessage.responseRoundId,
         editableResponseText: firstMessage.editableResponseText,
         statusPanel: index === (options?.metaPartIndex ?? 0) ? options?.statusPanel : undefined,
+        statusRegionMode: index === (options?.metaPartIndex ?? 0) && options?.statusPanel ? options?.statusRegionMode : undefined,
         innerMonologue: index === (options?.metaPartIndex ?? 0) ? options?.innerMonologue : undefined,
         reasoningText: index === (options?.metaPartIndex ?? 0) ? options?.reasoningText : undefined,
         stateValues: index === (options?.metaPartIndex ?? 0) ? options?.stateValues : undefined,
@@ -1962,6 +1965,7 @@ export function replaceGroupResponseRound(
         rawResponseText?: string;
         responseBatchId?: string;
         statusPanel?: string;
+        statusRegionMode?: "custom";
         innerMonologue?: string;
         reasoningText?: string;
         stateValues?: StateValue[];
@@ -2003,6 +2007,7 @@ export function replaceGroupResponseRound(
         responseRoundId,
         editableResponseText,
         statusPanel: msg.statusPanel,
+        statusRegionMode: msg.statusRegionMode,
         innerMonologue: msg.innerMonologue,
         reasoningText: msg.reasoningText,
         stateValues: msg.stateValues,

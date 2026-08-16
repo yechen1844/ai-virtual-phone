@@ -224,6 +224,35 @@ async function proxyFetch(
     }
 }
 
+// 直连模式：浏览器直接请求 MCP（本机/局域网地址服务端代理天然不可达且被 SSRF 防线拦截）。
+// 需要 MCP 服务器允许 CORS；仅支持 Streamable HTTP（POST）。
+async function directMcpFetch(
+    url: string,
+    options: { headers?: Record<string, string>; body?: unknown; signal?: AbortSignal },
+): Promise<{ status: number; text: string; headers: Record<string, string> }> {
+    throwIfAborted(options.signal);
+    let res: Response;
+    try {
+        res = await fetch(url, {
+            method: "POST",
+            headers: options.headers,
+            body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+            signal: options.signal,
+        });
+    } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") throw err;
+        throw new Error("直连请求失败：无法连接 MCP 服务器，或被浏览器 CORS 拦截。"
+            + "请确认服务器已启动、地址端口正确，且允许了跨域（Access-Control-Allow-Origin）。");
+    }
+    const text = await res.text();
+    const headers: Record<string, string> = {};
+    const sessionId = res.headers.get("mcp-session-id");
+    if (sessionId) headers["mcp-session-id"] = sessionId;
+    const wwwAuth = res.headers.get("www-authenticate");
+    if (wwwAuth) headers["www-authenticate"] = wwwAuth;
+    return { status: res.status, text, headers };
+}
+
 function truncate(text: string): string {
     if (text.length > MAX_RESULT_LENGTH) return text.slice(0, MAX_RESULT_LENGTH);
     return text;
@@ -3415,6 +3444,7 @@ async function mcpRequest(
     isNotification?: boolean,
     useSse?: boolean,
     signal?: AbortSignal,
+    directFetch?: boolean,
 ): Promise<{ result?: unknown; error?: { code: number; message: string }; headers: Record<string, string> }> {
     throwIfAborted(signal);
     const headers: Record<string, string> = {
@@ -3434,12 +3464,20 @@ async function mcpRequest(
     // SSE transport: use SSE_REQUEST which handles the full SSE flow
     const proxyMethod = useSse ? "SSE_REQUEST" : "POST";
 
-    const res = await proxyFetch(serverUrl, {
-        method: proxyMethod,
-        headers,
-        body,
-        signal,
-    });
+    let res: { status: number; text: string; headers: Record<string, string> };
+    if (directFetch) {
+        if (useSse) {
+            return { error: { code: -1, message: "直连模式暂不支持 SSE 传输的 MCP。请改用 Streamable HTTP 地址（通常以 /mcp 结尾），或关闭该服务器的直连模式。" }, headers: {} };
+        }
+        res = await directMcpFetch(serverUrl, { headers, body, signal });
+    } else {
+        res = await proxyFetch(serverUrl, {
+            method: proxyMethod,
+            headers,
+            body,
+            signal,
+        });
+    }
 
     if (res.status === 401) {
         // 把响应体带回去：401 可能来自应用登录网关、隧道/反代或 MCP 服务器本身，
@@ -3510,7 +3548,7 @@ async function mcpInitialize(server: McpServerConfig, signal?: AbortSignal): Pro
         protocolVersion: MCP_PROTOCOL_VERSION,
         capabilities: {},
         clientInfo: MCP_CLIENT_INFO,
-    }, authHeaders, false, useSse, signal);
+    }, authHeaders, false, useSse, signal, server.directFetch);
 
     // Handle 401 — 按来源分流：应用登录网关 / 真 OAuth 服务器 / Token 失效
     if (initRes.error?.code === 401) {
@@ -3532,7 +3570,7 @@ async function mcpInitialize(server: McpServerConfig, signal?: AbortSignal): Pro
     await mcpRequest(requestUrl, "notifications/initialized", {}, {
         ...authHeaders,
         ...(sessionId ? { "Mcp-Session-Id": sessionId } : {}),
-    }, true, useSse, signal);
+    }, true, useSse, signal, server.directFetch);
 
     return { success: true };
 }
@@ -3551,7 +3589,7 @@ async function ensureTokenFresh(server: McpServerConfig, signal?: AbortSignal): 
                 protocolVersion: MCP_PROTOCOL_VERSION,
                 capabilities: {},
                 clientInfo: MCP_CLIENT_INFO,
-            }, undefined, false, undefined, signal);
+            }, undefined, false, undefined, signal, server.directFetch);
             const resolved = await resolveMcpOAuthMetadata(server.url, probe.headers["www-authenticate"] || "", signal);
             tokenEndpoint = resolved.metadata.token_endpoint;
             server.oauthTokenEndpoint = tokenEndpoint;
@@ -3916,7 +3954,7 @@ async function executeMcpTool(server: McpServerConfig, toolName: string, args: R
         const res = await mcpRequest(requestUrl, "tools/call", {
             name: toolName,
             arguments: args,
-        }, getMcpSessionHeaders(server), false, useSse, signal);
+        }, getMcpSessionHeaders(server), false, useSse, signal, server.directFetch);
 
         // Session expired — retry once
         if (res.error?.code === 401 || res.error?.code === 404) {
@@ -3930,7 +3968,7 @@ async function executeMcpTool(server: McpServerConfig, toolName: string, args: R
             const retry = await mcpRequest(server.url, "tools/call", {
                 name: toolName,
                 arguments: args,
-            }, getMcpSessionHeaders(server), false, useSse, signal);
+            }, getMcpSessionHeaders(server), false, useSse, signal, server.directFetch);
 
             if (retry.error) {
                 return { name: toolName, success: false, error: retry.error.message };
@@ -3998,7 +4036,7 @@ export async function discoverMcpTools(serverUrl: string, server?: McpServerConf
     const headers = server ? getMcpSessionHeaders(server) : { "MCP-Protocol-Version": MCP_PROTOCOL_VERSION };
 
     const useSse = isSseUrl(serverUrl);
-    const res = await mcpRequest(serverUrl, "tools/list", {}, headers, false, useSse);
+    const res = await mcpRequest(serverUrl, "tools/list", {}, headers, false, useSse, undefined, server?.directFetch);
 
     if (res.error) throw new Error(res.error.message);
 
