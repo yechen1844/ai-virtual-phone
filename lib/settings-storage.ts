@@ -281,6 +281,8 @@ export function createPreset(name: string): PresetConfig {
         openai_max_tokens: 0,
         openai_max_context: 100000,
         story_summary_tag: "summary",
+        // 预填充条目默认关闭：不额外配置时与原生行为完全一致
+        assistantPrefill: false,
         prompts: [],
         // 新建预设从第一天起就带上顺序表，避免出现「有条目但没有 order」的中间态
         prompt_order: [],
@@ -323,6 +325,10 @@ export function parsePresetFromJson(text: string, fallbackName: string = "导入
         if (typeof obj.scenario_format === "string") preset.scenario_format = obj.scenario_format;
         if (typeof obj.personality_format === "string") preset.personality_format = obj.personality_format;
         if (typeof obj.story_summary_tag === "string") preset.story_summary_tag = obj.story_summary_tag;
+        // 预填充条目（默认关闭）
+        if (typeof obj.assistantPrefill === "boolean") preset.assistantPrefill = obj.assistantPrefill;
+        if (typeof obj.assistantPrefillContent === "string") preset.assistantPrefillContent = obj.assistantPrefillContent;
+        if (typeof obj.reasoningTag === "string") preset.reasoningTag = obj.reasoningTag;
 
         // Parse prompts if array
         if (Array.isArray(obj.prompts)) {

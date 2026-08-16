@@ -51,7 +51,7 @@ import {
     type LlmToolDefinition,
 } from "./llm-provider-adapter";
 import { setDebugPromptSnapshot, type DebugPromptSnapshot } from "./debug-store";
-import { extractFinishReason } from "./api-helpers";
+import { extractFinishReason, extractLLMContent, extractTaggedReasoning, stripTaggedReasoning } from "./api-helpers";
 import { loadMemoryConfig, incrementEventCounter } from "./memory-storage";
 import { retrieveCoreMemoriesForPrompt, retrieveMemoriesForPrompt } from "./memory-service";
 import { formatCoreMemories, formatLongTermMemories } from "./memory-injector";
@@ -917,8 +917,28 @@ export async function sendLLMRequest(
         const parsed = parseProviderResponse(request.providerKind, data);
         let rawOutput = parsed.content || "";
 
-        if (parsed.reasoning) {
-            try { options?.onReasoning?.(parsed.reasoning); } catch { /* 捕获回调异常，不影响主流程 */ }
+        // ── 预填充思维链解析 ──
+        // 默认不启用（preset.reasoningTag 为空 且 未开启预填充时，与原生行为完全一致）。
+        // 启用预填充但未配置标签时，默认按原生 think/thinking 标签提取展示；
+        // 配置了自定义标签（如 <sikao>）时，从原始输出提取该标签包裹的思维链并入 reasoning 展示链路，
+        // 同时从最终正文剥离标签（原生标签已由解析器剥离，无需再剥）。
+        let reasoningText = parsed.reasoning || "";
+        const prefEnabled = effectivePreset?.assistantPrefill === true;
+        const reasoningTag = (effectivePreset?.reasoningTag || "").trim().toLowerCase();
+        const effectiveTag = reasoningTag || (prefEnabled ? "thinking" : "");
+        if (effectiveTag && rawOutput) {
+            const rawForExtract = extractLLMContent(data, undefined, { keepReasoningMarkup: true }) || rawOutput;
+            const tagged = extractTaggedReasoning(rawForExtract, effectiveTag);
+            if (tagged) {
+                if (!/^(think|thinking)$/.test(effectiveTag)) {
+                    rawOutput = stripTaggedReasoning(rawOutput, effectiveTag);
+                }
+                reasoningText = reasoningText ? `${reasoningText}\n\n${tagged}` : tagged;
+            }
+        }
+
+        if (reasoningText) {
+            try { options?.onReasoning?.(reasoningText); } catch { /* 捕获回调异常，不影响主流程 */ }
         }
 
         // Prepend reasoning content as <think> block (only when caller requests it, e.g. story mode)

@@ -298,6 +298,25 @@ function stripReasoningMarkup(text: string): string {
         .trim();
 }
 
+/** 从文本中提取指定标签（如 <sikao>）包裹的思维链内容，多个标签块拼接返回 */
+export function extractTaggedReasoning(text: string, tag: string): string {
+    const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`<${escaped}>([\\s\\S]*?)<\\/${escaped}>`, "gi");
+    const parts: string[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+        const content = m[1].trim();
+        if (content) parts.push(content);
+    }
+    return parts.join("\n\n");
+}
+
+/** 从文本中剥离指定标签包裹的思维链（与原生 <think|thinking> 剥离逻辑一致） */
+export function stripTaggedReasoning(text: string, tag: string): string {
+    const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return text.replace(new RegExp(`<${escaped}>[\\s\\S]*?<\\/${escaped}>`, "gi"), "").trim();
+}
+
 // Gemini may return thought parts before the visible answer. Only expose non-thought text here.
 function extractGeminiVisibleText(parts: unknown): string | null {
     if (!Array.isArray(parts)) return null;
@@ -315,7 +334,7 @@ function extractGeminiVisibleText(parts: unknown): string | null {
     return visible || null;
 }
 
-export function extractLLMContent(data: Record<string, unknown>, provider?: string): string | null {
+export function extractLLMContent(data: Record<string, unknown>, provider?: string, options?: { keepReasoningMarkup?: boolean }): string | null {
     if (!data) return null;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -349,8 +368,10 @@ export function extractLLMContent(data: Record<string, unknown>, provider?: stri
 
     if (!raw) return null;
 
-    // Strip non-user-facing model metadata before any downstream processing
-    return stripHallucinatedTimestamps(stripReasoningMarkup(raw));
+    // Strip non-user-facing model metadata before any downstream processing.
+    // keepReasoningMarkup=true 时保留 <think|thinking> 标签，供预填充功能按自定义标签提取思维链。
+    const cleaned = options?.keepReasoningMarkup ? raw : stripReasoningMarkup(raw);
+    return stripHallucinatedTimestamps(cleaned);
 }
 
 /**
