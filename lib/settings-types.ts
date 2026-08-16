@@ -82,14 +82,6 @@ export type PresetConfig = SettingItemMeta & {
     scenario_format?: string;
     personality_format?: string;
     story_summary_tag?: string;
-    /** 预填充条目（prefill）：启用后，在最后一条用户消息后注入 assistant 前缀，
-     *  用于约束模型输出格式（如引导模型先输出 <thinking> 思维链再正文）。默认关闭。 */
-    assistantPrefill?: boolean;
-    /** 预填充内容模板（可含思维链标签示例，如 <thinking>...</thinking>） */
-    assistantPrefillContent?: string;
-    /** 自定义思维链解析标签：模型在正文里用该标签（如 <sikao>）包裹思维链时，
-     *  按此标签从正文提取并剥离、走原生思维链展示链路。缺省为空（不启用自定义标签解析）。 */
-    reasoningTag?: string;
     prompt_order?: PromptOrderEntry[];
     prompts: Prompt[];
 };

@@ -23,7 +23,6 @@ import { CUSTOM_APPS_UPDATED_EVENT, loadInstalledCustomApps } from "@/lib/custom
 import type { InstalledCustomApp } from "@/lib/custom-app-types";
 import { SettingsContext } from "../phone-settings-app";
 import { BottomSheet, ConfirmDialog, TextExpandModal } from "@/components/ui/modal";
-import { Toggle } from "@/components/ui/form";
 import { SwipeActionRow, useSwipeActions } from "@/components/ui/swipe-actions";
 import { notifyMascotPageContext } from "@/lib/mascot-events";
 import { useTouchSort } from "@/lib/use-touch-sort";
@@ -128,7 +127,6 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
     const [confirmDeleteEntry, setConfirmDeleteEntry] = useState<string | null>(null);
     const [isLoaded, setIsLoaded] = useState(false);
     const [paramsOpen, setParamsOpen] = useState(false);
-    const [prefillOpen, setPrefillOpen] = useState(false);
     const [expandTarget, setExpandTarget] = useState<{ identifier: string; field: string } | null>(null);
     const [importError, setImportError] = useState<string | null>(null);
     const [customApps, setCustomApps] = useState<InstalledCustomApp[]>([]);
@@ -960,64 +958,6 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                 </div>
                                             )}
                                         </div>
-                                </div>
-
-                                {/* 预填充条目（PreFill） */}
-                                <div className="ui-entry-card mt-3" style={{ cursor: "default" }}>
-                                    <div className="ui-collapsible">
-                                        <div
-                                            onClick={() => setPrefillOpen(!prefillOpen)}
-                                            className="ui-collapsible-header flex justify-between items-center select-none"
-                                            data-open={prefillOpen}
-                                        >
-                                            <span className="menu-label ts-13 font-semibold">预填充条目 (PreFill)</span>
-                                            <ChevronDown size={16} className="text-[var(--c-text)]" style={{ transition: "transform 0.2s", transform: prefillOpen ? "rotate(180deg)" : "rotate(0deg)" }} />
-                                        </div>
-                                        {prefillOpen && (
-                                            <div className="p-[14px] flex flex-col gap-3">
-                                                <div className="flex items-center justify-between">
-                                                    <div className="flex flex-col gap-0.5">
-                                                        <label className="menu-label ts-12 font-semibold">启用预填充条目</label>
-                                                        <span className="ts-11 text-[var(--c-text-secondary)]">默认关闭，不启用时与原生行为完全一致</span>
-                                                    </div>
-                                                    <Toggle
-                                                        checked={preset.assistantPrefill === true}
-                                                        onChange={(next) => updatePreset(preset.id, { assistantPrefill: next })}
-                                                    />
-                                                </div>
-                                                {preset.assistantPrefill && (
-                                                    <>
-                                                        <div className="flex flex-col gap-2">
-                                                            <label className="menu-label ts-12 font-semibold">预填充内容模板</label>
-                                                            <textarea
-                                                                value={preset.assistantPrefillContent || ""}
-                                                                onChange={(e) => updatePreset(preset.id, { assistantPrefillContent: e.target.value })}
-                                                                rows={5}
-                                                                placeholder={"<thinking>\n（先写下你的思考过程，再输出正文）\n</thinking>"}
-                                                                className="ui-textarea resize-none font-mono text-[11px] leading-relaxed"
-                                                            />
-                                                        </div>
-                                                        <div className="flex flex-col gap-2">
-                                                            <label className="menu-label ts-12 font-semibold">思维链解析标签</label>
-                                                            <input
-                                                                type="text"
-                                                                value={preset.reasoningTag || ""}
-                                                                onChange={(e) => updatePreset(preset.id, { reasoningTag: e.target.value })}
-                                                                placeholder="thinking"
-                                                                className="ui-input font-mono text-[12px]"
-                                                            />
-                                                        </div>
-                                                        <p className="ts-11 text-[var(--c-text-secondary)] leading-relaxed">
-                                                            启用后，每次回复都会在用户消息后注入上方模板作为 assistant 前缀，引导模型先输出
-                                                            {"<thinking>"} 思维链再输出正文。使用原生 thinking 标签无需额外配置；若改用其它标签
-                                                            （如 {"<sikao>"}），请在此填写对应标签名，系统会从正文提取该标签包裹的思维链展示，
-                                                            并从回复中自动剥离标签。
-                                                        </p>
-                                                    </>
-                                                )}
-                                            </div>
-                                        )}
-                                    </div>
                                 </div>
 
                                 {/* Prompts Section */}

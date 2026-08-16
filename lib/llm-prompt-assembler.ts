@@ -1122,23 +1122,6 @@ export function assemblePromptPayload(input: AssemblerInput): LLMMessage[] {
         }
     }
 
-    // ── 预填充条目（prefill）──
-    // 默认关闭（preset.assistantPrefill !== true 不注入），保持与原生行为完全一致。
-    // 启用后，在最后一条用户消息之后注入一条 assistant 前缀，约束模型输出格式
-    // （典型用法：模板里给出 <thinking>...</thinking> 思维链示例，引导模型先思考再输出正文）。
-    const prefillEnabled = preset?.assistantPrefill === true;
-    const prefillText = prefillEnabled ? (preset.assistantPrefillContent ?? "").trim() : "";
-    if (prefillText) {
-        const last = finalPayload[finalPayload.length - 1];
-        if (last && last.role === "user" && typeof last.content === "string") {
-            finalPayload.push({
-                role: "assistant",
-                content: prefillText,
-                _debugMeta: { marker: "assistant_prefill", depth: 0, order: 0 },
-            });
-        }
-    }
-
     return finalPayload;
 }
 
@@ -2273,23 +2256,6 @@ export function assembleGroupPromptPayload(input: GroupAssemblerInput): LLMMessa
                 marker: mergeMarkerText(prev._debugMeta?.marker, cur._debugMeta?.marker),
             };
             finalPayload.splice(i, 1);
-        }
-    }
-
-    // ── 预填充条目（prefill）──
-    // 默认关闭（preset.assistantPrefill !== true 不注入），保持与原生行为完全一致。
-    // 启用后，在最后一条用户消息之后注入一条 assistant 前缀，约束模型输出格式
-    // （典型用法：模板里给出 <thinking>...</thinking> 思维链示例，引导模型先思考再输出正文）。
-    const prefillEnabled = preset?.assistantPrefill === true;
-    const prefillText = prefillEnabled ? (preset.assistantPrefillContent ?? "").trim() : "";
-    if (prefillText) {
-        const last = finalPayload[finalPayload.length - 1];
-        if (last && last.role === "user" && typeof last.content === "string") {
-            finalPayload.push({
-                role: "assistant",
-                content: prefillText,
-                _debugMeta: { marker: "assistant_prefill", depth: 0, order: 0 },
-            });
         }
     }
 
