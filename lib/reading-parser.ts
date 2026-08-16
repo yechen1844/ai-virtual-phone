@@ -195,9 +195,30 @@ function isIndentedParagraphStart(line: string): boolean {
         || /^\t/.test(line);      // Tab 缩进
 }
 
-/** Split lines into paragraphs by blank lines or leading-indent boundaries,
- *  merging consecutive non-blank, non-indented lines. */
-function splitParagraphs(lines: string[]): string[] {
+/** 按空行分段（标准网文导出格式；段内多行保持在同一段） */
+function splitByBlankLines(lines: string[]): string[] {
+    const paragraphs: string[] = [];
+    let current: string[] = [];
+
+    for (const line of lines) {
+        if (line.trim() === "") {
+            if (current.length > 0) {
+                paragraphs.push(current.join("\n").trim());
+                current = [];
+            }
+        } else {
+            current.push(line);
+        }
+    }
+    if (current.length > 0) {
+        paragraphs.push(current.join("\n").trim());
+    }
+
+    return paragraphs.filter(p => p.length > 0);
+}
+
+/** 按段首缩进分段（无空行的中文网文 TXT） */
+function splitByIndent(lines: string[]): string[] {
     const paragraphs: string[] = [];
     let current: string[] = [];
 
@@ -212,7 +233,6 @@ function splitParagraphs(lines: string[]): string[] {
         if (line.trim() === "") {
             flush();
         } else if (isIndentedParagraphStart(line)) {
-            // 缩进开头 = 新段落（无空行的中文网文格式）
             flush();
             current.push(line);
         } else {
@@ -222,6 +242,22 @@ function splitParagraphs(lines: string[]): string[] {
     flush();
 
     return paragraphs.filter(p => p.length > 0);
+}
+
+/** 智能分段：先探测本书格式再选策略——
+ *  1) 空行占比 ≥ 2%：空行分段（标准导出格式，段内多行保留）
+ *  2) 缩进行占比 ≥ 20%：段首缩进分段（晋江/起点手排 TXT，无空行）
+ *  3) 否则：纯换行格式，一行一段（很多网文连开头缩进都省了，纯靠回车换行分段落） */
+function splitParagraphs(lines: string[]): string[] {
+    const nonEmpty = lines.filter(l => l.trim() !== "");
+    if (nonEmpty.length === 0) return [];
+
+    const blankRatio = (lines.length - nonEmpty.length) / Math.max(1, lines.length);
+    const indentedRatio = nonEmpty.filter(isIndentedParagraphStart).length / nonEmpty.length;
+
+    if (blankRatio >= 0.02) return splitByBlankLines(lines);
+    if (indentedRatio >= 0.2) return splitByIndent(lines);
+    return nonEmpty.map(l => l.trim()).filter(p => p.length > 0);
 }
 
 // ── EPUB Parsing ──
