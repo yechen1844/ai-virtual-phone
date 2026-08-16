@@ -13,6 +13,8 @@ SillyTavern/
 *:Zone.Identifier
 *.crdownload
 *.tsbuildinfo
+# VPS 版角色电脑服务：运行时数据目录不入库
+deploy/workspaces/
 tsconfig.tsbuildinfo
 .idea/
 .vscode/
