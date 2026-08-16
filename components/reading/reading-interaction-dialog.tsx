@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { BookOpenText, Minus, Plus, Repeat2, Settings } from "lucide-react";
+import { BookOpenText, LocateFixed, Minus, Plus, Repeat2, RotateCcw, Settings } from "lucide-react";
 import { ContentDialog } from "@/components/ui/modal";
 import {
     loadReadingInteractionConfig,
@@ -140,6 +140,28 @@ export function ReadingInteractionDialog({ onClose }: Props) {
                             <Plus size={15} strokeWidth={2} />
                         </button>
                     </div>
+                </section>
+
+                <section className="reading-settings-group">
+                    <div className="reading-settings-heading">
+                        <LocateFixed size={15} />
+                        <span>悬浮聊天窗</span>
+                    </div>
+                    <p className="reading-settings-inline-note">
+                        <span>悬浮球/悬浮条被拖到屏幕外、无法交互时，点此恢复到默认位置。</span>
+                    </p>
+                    <button
+                        type="button"
+                        className="reading-reset-float-btn"
+                        onClick={() => {
+                            if (typeof window !== "undefined") {
+                                window.dispatchEvent(new CustomEvent("reading-chat-float-reset"));
+                            }
+                        }}
+                    >
+                        <RotateCcw size={15} strokeWidth={2} />
+                        重置悬浮球位置
+                    </button>
                 </section>
             </div>
         </ContentDialog>

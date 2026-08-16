@@ -1321,7 +1321,8 @@ export function ReadingViewer({ book, onBack }: Props) {
             chatMovedRef.current = true;
         }
         if (chatMovedRef.current) {
-            setChatOffset({ x: nextX, y: nextY });
+            // 拖拽过程中就约束在屏幕内，悬浮元素永不滑出屏幕外
+            setChatOffset(clampChatOffset({ x: nextX, y: nextY }));
         }
     };
 
@@ -1364,6 +1365,34 @@ export function ReadingViewer({ book, onBack }: Props) {
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [showChat, chatExpanded]);
+
+    // 始终指向最新版本的 clampChatOffset（供一次性挂载的监听器使用）
+    const clampChatOffsetRef = useRef(clampChatOffset);
+    clampChatOffsetRef.current = clampChatOffset;
+
+    // 窗口尺寸变化（旋转/分屏）后把悬浮元素约束回屏幕内；书架设置里的「重置位置」事件
+    useEffect(() => {
+        const onResize = () => {
+            setChatOffset((prev) => {
+                const clamped = clampChatOffsetRef.current(prev);
+                return clamped.x === prev.x && clamped.y === prev.y ? prev : clamped;
+            });
+        };
+        const onResetPos = () => {
+            setChatOffset({ x: 0, y: 0 });
+            try {
+                localStorage.setItem(CHAT_FLOAT_POS_KEY, JSON.stringify({ x: 0, y: 0 }));
+            } catch {
+                // ignore storage errors
+            }
+        };
+        window.addEventListener("resize", onResize);
+        window.addEventListener("reading-chat-float-reset", onResetPos);
+        return () => {
+            window.removeEventListener("resize", onResize);
+            window.removeEventListener("reading-chat-float-reset", onResetPos);
+        };
+    }, []);
 
     const handleChatDragEnd = (e: React.PointerEvent<HTMLElement>) => {
         const drag = chatDragRef.current;

@@ -4718,6 +4718,26 @@
   margin-left: 2px;
 }
 
+/* 阅读设置：重置悬浮球位置 */
+.reading-reset-float-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--reading-warm-card-border, #f0e8da);
+  background: rgba(255, 255, 255, 0.7);
+  color: var(--reading-warm-brown, #8a5a2b);
+  font-size: calc(10.8px*var(--app-text-scale,1));
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.reading-reset-float-btn:active {
+  background: rgba(237, 227, 207, 0.6);
+}
+
 /* 滚动阅读模式 */
 .reading-scroll-content {
   min-height: 100%;
