@@ -4683,6 +4683,9 @@
 .reading-option-grid--two {
   grid-template-columns: 1fr;
 }
+.reading-option-grid--three {
+  grid-template-columns: 1fr 1fr 1fr;
+}
 .reading-option-card {
   display: flex;
   flex-direction: column;

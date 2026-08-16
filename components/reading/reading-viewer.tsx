@@ -1080,7 +1080,7 @@ export function ReadingViewer({ book, onBack }: Props) {
         })();
     }, [annotationBatchSize, autoAnnotate, companionId, executeBatchAnnotation, generating, materializeBatchRequest]);
 
-    // 批注预生成：当前批注批读满 2/3 时，提前生成下一批，
+    // 批注预生成：当前批注批读到用户设置的阈值时，提前生成下一批，
     // 把生成时间差放在用户读上一批批注的时间里，避免用户读到下一批时批注还没生成完。不会重复批注（批次按 key 去重）。
     const prefetchedBatchStartRef = useRef(-1);
     useEffect(() => {
@@ -1088,6 +1088,7 @@ export function ReadingViewer({ book, onBack }: Props) {
         if (!readingConfig.autoAnnotatePrefetch || isPdf || !companionId || generating) return;
         if (paragraphRefs.length === 0) return;
         const size = Math.max(1, annotationBatchSize || 50);
+        const threshold = Math.max(0, Math.min(1, readingConfig.annotationPrefetchThreshold ?? 2 / 3));
 
         // 当前阅读位置 → 全书记绝对段落索引
         let currentAbs = -1;
@@ -1108,7 +1109,7 @@ export function ReadingViewer({ book, onBack }: Props) {
         if (currentAbs < 0) return;
 
         const batchStart = Math.floor(currentAbs / size) * size;
-        if (currentAbs - batchStart < Math.ceil(size * (2 / 3))) return; // 本批还没读满 2/3
+        if (currentAbs - batchStart < Math.ceil(size * threshold)) return; // 本批还没读到用户设置的阈值
         if (prefetchedBatchStartRef.current === batchStart) return;       // 本批已触发过预生成
         prefetchedBatchStartRef.current = batchStart;
 
@@ -1124,7 +1125,7 @@ export function ReadingViewer({ book, onBack }: Props) {
             items,
         };
         void executeBatchAnnotation(request);
-    }, [annotationBatchSize, autoAnnotate, chapterIndex, companionId, executeBatchAnnotation, generating, isPdf, isScrollMode, paragraphRefs, readingConfig.autoAnnotatePrefetch, scrollFraction, txtPage, txtPages]);
+    }, [annotationBatchSize, autoAnnotate, chapterIndex, companionId, executeBatchAnnotation, generating, isPdf, isScrollMode, paragraphRefs, readingConfig.autoAnnotatePrefetch, readingConfig.annotationPrefetchThreshold, scrollFraction, txtPage, txtPages]);
 
     useEffect(() => {
         if (!isPdf || pdfCurrentPage <= 0 || chapters.length === 0) return;

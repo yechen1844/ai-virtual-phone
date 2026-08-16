@@ -27,6 +27,18 @@ const VIEW_MODE_OPTIONS: { value: ReadingViewMode; label: string; desc: string }
 const RETRY_MIN = 0;
 const RETRY_MAX = 5;
 
+/** 批注预生成触发时机：读到上一批批注的比例 */
+const PREFETCH_THRESHOLD_OPTIONS: { value: number; label: string; desc: string }[] = [
+    { value: 1 / 2, label: "读到一半", desc: "预留生成时间更充足" },
+    { value: 2 / 3, label: "读到 2/3", desc: "默认推荐" },
+    { value: 3 / 4, label: "读到 3/4", desc: "接近读完才生成" },
+];
+
+/** 浮点档位比较容差 */
+function prefetchThresholdMatches(a: number, b: number): boolean {
+    return Math.abs(a - b) < 0.01;
+}
+
 type Props = {
     onClose: () => void;
 };
@@ -150,13 +162,33 @@ export function ReadingInteractionDialog({ onClose }: Props) {
                     </div>
                     <div className="reading-settings-toggle-row">
                         <span className="reading-settings-toggle-label">
-                            上一批批注读满 2/3 时提前生成下一批
+                            提前生成下一批批注
                         </span>
                         <Toggle
                             checked={config.autoAnnotatePrefetch === true}
                             onChange={(next) => setConfig((prev) => ({ ...prev, autoAnnotatePrefetch: next }))}
                         />
                     </div>
+                    {config.autoAnnotatePrefetch && (
+                        <>
+                            <p className="reading-settings-inline-note">
+                                <span>读到上一批批注的多少时开始生成下一批：</span>
+                            </p>
+                            <div className="reading-option-grid reading-option-grid--three">
+                                {PREFETCH_THRESHOLD_OPTIONS.map((opt) => (
+                                    <button
+                                        key={opt.value}
+                                        type="button"
+                                        className={`reading-option-card ${prefetchThresholdMatches(config.annotationPrefetchThreshold ?? 2 / 3, opt.value) ? "is-active" : ""}`}
+                                        onClick={() => setConfig((prev) => ({ ...prev, annotationPrefetchThreshold: opt.value }))}
+                                    >
+                                        <span className="reading-option-card-label">{opt.label}</span>
+                                        <span className="reading-option-card-desc">{opt.desc}</span>
+                                    </button>
+                                ))}
+                            </div>
+                        </>
+                    )}
                     <p className="reading-settings-inline-note">
                         <span>利用读上一批批注的时间生成下一批，避免你读到时批注还没生成完。不会重复批注。</span>
                     </p>
