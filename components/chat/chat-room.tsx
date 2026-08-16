@@ -618,7 +618,7 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
     onOpenCustomPlusAction: (action: RegisteredCustomAppChatPlusAction) => void;
     onStartVideoCall: () => void;
     onStartVoiceCall: () => void;
-    onSendText: (text: string) => boolean;
+    onSendText: (text: string, options?: { autoReply?: boolean }) => boolean;
     onStopGeneration: () => void;
     onTriggerAIResponse: () => void;
 	onSendSticker: (name: string, url?: string) => void;
@@ -854,10 +854,10 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
                         title={!inputLocked && inputText.trim() ? "发送输入框内容并触发回复" : "触发 AI 主动回复"}
                         onClick={() => {
                             const trimmed = inputText.trim();
-                            // 输入框已有文字：先发出去（发送后模型会自动回复），
-                            // 避免「打完字却忘记发送」；没文字时才触发 AI 主动回复
+                            // 输入框已有文字：发送输入框内容并立即触发模型回复（一次按键完成），
+                            // 避免「打完字却忘记发送」；没文字时才只触发 AI 主动回复
                             if (!inputLocked && trimmed) {
-                                if (!onSendText(trimmed)) return;
+                                if (!onSendText(trimmed, { autoReply: true })) return;
                                 setInputText("");
                                 resetTextareaHeight();
                             } else {
@@ -3726,7 +3726,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
         return true;
     };
 
-    const handleSendText = (text: string): boolean => {
+    const handleSendText = (text: string, options?: { autoReply?: boolean }): boolean => {
         if (!ensureGroupSpeakPermission()) return false;
         if (isGenerating) {
             showChatToast("请先等待对方回复");
@@ -3771,6 +3771,9 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                 setMessages(prev => [...prev, diceAside]);
             }
             setPendingGenerate(true);
+            // 按回复键发送：消息落库后立即触发模型回复（无论插件是否异步改写，
+            // 都在消息真正写入后触发，避免回复基于旧上下文）
+            if (options?.autoReply) void triggerAIResponse();
         };
 
         // 聊天插件织入点 user.beforeSend：无插件时走原同步路径，
