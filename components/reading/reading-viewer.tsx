@@ -641,10 +641,15 @@ export function ReadingViewer({ book, onBack }: Props) {
                 setAnnotations(groups.flat());
                 return;
             }
-            const annots = await loadAnnotations(book.id, chapterIndex);
-            setAnnotations(annots);
+            // 滚动模式：加载窗口内所有章节（上一章+当前章+下一章）的批注，
+            // 否则交界处批注缺失，且窗口平移时整组替换导致批注「时有时无」
+            const chapterIndexes = isScrollMode
+                ? [...new Set(windowChapters.map((c) => c.index))]
+                : [chapterIndex];
+            const groups = await Promise.all(chapterIndexes.map((idx) => loadAnnotations(book.id, idx)));
+            setAnnotations(groups.flat());
         })();
-    }, [book.id, chapterIndex, chapters, isPdf]);
+    }, [book.id, isPdf, isScrollMode, windowChapters]);
 
     // Load reading-discuss chat messages
     const refreshChatMessages = useCallback(() => {
