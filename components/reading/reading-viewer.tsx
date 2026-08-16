@@ -294,6 +294,7 @@ export function ReadingViewer({ book, onBack }: Props) {
     const chatDragRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
     const chatMovedRef = useRef(false);
     const scrollRef = useRef<HTMLDivElement>(null);
+    const chatListRef = useRef<HTMLDivElement>(null); // 共读讨论悬浮窗消息列表（滚动容器）
     const txtMeasureLineRef = useRef<HTMLParagraphElement>(null);
     const txtMeasureGapRef = useRef<HTMLDivElement>(null);
     const txtMeasureAnnotationRef = useRef<HTMLDivElement>(null);
@@ -1011,6 +1012,27 @@ export function ReadingViewer({ book, onBack }: Props) {
             setActiveMessageId(null);
         }
     }, [showChat, chatExpanded]);
+
+    // 共读讨论悬浮窗展开时自动滚动到最新消息。
+    // 仅在「打开」时滚动一次、无持续吸附——用户随后自由滑动即可打断，不会被拉回。
+    useEffect(() => {
+        if (!showChat || !chatExpanded) return;
+        if (readingConfig.chatAutoScrollOnOpen === false) return;
+        const el = chatListRef.current;
+        if (!el) return;
+        let raf1 = 0;
+        let raf2 = 0;
+        // 等展开动画与内容渲染稳定后再滚到底
+        raf1 = window.requestAnimationFrame(() => {
+            raf2 = window.requestAnimationFrame(() => {
+                el.scrollTop = el.scrollHeight;
+            });
+        });
+        return () => {
+            window.cancelAnimationFrame(raf1);
+            window.cancelAnimationFrame(raf2);
+        };
+    }, [showChat, chatExpanded, readingConfig.chatAutoScrollOnOpen]);
 
     const handleDeleteReadingAnnotation = useCallback(async (annotationId: string) => {
         await deleteAnnotation(annotationId);
@@ -2247,7 +2269,7 @@ export function ReadingViewer({ book, onBack }: Props) {
                                 <button type="button" onClick={() => { if (shouldIgnoreChatAction()) return; setChatExpanded(false); }} className="reading-chat-float-close" aria-label="收起聊天窗口"><ChevronDown size={18} strokeWidth={2} /></button>
                                 <button type="button" onClick={() => { if (shouldIgnoreChatAction()) return; handleCloseChat(); }} className="reading-chat-float-close" aria-label="关闭聊天悬浮窗"><Minus size={18} strokeWidth={2} /></button>
                             </div>
-                            <div className="reading-chat-float-body" onClick={() => {
+                            <div ref={chatListRef} className="reading-chat-float-body" onClick={() => {
                                 if (activeMessageId || readingMessageMenu) closeReadingMessageMenu();
                                 if (activeAnnotationId) setActiveAnnotationId(null);
                             }} onScroll={() => {

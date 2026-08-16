@@ -72,6 +72,8 @@ export type ReadingInteractionConfig = {
     autoAnnotatePrefetch: boolean;
     /** 批注预生成触发时机：读到上一批批注的多少比例时提前生成下一批（0-1，默认 2/3） */
     annotationPrefetchThreshold: number;
+    /** 共读讨论悬浮窗展开时是否自动滚动到最新消息（默认开启；用户可随后自由滑动打断） */
+    chatAutoScrollOnOpen: boolean;
 };
 
 export const DEFAULT_READING_INTERACTION_CONFIG: ReadingInteractionConfig = {
@@ -83,6 +85,7 @@ export const DEFAULT_READING_INTERACTION_CONFIG: ReadingInteractionConfig = {
     annotationRetryCount: 3,
     autoAnnotatePrefetch: false,
     annotationPrefetchThreshold: 2 / 3,
+    chatAutoScrollOnOpen: true,
 };
 
 export async function hydrateReadingStorage(): Promise<void> {

@@ -199,6 +199,18 @@ export function ReadingInteractionDialog({ onClose }: Props) {
                         <LocateFixed size={15} />
                         <span>悬浮聊天窗</span>
                     </div>
+                    <div className="reading-settings-toggle-row">
+                        <span className="reading-settings-toggle-label">
+                            展开时自动滚动到最新消息
+                        </span>
+                        <Toggle
+                            checked={config.chatAutoScrollOnOpen !== false}
+                            onChange={(next) => setConfig((prev) => ({ ...prev, chatAutoScrollOnOpen: next }))}
+                        />
+                    </div>
+                    <p className="reading-settings-inline-note">
+                        <span>打开讨论窗口时自动滚到最新消息；打开后你可自由上下滑动打断，不会被拉回。</span>
+                    </p>
                     <p className="reading-settings-inline-note">
                         <span>悬浮球/悬浮条被拖到屏幕外、无法交互时，点此恢复到默认位置。</span>
                     </p>
