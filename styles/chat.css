@@ -4008,7 +4008,8 @@
   position: absolute;
   left: 12px;
   bottom: max(12px, env(safe-area-inset-bottom));
-  z-index: 45;
+  /* 高于顶栏(46)/底栏(35)，避免拖到顶部时被顶栏遮挡、无法继续拖动 */
+  z-index: 48;
   width: 56px;
   height: 56px;
   border-radius: 28px;
@@ -4033,7 +4034,8 @@
   position: absolute;
   left: 12px;
   bottom: max(12px, env(safe-area-inset-bottom));
-  z-index: 45;
+  /* 高于顶栏(46)/底栏(35)，拖到顶部时不被顶栏遮挡 */
+  z-index: 48;
   width: min(280px, calc(100% - 24px));
   border-radius: 14px;
   border: 1px solid #e2d5be;
