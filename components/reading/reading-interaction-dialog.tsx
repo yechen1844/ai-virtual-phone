@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { BookOpenText, LocateFixed, Minus, Plus, Repeat2, RotateCcw, Settings } from "lucide-react";
+import { BookOpenText, LocateFixed, Minus, Plus, Repeat2, Rocket, RotateCcw, Settings } from "lucide-react";
 import { ContentDialog } from "@/components/ui/modal";
+import { Toggle } from "@/components/ui/form";
 import {
     loadReadingInteractionConfig,
     saveReadingInteractionConfig,
@@ -140,6 +141,25 @@ export function ReadingInteractionDialog({ onClose }: Props) {
                             <Plus size={15} strokeWidth={2} />
                         </button>
                     </div>
+                </section>
+
+                <section className="reading-settings-group">
+                    <div className="reading-settings-heading">
+                        <Rocket size={15} />
+                        <span>批注预生成</span>
+                    </div>
+                    <div className="reading-settings-toggle-row">
+                        <span className="reading-settings-toggle-label">
+                            上一批批注读满 2/3 时提前生成下一批
+                        </span>
+                        <Toggle
+                            checked={config.autoAnnotatePrefetch === true}
+                            onChange={(next) => setConfig((prev) => ({ ...prev, autoAnnotatePrefetch: next }))}
+                        />
+                    </div>
+                    <p className="reading-settings-inline-note">
+                        <span>利用读上一批批注的时间生成下一批，避免你读到时批注还没生成完。不会重复批注。</span>
+                    </p>
                 </section>
 
                 <section className="reading-settings-group">

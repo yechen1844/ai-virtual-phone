@@ -68,6 +68,8 @@ export type ReadingInteractionConfig = {
     readingMode: ReadingViewMode;
     /** 自动批注失败时的静默重试次数（0=不重试） */
     annotationRetryCount: number;
+    /** 上一批自动批注读满 2/3 时，提前生成下一批批注（避免用户读到下一批时批注还没好） */
+    autoAnnotatePrefetch: boolean;
 };
 
 export const DEFAULT_READING_INTERACTION_CONFIG: ReadingInteractionConfig = {
@@ -77,6 +79,7 @@ export const DEFAULT_READING_INTERACTION_CONFIG: ReadingInteractionConfig = {
     paragraphMode: "auto",
     readingMode: "page",
     annotationRetryCount: 3,
+    autoAnnotatePrefetch: true,
 };
 
 export async function hydrateReadingStorage(): Promise<void> {

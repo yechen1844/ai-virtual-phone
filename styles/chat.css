@@ -4599,6 +4599,17 @@
   font-size: calc(9.9px*var(--app-text-scale,1));
   color: var(--reading-warm-ink-tertiary, #999);
 }
+.reading-settings-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.reading-settings-toggle-label {
+  font-size: calc(10.8px*var(--app-text-scale,1));
+  color: var(--reading-warm-ink, #111);
+  line-height: 1.5;
+}
 .reading-settings-prompt {
   display: flex;
   flex-direction: column;

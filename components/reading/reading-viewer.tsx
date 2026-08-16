@@ -18,7 +18,7 @@ import {
     DEFAULT_READING_INTERACTION_CONFIG,
 } from "@/lib/reading-storage";
 import { generateAnnotationBatch, generateReadingChat, parseReadingDiscussResponse, type ReadingDiscussAction, type ReadingDiscussContext } from "@/lib/reading-engine";
-import { loadChatMessages, pushChatMessage, deleteChatMessage, editChatMessage, loadChatContacts, loadChatSessions, isReadingDiscussMessage } from "@/lib/chat-storage";
+import { loadChatMessages, pushChatMessage, deleteChatMessage, editChatMessage, loadChatContacts, createOrGetSession, isReadingDiscussMessage } from "@/lib/chat-storage";
 import type { ChatMessage, ChatSession } from "@/lib/chat-storage";
 import { loadCharacters } from "@/lib/character-storage";
 import { parseAIResponse } from "@/lib/rich-message-parser";
@@ -306,6 +306,7 @@ export function ReadingViewer({ book, onBack }: Props) {
     const scrollModeRestoredRef = useRef(false);
     const initialScrollFractionRef = useRef<number | null>(null);
     const pendingScrollFractionRef = useRef<number | null>(null);
+    const autoNextChapterRef = useRef(false); // 滚动到底自动进入下一章的去重标记
     const [txtLayoutVersion, setTxtLayoutVersion] = useState(0);
     const [txtPages, setTxtPages] = useState<TxtPageItem[][]>([]);
     const [scrollFraction, setScrollFraction] = useState(0);
@@ -487,8 +488,8 @@ export function ReadingViewer({ book, onBack }: Props) {
     // Find or create chat session for companion
     const getSession = useCallback((): ChatSession | null => {
         if (!companionId) return null;
-        const sessions = loadChatSessions();
-        return sessions.find(s => !s.isGroup && s.contactId === companionId) || null;
+        // 找不到与角色的一对一会话时自动创建（否则发送会静默无响应）
+        return createOrGetSession(companionId);
     }, [companionId]);
 
 
@@ -1043,6 +1044,52 @@ export function ReadingViewer({ book, onBack }: Props) {
         })();
     }, [annotationBatchSize, autoAnnotate, companionId, executeBatchAnnotation, generating, materializeBatchRequest]);
 
+    // 批注预生成：当前批注批读满 2/3 时，提前生成下一批，
+    // 把生成时间差放在用户读上一批批注的时间里，避免用户读到下一批时批注还没生成完。不会重复批注（批次按 key 去重）。
+    const prefetchedBatchStartRef = useRef(-1);
+    useEffect(() => {
+        if (!autoAnnotate) { prefetchedBatchStartRef.current = -1; return; }
+        if (!readingConfig.autoAnnotatePrefetch || isPdf || !companionId || generating) return;
+        if (paragraphRefs.length === 0) return;
+        const size = Math.max(1, annotationBatchSize || 50);
+
+        // 当前阅读位置 → 全书记绝对段落索引
+        let currentAbs = -1;
+        if (isScrollMode) {
+            const chapterRefs = paragraphRefs.filter((item) => item.chapterIndex === chapterIndex && item.text.trim());
+            if (chapterRefs.length > 0) {
+                const center = Math.round(Math.max(0, Math.min(1, scrollFraction)) * (chapterRefs.length - 1));
+                currentAbs = chapterRefs[center].absoluteIndex;
+            }
+        } else {
+            const pageItems = txtPages[txtPage] || [];
+            const firstLine = pageItems.find((item): item is Extract<TxtPageItem, { kind: "line" }> => item.kind === "line");
+            if (firstLine) {
+                const ref = paragraphRefs.find((r) => r.chapterIndex === firstLine.chapterIndex && r.paragraphIndex === firstLine.paragraphIndex);
+                if (ref) currentAbs = ref.absoluteIndex;
+            }
+        }
+        if (currentAbs < 0) return;
+
+        const batchStart = Math.floor(currentAbs / size) * size;
+        if (currentAbs - batchStart < Math.ceil(size * (2 / 3))) return; // 本批还没读满 2/3
+        if (prefetchedBatchStartRef.current === batchStart) return;       // 本批已触发过预生成
+        prefetchedBatchStartRef.current = batchStart;
+
+        const nextStart = batchStart + size;
+        if (nextStart >= paragraphRefs.length) return;
+        const items = paragraphRefs.slice(nextStart, nextStart + size).filter((item) => item.text.trim());
+        if (items.length === 0) return;
+
+        const request: AnnotationBatchRequest = {
+            key: `txt:${nextStart}:${size}`,
+            title: `第${items[0].absoluteIndex + 1}-${items[items.length - 1].absoluteIndex + 1}段`,
+            size,
+            items,
+        };
+        void executeBatchAnnotation(request);
+    }, [annotationBatchSize, autoAnnotate, chapterIndex, companionId, executeBatchAnnotation, generating, isPdf, isScrollMode, paragraphRefs, readingConfig.autoAnnotatePrefetch, scrollFraction, txtPage, txtPages]);
+
     useEffect(() => {
         if (!isPdf || pdfCurrentPage <= 0 || chapters.length === 0) return;
         const chunkStart = Math.floor((pdfCurrentPage - 1) / PDF_PAGES_PER_CHAPTER) * PDF_PAGES_PER_CHAPTER + 1;
@@ -1061,6 +1108,9 @@ export function ReadingViewer({ book, onBack }: Props) {
         setTxtPage(0);
         scrollRef.current?.scrollTo(0, 0);
     };
+    // 始终指向最新 goToChapter（供滚动监听这类长生命周期回调使用，避免监听器反复重建）
+    const goToChapterRef = useRef(goToChapter);
+    goToChapterRef.current = goToChapter;
 
     const buildDiscussContext = useCallback((sourceChapters: BookChapter[] = chapters): ReadingDiscussContext | null => {
         const sourceParagraphRefs = buildParagraphRefsFromChapters(sourceChapters);
@@ -1093,6 +1143,15 @@ export function ReadingViewer({ book, onBack }: Props) {
                     .filter((item) => item.chapterIndex === focusChapterIndex)
                     .map((item) => item.paragraphIndex),
             )].sort((a, b) => a - b);
+        } else if (isScrollMode) {
+            // 滚动模式没有分页：以当前滚动比例估算正在阅读的段落窗口
+            const chapterRefs0 = sourceParagraphRefs.filter((item) => item.chapterIndex === focusChapterIndex && item.text.trim());
+            if (chapterRefs0.length === 0) return null;
+            const center = Math.round(Math.max(0, Math.min(1, scrollFraction)) * (chapterRefs0.length - 1));
+            const half = Math.max(1, Math.ceil(DISCUSS_MAX_PARAGRAPHS / 3));
+            focusParagraphIndexes = chapterRefs0
+                .slice(Math.max(0, center - half), Math.min(chapterRefs0.length, center + half + 1))
+                .map((item) => item.paragraphIndex);
         } else {
             const pageItems = txtPages[txtPage] || [];
             focusParagraphIndexes = [...new Set(
@@ -1157,7 +1216,7 @@ export function ReadingViewer({ book, onBack }: Props) {
             chapterContent,
             annotations: contextAnnotations,
         };
-    }, [annotations, book.title, chapterIndex, chapters, currentChapter?.title, isPdf, pdfCurrentPage, txtPage, txtPages]);
+    }, [annotations, book.title, chapterIndex, chapters, currentChapter?.title, isPdf, isScrollMode, pdfCurrentPage, scrollFraction, txtPage, txtPages]);
 
     // Chat send — parse AI response like chat-room does
     const handleSend = async () => {
@@ -1688,11 +1747,12 @@ export function ReadingViewer({ book, onBack }: Props) {
     // 滚动模式：章节切换时重置恢复标记与滚动比例
     useEffect(() => {
         scrollModeRestoredRef.current = false;
+        autoNextChapterRef.current = false;
         setScrollFraction(0);
         scrollFractionRef.current = 0;
     }, [chapterIndex, isScrollMode]);
 
-    // 滚动模式：监听滚动，节流更新章节内滚动比例
+    // 滚动模式：监听滚动，节流更新章节内滚动比例；接近底部时自动进入下一章（连续阅读）
     useEffect(() => {
         if (!isScrollMode) return;
         const body = scrollRef.current;
@@ -1706,6 +1766,13 @@ export function ReadingViewer({ book, onBack }: Props) {
                 const fraction = maxScroll > 0 ? Math.min(1, Math.max(0, body.scrollTop / maxScroll)) : 0;
                 scrollFractionRef.current = fraction;
                 setScrollFraction(fraction);
+                // 连续阅读：本章可滚动、用户确实往下滚过、且接近底部时，自动切入下一章
+                if (maxScroll > 0 && body.scrollTop > 0 && !autoNextChapterRef.current
+                    && chapterIndex < chapters.length - 1
+                    && body.scrollTop + body.clientHeight >= body.scrollHeight - 96) {
+                    autoNextChapterRef.current = true;
+                    goToChapterRef.current(chapterIndex + 1);
+                }
             });
         };
         body.addEventListener("scroll", onScroll, { passive: true });
@@ -1713,7 +1780,7 @@ export function ReadingViewer({ book, onBack }: Props) {
             body.removeEventListener("scroll", onScroll);
             if (rafId) window.cancelAnimationFrame(rafId);
         };
-    }, [isScrollMode, chapterIndex, currentChapter]);
+    }, [isScrollMode, chapterIndex, currentChapter, chapters.length]);
 
     // 滚动模式：内容渲染后恢复/跳转滚动位置
     useEffect(() => {
