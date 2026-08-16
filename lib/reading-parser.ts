@@ -185,24 +185,41 @@ export function parseTxtContent(text: string, fileName?: string): ParsedBook {
     return { title: bookTitle, chapters };
 }
 
-/** Split lines into paragraphs by blank lines, merging consecutive non-blank lines. */
+/** 判断一行是否以缩进开头（全角空格 / 2+ 半角空格 / Tab）→ 视为新段落起点。
+ *  很多中文网文 TXT 段落之间没有空行，仅靠段首缩进区分段落；
+ *  若只按空行分割会把整章合并成一段（批注/讨论时整章一起发给模型）。
+ */
+function isIndentedParagraphStart(line: string): boolean {
+    return /^\u3000/.test(line)   // 全角空格缩进（中文网文最常见）
+        || /^ {2,}/.test(line)    // 2+ 半角空格缩进
+        || /^\t/.test(line);      // Tab 缩进
+}
+
+/** Split lines into paragraphs by blank lines or leading-indent boundaries,
+ *  merging consecutive non-blank, non-indented lines. */
 function splitParagraphs(lines: string[]): string[] {
     const paragraphs: string[] = [];
     let current: string[] = [];
 
+    const flush = () => {
+        if (current.length > 0) {
+            paragraphs.push(current.join("\n").trim());
+            current = [];
+        }
+    };
+
     for (const line of lines) {
         if (line.trim() === "") {
-            if (current.length > 0) {
-                paragraphs.push(current.join("\n").trim());
-                current = [];
-            }
+            flush();
+        } else if (isIndentedParagraphStart(line)) {
+            // 缩进开头 = 新段落（无空行的中文网文格式）
+            flush();
+            current.push(line);
         } else {
             current.push(line);
         }
     }
-    if (current.length > 0) {
-        paragraphs.push(current.join("\n").trim());
-    }
+    flush();
 
     return paragraphs.filter(p => p.length > 0);
 }
