@@ -127,6 +127,16 @@ function isChapterHeading(line: string): boolean {
     return CHAPTER_PATTERNS.some(p => p.test(trimmed));
 }
 
+/** 剥离开头/结尾的空行：下载 TXT 常在章节标题前后插入分隔空行，
+ *  它们不是作者段落空行，混入会污染 splitParagraphs 的空行占比检测。 */
+function trimBlankEdges(arr: string[]): string[] {
+    let s = 0;
+    let e = arr.length;
+    while (s < e && arr[s].trim() === "") s += 1;
+    while (e > s && arr[e - 1].trim() === "") e -= 1;
+    return arr.slice(s, e);
+}
+
 /**
  * Parse TXT content into chapters and paragraphs.
  * Splits by chapter headings, then by blank lines for paragraphs.
@@ -156,7 +166,7 @@ export function parseTxtContent(text: string, fileName?: string): ParsedBook {
             title: bookTitle,
             chapters: [{
                 title: "全文",
-                paragraphs: splitParagraphs(lines),
+                paragraphs: splitParagraphs(trimBlankEdges(lines)),
             }],
         };
     }
@@ -166,7 +176,7 @@ export function parseTxtContent(text: string, fileName?: string): ParsedBook {
     for (let i = 0; i < chapterStarts.length; i++) {
         const start = chapterStarts[i].lineIdx + 1; // skip heading line
         const end = i + 1 < chapterStarts.length ? chapterStarts[i + 1].lineIdx : lines.length;
-        const chapterLines = lines.slice(start, end);
+        const chapterLines = trimBlankEdges(lines.slice(start, end));
         const paragraphs = splitParagraphs(chapterLines);
         if (paragraphs.length > 0) {
             chapters.push({ title: chapterStarts[i].title, paragraphs });
@@ -175,7 +185,7 @@ export function parseTxtContent(text: string, fileName?: string): ParsedBook {
 
     // If there's content before the first chapter, add it as a prologue
     if (chapterStarts[0].lineIdx > 1) {
-        const prologueLines = lines.slice(0, chapterStarts[0].lineIdx);
+        const prologueLines = trimBlankEdges(lines.slice(0, chapterStarts[0].lineIdx));
         const paragraphs = splitParagraphs(prologueLines);
         if (paragraphs.length > 0) {
             chapters.unshift({ title: "序", paragraphs });
