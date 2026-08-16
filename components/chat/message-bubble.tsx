@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef, useMemo, memo } from "react";
 import { findCustomStickerByName, resolveCustomStickerUrl } from "@/lib/custom-sticker-storage";
 import { isMediaStoreRef, loadMediaObjectUrl } from "@/lib/media-cache-storage";
 import { getChatImageFromIndexedDB } from "@/lib/chat-asset-storage";
-import { ChatMessage, createOrGetSession, updateMessageMediaStatus, updateMessageMediaData, updateMessageMediaUrl } from "@/lib/chat-storage";
+import { ChatMessage, createOrGetSession, updateMessageMediaStatus, updateMessageMediaData } from "@/lib/chat-storage";
 import { resolveContactCard } from "@/lib/contact-card";
 import { loadCharacters } from "@/lib/character-storage";
 import { CHAT_OPEN_SESSION_EVENT, dispatchOpenAddContact } from "@/lib/chat-notification-events";
@@ -2165,10 +2165,44 @@ function XiaohongshuShareBubble({ msg }: { msg: ChatMessage }) {
 }
 
 // ── Voice Message ───────────────────────────────
+
+// 模块级在途表：同一条消息全局只允许一个合成请求。组件重渲染/卸载重挂都
+// 复用同一个 Promise——之前"挂载即合成 + 取消竞态"会把同一条语音反复送去
+// 计费还留下点不动的死气泡（用户实报），点击触发 + 全局去重从根上断掉。
+const _voiceSynthInFlight = new Map<string, Promise<string>>();
+
+function synthesizeVoiceForMessage(msgId: string, characterId: string, speechText: string): Promise<string> {
+    const existing = _voiceSynthInFlight.get(msgId);
+    if (existing) return existing;
+    const task = (async () => {
+        const { resolveVoiceConfig, synthesizeSpeech } = await import("@/lib/tts-service");
+        const vc = resolveVoiceConfig(characterId);
+        if (!vc) throw new Error("未绑定语音配置");
+        const blob = await synthesizeSpeech(speechText, vc);
+        if (!blob) throw new Error("合成失败");
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = () => reject(new Error("音频编码失败"));
+            reader.readAsDataURL(blob);
+        });
+        // 直接落库（不依赖会话缓存）——合成一次的音频永久保存，绝不重复计费
+        const { persistMessageVoiceAudio } = await import("@/lib/chat-storage");
+        await persistMessageVoiceAudio(msgId, dataUrl, speechText);
+        return dataUrl;
+    })();
+    _voiceSynthInFlight.set(msgId, task);
+    task.catch(() => {}).then(() => { _voiceSynthInFlight.delete(msgId); });
+    return task;
+}
+
 function VoiceMessageBubble({ msg, characterId, onUpdate, defaultTranslationExpanded = false }: { msg: ChatMessage; characterId?: string; onUpdate?: (m: ChatMessage) => void; defaultTranslationExpanded?: boolean }) {
     const [playing, setPlaying] = useState(false);
     const [synthesizing, setSynthesizing] = useState(false);
+    const [synthFailed, setSynthFailed] = useState(false);
     const audioRef = useRef<HTMLAudioElement | null>(null);
+    const mountedRef = useRef(true);
+    useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
     const text = msg.mediaData?.label || "语音消息";
     const bilingual = splitBilingualText(text);
     const speechText = bilingual?.original || text;
@@ -2176,48 +2210,7 @@ function VoiceMessageBubble({ msg, characterId, onUpdate, defaultTranslationExpa
     const needsResynthesis = msg.role !== "user" && synthesizedFromText !== speechText;
     const duration = msg.mediaData?.voiceDuration || Math.max(2, Math.ceil(speechText.length / 4));
 
-    // Auto-synthesize on mount if no audio yet (AI messages)
-    useEffect(() => {
-        if ((msg.mediaUrl && !needsResynthesis) || msg.role === "user" || synthesizing) return;
-        if (!characterId) return;
-        let cancelled = false;
-        setSynthesizing(true);
-        (async () => {
-            try {
-                const { resolveVoiceConfig, synthesizeSpeech } = await import("@/lib/tts-service");
-                const vc = resolveVoiceConfig(characterId);
-                if (!vc || cancelled) { setSynthesizing(false); return; }
-                const blob = await synthesizeSpeech(speechText, vc);
-                if (cancelled || !blob) { setSynthesizing(false); return; }
-                // Convert to base64 data URL and persist
-                const reader = new FileReader();
-                reader.onload = () => {
-                    if (cancelled) return;
-                    const dataUrl = reader.result as string;
-                    const nextMediaData = { ...msg.mediaData, synthesizedFromText: speechText };
-                    updateMessageMediaData(msg.id, nextMediaData);
-                    updateMessageMediaUrl(msg.id, dataUrl);
-                    if (onUpdate) onUpdate({ ...msg, mediaUrl: dataUrl, mediaData: nextMediaData });
-                    setSynthesizing(false);
-                };
-                reader.readAsDataURL(blob);
-            } catch { if (!cancelled) setSynthesizing(false); }
-        })();
-        return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [msg.id, msg.mediaUrl, msg.mediaData, characterId, needsResynthesis, speechText]);
-
-    const handlePlay = () => {
-        if (synthesizing || needsResynthesis) return;
-        if (playing && audioRef.current) {
-            const active = audioRef.current;
-            audioRef.current = null;
-            try { active.pause(); active.removeAttribute("src"); active.load(); } catch { /* ignore */ }
-            setPlaying(false);
-            return;
-        }
-        const src = msg.mediaUrl;
-        if (!src) return;
+    const playSrc = (src: string) => {
         // 必须用 <audio> 元素:iOS 静音拨键会掐掉 Web Audio 的输出(表现为全线
         // 无声),媒体元素不受影响。元素属于宿主页面,锁屏媒体卡片指向站点本身,
         // 点了只会回到 App;播完清 src 让卡片立即撤下。
@@ -2232,6 +2225,41 @@ function VoiceMessageBubble({ msg, characterId, onUpdate, defaultTranslationExpa
         audio.onended = finalize;
         audio.onerror = finalize;
         audio.play().catch(finalize);
+    };
+
+    // 点击才合成（不再挂载即合成）：已有音频直接播；没有就现场合成一次，
+    // 合成结果已在任务内落库，之后任何时候点都是直接播放，不再消耗额度。
+    const handlePlay = () => {
+        if (synthesizing) return;
+        if (playing && audioRef.current) {
+            const active = audioRef.current;
+            audioRef.current = null;
+            try { active.pause(); active.removeAttribute("src"); active.load(); } catch { /* ignore */ }
+            setPlaying(false);
+            return;
+        }
+        if (msg.mediaUrl && !needsResynthesis) {
+            playSrc(msg.mediaUrl);
+            return;
+        }
+        if (msg.role === "user" || !characterId) {
+            if (msg.mediaUrl) playSrc(msg.mediaUrl);
+            return;
+        }
+        setSynthesizing(true);
+        setSynthFailed(false);
+        synthesizeVoiceForMessage(msg.id, characterId, speechText)
+            .then((dataUrl) => {
+                if (onUpdate) onUpdate({ ...msg, mediaUrl: dataUrl, mediaData: { ...msg.mediaData, synthesizedFromText: speechText } });
+                if (!mountedRef.current) return;
+                setSynthesizing(false);
+                playSrc(dataUrl);
+            })
+            .catch(() => {
+                if (!mountedRef.current) return;
+                setSynthesizing(false);
+                setSynthFailed(true);
+            });
     };
 
     useEffect(() => () => { audioRef.current?.pause(); }, []);
@@ -2268,7 +2296,7 @@ function VoiceMessageBubble({ msg, characterId, onUpdate, defaultTranslationExpa
                     />
                 ))}
             </div>
-            <span className="voice-msg-dur">{duration}&quot;</span>
+            <span className="voice-msg-dur">{synthFailed ? "合成失败·点击重试" : `${duration}"`}</span>
         </div>
     );
 }

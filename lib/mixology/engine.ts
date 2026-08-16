@@ -116,12 +116,15 @@ export function startMixSession(
     if (!card || card.kind !== "character") {
         throw new ChatEngineError("特调里没有角色卡，装不满这一杯。");
     }
+    // 代入名：显式传入 > 面具材料的代入名（装配器同规则，这里快照进对局供界面用）
+    const personaMat = recipe.slots.persona ? getMixMaterial(recipe.slots.persona) : null;
+    const personaUserName = personaMat?.kind === "persona" ? personaMat.userName?.trim() : undefined;
     const openingIndex = options?.openingIndex ?? 0;
     const session: MixSession = {
         id: createMixId("mixsess"),
         recipe: { ...recipe, slots: { ...recipe.slots } },
         charName: card.charName.trim() || card.name,
-        userName: options?.userName?.trim() || undefined,
+        userName: options?.userName?.trim() || personaUserName || undefined,
         openingIndex,
         turns: [],
         createdAt: Date.now(),

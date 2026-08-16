@@ -12,6 +12,7 @@ import type {
     MixEncoreMaterial,
     MixMaterial,
     MixMaterialKind,
+    MixPersonaMaterial,
     MixTextMaterial,
     MixTicketMaterial,
 } from "./types";
@@ -140,8 +141,10 @@ function exampleSection(card: MixCharacterCard, charName: string, userName: stri
 export function assembleMixPrompt(input: MixAssembleInput): MixAssembledPrompt {
     const card = input.character;
     const charName = card.charName.trim() || card.name.trim() || "角色";
-    const userName = input.userName?.trim() || MIX_DEFAULT_USER_NAME;
     const m = input.materials;
+    const persona = m.persona?.kind === "persona" ? (m.persona as MixPersonaMaterial) : undefined;
+    // 代入名：显式传入 > 面具材料的代入名 > 默认「你」
+    const userName = input.userName?.trim() || persona?.userName?.trim() || MIX_DEFAULT_USER_NAME;
     const ticket = m.ticket?.kind === "ticket" ? (m.ticket as MixTicketMaterial) : undefined;
     const encore = m.encore?.kind === "encore" ? (m.encore as MixEncoreMaterial) : undefined;
 
@@ -162,6 +165,10 @@ export function assembleMixPrompt(input: MixAssembleInput): MixAssembledPrompt {
             field("外貌", card.appearance),
             field("背景", card.background),
         ].map((l) => (l ? apply(l) : l))),
+        // 用户资料：{{user}} 是谁。由面具材料提供，帮模型称呼与理解对面的人
+        persona && persona.content.trim()
+            ? `## 用户资料\n${userName}由用户扮演，${charName}对面的人。\n${apply(persona.content.trim())}`
+            : null,
         sectionBlock("世界与剧情", [
             field("世界观", card.worldview),
             field(`${charName}对${userName}的初始认知`, card.cognition),

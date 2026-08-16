@@ -10,6 +10,7 @@ import {
     ChevronLeft,
     Download,
     GlassWater,
+    ImageDown,
     Martini,
     MoreHorizontal,
     Pencil,
@@ -50,7 +51,7 @@ import {
     type MixSession,
 } from "@/lib/mixology/types";
 import { MixHallGoneError, shareHallMaterial, shareHallRecipe, updateHallMaterial, updateHallRecipe } from "@/lib/mixology/hall-client";
-import { exportMixMaterial, parseMixMaterialsFromJson } from "@/lib/mixology/transfer";
+import { exportMixMaterial, exportMixMaterialPng, parseMixMaterialsFromJson, parseMixMaterialsFromPng } from "@/lib/mixology/transfer";
 import { MixMaterialEditor } from "./mixology-editor";
 import { MixologyGame } from "./mixology-game";
 import { MixologyHall } from "./mixology-hall";
@@ -66,6 +67,9 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
     const [recipes, setRecipes] = useState<MixRecipe[]>(() => loadMixRecipes());
     const [sessions, setSessions] = useState<MixSession[]>(() => loadMixSessions());
     const [cabinetKind, setCabinetKind] = useState<MixMaterialKind>("character");
+    // 酒单/大厅手动刷新：令牌触发子组件重拉，loading 驱动头部图标旋转
+    const [hallReload, setHallReload] = useState(0);
+    const [hallLoading, setHallLoading] = useState(false);
     const [detail, setDetail] = useState<MixMaterial | null>(null);
     const [editor, setEditor] = useState<{ kind: MixMaterialKind; initial?: MixMaterial } | null>(null);
     const [barTab, setBarTab] = useState<"create" | "mine">("create");
@@ -195,7 +199,10 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
     const handleImportFile = async (file: File | undefined) => {
         if (!file) return;
         try {
-            const materials = parseMixMaterialsFromJson(await file.text());
+            const isPng = file.type === "image/png" || /\.png$/i.test(file.name);
+            const materials = isPng
+                ? parseMixMaterialsFromPng(await file.arrayBuffer())
+                : parseMixMaterialsFromJson(await file.text());
             materials.forEach(saveMixMaterial);
             refresh();
             showToast(materials.length > 1 ? `已导入 ${materials.length} 件材料。` : `「${materials[0].name}」已入柜。`);
@@ -317,15 +324,27 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
                 {tab === "cabinet" ? (
                     <button type="button" className="mix-icon-btn" onClick={() => importFileRef.current?.click()} aria-label="导入材料" title="从文件导入"><Upload size={17} /></button>
                 ) : null}
+                {tab === "menu" || tab === "hall" ? (
+                    <button
+                        type="button"
+                        className="mix-icon-btn"
+                        onClick={() => setHallReload((n) => n + 1)}
+                        disabled={hallLoading}
+                        aria-label="刷新"
+                        title="刷新"
+                    >
+                        <RefreshCw size={17} className={hallLoading ? "mix-spin" : undefined} />
+                    </button>
+                ) : null}
             </div>
 
             <div className="mix-body" data-fill={tab === "bar" && barTab === "create" ? "true" : undefined}>
                 {tab === "menu" ? (
-                    <MixologyHall mode="menu" onToast={showToast} onImported={refresh} />
+                    <MixologyHall mode="menu" onToast={showToast} onImported={refresh} reloadToken={hallReload} onLoadingChange={setHallLoading} />
                 ) : null}
 
                 {tab === "hall" ? (
-                    <MixologyHall mode="hall" onToast={showToast} onImported={refresh} />
+                    <MixologyHall mode="hall" onToast={showToast} onImported={refresh} reloadToken={hallReload} onLoadingChange={setHallLoading} />
                 ) : null}
 
                 {tab === "bar" ? (
@@ -472,15 +491,6 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
                                 ))}
                             </div>
                         )}
-                        <button
-                            type="button"
-                            className="mix-fab"
-                            onClick={() => setEditor({ kind: cabinetKind })}
-                            aria-label={`自建一件${MIX_KIND_LABELS[cabinetKind]}`}
-                            title={`自建一件${MIX_KIND_LABELS[cabinetKind]}`}
-                        >
-                            <Plus size={24} />
-                        </button>
                     </>
                 ) : null}
 
@@ -536,6 +546,19 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
                 ) : null}
             </div>
 
+            {/* 悬浮创建按钮：必须在滚动容器之外，否则列表滚动后按钮会跟着内容坐标漂移 */}
+            {tab === "cabinet" ? (
+                <button
+                    type="button"
+                    className="mix-fab"
+                    onClick={() => setEditor({ kind: cabinetKind })}
+                    aria-label={`自建一件${MIX_KIND_LABELS[cabinetKind]}`}
+                    title={`自建一件${MIX_KIND_LABELS[cabinetKind]}`}
+                >
+                    <Plus size={24} />
+                </button>
+            ) : null}
+
             <div className="mix-nav">
                 <button type="button" className="mix-nav-btn" data-active={tab === "menu" ? "true" : undefined} onClick={() => setTab("menu")}>
                     <Wine size={19} strokeWidth={1.8} />酒单
@@ -567,7 +590,18 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
                                 {isMixBuiltinId(detail.id) ? <span className="mix-mat-badge" style={{ marginLeft: 6 }}>官方</span> : null}
                             </div>
                             {!isSealedMaterial(detail) ? (
-                                <button type="button" className="mix-icon-btn" onClick={() => exportMixMaterial(detail)} aria-label="导出为文件" title="导出为文件"><Download size={16} /></button>
+                                <>
+                                    <button type="button" className="mix-icon-btn" onClick={() => exportMixMaterial(detail)} aria-label="导出 JSON" title="导出 JSON"><Download size={16} /></button>
+                                    <button
+                                        type="button"
+                                        className="mix-icon-btn"
+                                        onClick={() => { void exportMixMaterialPng(detail).catch((err) => showToast(err instanceof Error ? err.message : "导出失败")); }}
+                                        aria-label="导出 PNG 卡"
+                                        title="导出 PNG 卡（图即是卡）"
+                                    >
+                                        <ImageDown size={16} />
+                                    </button>
+                                </>
                             ) : null}
                             {!isMixBuiltinId(detail.id) && !isSealedMaterial(detail) ? (
                                 <>
@@ -851,7 +885,7 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
             <input
                 ref={importFileRef}
                 type="file"
-                accept="application/json,.json"
+                accept="application/json,.json,image/png,.png"
                 style={{ display: "none" }}
                 onChange={(e) => { void handleImportFile(e.target.files?.[0]); e.target.value = ""; }}
             />

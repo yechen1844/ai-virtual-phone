@@ -5,7 +5,7 @@ import { getCurrentAccount } from "@/lib/server/account-auth";
 // 独家特调 · 酒单/大厅 API：材料（mixology_items）与配方（mixology_recipes）共用一套路由，
 // type=material|recipe 区分。全部经 service key 直连 Supabase REST，anon 无直读。
 
-const MATERIAL_KINDS = ["character", "base", "flavor", "glass", "strength", "ticket", "garnish", "encore"] as const;
+const MATERIAL_KINDS = ["character", "persona", "base", "flavor", "glass", "strength", "ticket", "garnish", "encore"] as const;
 
 const ITEM_SUMMARY_COLUMNS = "id,kind,name,hook,cover,tags,author_id,author_name,like_count,save_count,view_count,comment_count,created_at,updated_at";
 const ITEM_COLUMNS = `${ITEM_SUMMARY_COLUMNS},payload`;

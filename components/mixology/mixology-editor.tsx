@@ -22,6 +22,10 @@ const KIND_GUIDE: Record<MixMaterialKind, { what: string; where: string }> = {
         what: "这里写角色资料：身份、外貌、性格、所处世界、与玩家的初始关系，以及开场白与示例对话。",
         where: "拆分为「角色资料」「世界与剧情」「示例对话」三段进入提示词。",
     },
+    persona: {
+        what: "这里写用户人设：{{user}} 是谁——身份、性格、外貌，以及与{{char}}关系中用户一侧的设定；可另填一个代入名替换全部 {{user}}。",
+        where: "进入提示词「用户资料」段，位于「角色资料」之后；代入名会替换提示词中所有 {{user}}。",
+    },
     base: {
         what: "这里写扮演总纲：如何入戏、能否代替玩家发言、是否允许冲突与负面情绪。约束态度，不涉及文笔。",
         where: "进入提示词首段「扮演总纲」。",
@@ -36,7 +40,7 @@ const KIND_GUIDE: Record<MixMaterialKind, { what: string; where: string }> = {
     },
     strength: {
         what: "这里写最高优先级要求：一到两条最需要被贯彻的规则。因排在全部对话之后、生成之前，模型对其服从度最高；条目越多越互相稀释。",
-        where: "进入对话历史之后的「最高优先级要求」段，八味中仅此一味在此位置。",
+        where: "进入对话历史之后的「最高优先级要求」段，九味中仅此一味在此位置。",
     },
     ticket: {
         what: "这里写状态栏：每轮附带的一张数据卡，好感度、当前心情、随身物品等由创作者自定。契约决定模型报告什么，渲染代码决定卡片如何呈现。",
@@ -141,6 +145,7 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
     const [content, setContent] = useState(
         initial && "content" in initial ? (initial as MixTextMaterial).content : "",
     );
+    const [personaUserName, setPersonaUserName] = useState(initial?.kind === "persona" ? initial.userName ?? "" : "");
     const [contract, setContract] = useState(initial?.kind === "ticket" ? initial.contract : "");
     const [renderHtml, setRenderHtml] = useState(initial?.kind === "ticket" ? initial.renderHtml : "");
     const [previewRaw, setPreviewRaw] = useState(initial?.kind === "ticket" ? initial.previewRaw ?? "" : "");
@@ -236,6 +241,14 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
                 renderHtml: html,
                 previewRaw: encorePreviewRaw.trim() || undefined,
             });
+            return;
+        }
+        if (kind === "persona") {
+            if (!content.trim()) {
+                setError("面具的人设内容不能为空。");
+                return;
+            }
+            onSave({ ...meta, kind: "persona", userName: personaUserName.trim() || undefined, content: content.trim() });
             return;
         }
         if (!content.trim()) {
@@ -371,6 +384,22 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
                     >
                         <Play size={13} style={{ verticalAlign: "-2px" }} /> 预览画布
                     </button>
+                </>
+            ) : null}
+            {kind === "persona" ? (
+                <>
+                    <Field label="代入名" hint="选填，替换提示词里的 {{user}}；留空则用「你」">
+                        <input className="mix-input" value={personaUserName} onChange={(e) => setPersonaUserName(e.target.value)} placeholder="例：阿澈" />
+                    </Field>
+                    <Field label="用户人设" hint="必填，可用 {{char}} / {{user}}">
+                        <textarea
+                            className="mix-textarea"
+                            style={{ minHeight: 170 }}
+                            value={content}
+                            onChange={(e) => setContent(e.target.value)}
+                            placeholder={"例：\n{{user}}：22 岁，插画系学生，寄住江家的故人之女。\n- 表面顺从，实际一直在攒离开的底气。\n- 怕打雷；说谎时会攥紧左手。"}
+                        />
+                    </Field>
                 </>
             ) : null}
             {kind === "base" || kind === "flavor" || kind === "glass" || kind === "strength" ? (

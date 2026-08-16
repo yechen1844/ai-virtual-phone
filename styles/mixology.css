@@ -203,6 +203,15 @@
     color: rgba(141, 123, 245, 0.75);
 }
 
+/* 头部刷新图标：拉取中旋转 */
+.mix-spin {
+    animation: mixSpin 0.9s linear infinite;
+}
+
+@keyframes mixSpin {
+    to { transform: rotate(360deg); }
+}
+
 /* 右下角悬浮创建按钮：当前 TAB 是哪类就建哪类 */
 .mix-fab {
     position: absolute;

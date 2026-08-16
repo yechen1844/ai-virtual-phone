@@ -6,6 +6,7 @@
 import type { ReactNode } from "react";
 import {
     BookOpen,
+    CircleUserRound,
     Feather,
     Flame,
     GlassWater,
@@ -20,6 +21,7 @@ import { MixRichText } from "./rich-text";
 
 const KIND_ICONS: Record<MixMaterialKind, typeof UserRound> = {
     character: UserRound,
+    persona: CircleUserRound,
     base: BookOpen,
     flavor: Feather,
     glass: GlassWater,
@@ -174,6 +176,15 @@ export function MaterialDetail({ material }: { material: MixMaterial }) {
                 <DetailField label="当前剧情" value={card.plot} />
                 <DetailField label="附加设定" value={card.extra} />
                 <DetailField label="开场白" value={card.openings.map((o, i) => `${card.openings.length > 1 ? `〔${i + 1}〕` : ""}${o}`).join("\n\n")} />
+            </>
+        );
+    }
+    if (material.kind === "persona") {
+        return (
+            <>
+                <DetailField label="一句话介绍" value={material.hook} />
+                <DetailField label="代入名" value={material.userName} />
+                <DetailField label="用户人设" value={material.content} />
             </>
         );
     }

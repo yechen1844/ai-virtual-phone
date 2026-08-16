@@ -1606,6 +1606,24 @@
   overflow-wrap: anywhere;
 }
 
+/* 生图失败提示的忽略按钮：点掉即清状态落库，不再提示 */
+.feed-post-photo-error-dismiss {
+  margin-left: 6px;
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: inherit;
+  opacity: 0.65;
+  font-size: inherit;
+  line-height: 1;
+  cursor: pointer;
+  vertical-align: baseline;
+}
+
+.feed-post-photo-error-dismiss:active {
+  opacity: 1;
+}
+
 .feed-post-photo-retry-stack {
   display: flex;
   flex-direction: column;

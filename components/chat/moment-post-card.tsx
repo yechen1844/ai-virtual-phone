@@ -363,11 +363,31 @@ export function MomentPostCard({ post, onUpdate, onRequestDelete, onOpenCommentC
                             <div className="ts-12 text-[var(--c-icon)] opacity-80">图片生成中…</div>
                         )}
                         {post.photoGenerationStatus === "failed" && post.photoGenerationError && !photoRetryError && (
-                            <div className="feed-post-photo-retry-error">生成失败：{post.photoGenerationError}</div>
+                            <div className="feed-post-photo-retry-error">
+                                生成失败：{post.photoGenerationError}
+                                <button
+                                    type="button"
+                                    className="feed-post-photo-error-dismiss"
+                                    aria-label="忽略此提示"
+                                    title="忽略此提示"
+                                    onClick={() => {
+                                        // 叉掉即清状态落库：这条动态从此不再提示（文字描述框保留）
+                                        updateMomentPost(post.id, { photoGenerationStatus: undefined, photoGenerationError: undefined });
+                                        onUpdate();
+                                    }}
+                                >
+                                    ✕
+                                </button>
+                            </div>
                         )}
                     </div>
                 )}
-                {photoRetryError && <div className="feed-post-photo-retry-error">生成失败：{photoRetryError}</div>}
+                {photoRetryError && (
+                    <div className="feed-post-photo-retry-error">
+                        生成失败：{photoRetryError}
+                        <button type="button" className="feed-post-photo-error-dismiss" aria-label="忽略此提示" onClick={() => setPhotoRetryError("")}>✕</button>
+                    </div>
+                )}
             </div>
             {showFallbackPreview && fallbackPhotoDescription && (
                 <MediaPreviewOverlay

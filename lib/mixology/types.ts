@@ -5,9 +5,10 @@
 // 各挑一件调成「特调」，特调可命名保存/分享。对局 = 角色卡 + 特调的一次运行。
 // 本文件只定义数据形状，装配见 assembler.ts，存取见 storage.ts。
 
-/** 材料七类（槽位一一对应） */
+/** 材料九类（槽位一一对应） */
 export type MixMaterialKind =
     | "character" // 角色卡
+    | "persona"   // 面具：用户人设（{{user}} 的名字与设定）
     | "base"      // 基底：扮演总纲
     | "flavor"    // 风味：文风
     | "glass"     // 杯型：输出格式
@@ -18,6 +19,7 @@ export type MixMaterialKind =
 
 export const MIX_KIND_LABELS: Record<MixMaterialKind, string> = {
     character: "角色卡",
+    persona: "面具",
     base: "基底",
     flavor: "风味",
     glass: "杯型",
@@ -29,12 +31,13 @@ export const MIX_KIND_LABELS: Record<MixMaterialKind, string> = {
 
 /** 吧台槽位顺序（角色卡永远第一槽） */
 export const MIX_SLOT_ORDER: MixMaterialKind[] = [
-    "character", "base", "flavor", "glass", "strength", "ticket", "garnish", "encore",
+    "character", "persona", "base", "flavor", "glass", "strength", "ticket", "garnish", "encore",
 ];
 
 /** 每类材料在提示词里的正规段名（装饰不进提示词，标它的实际职责） */
 export const MIX_KIND_SECTION_LABELS: Record<MixMaterialKind, string> = {
     character: "角色资料",
+    persona: "用户资料",
     base: "扮演总纲",
     flavor: "文风",
     glass: "正文输出要求",
@@ -116,6 +119,14 @@ export type MixTextMaterial = MixMaterialMeta & {
     content: string;
 };
 
+/** 面具（用户人设）：{{user}} 是谁——代入名 + 人设正文，装配成「用户资料」段 */
+export type MixPersonaMaterial = MixMaterialMeta & {
+    kind: "persona";
+    /** 玩家代入名，替换 {{user}}；留空用默认「你」 */
+    userName?: string;
+    content: string;
+};
+
 /** 小票：输出契约进提示词，渲染代码在沙盒 iframe 接管展示 */
 export type MixTicketMaterial = MixMaterialMeta & {
     kind: "ticket";
@@ -153,6 +164,7 @@ export function mixEncoreRenderHtml(material: MixEncoreMaterial): string {
 
 export type MixMaterial =
     | MixCharacterCard
+    | MixPersonaMaterial
     | MixTextMaterial
     | MixTicketMaterial
     | MixGarnishMaterial

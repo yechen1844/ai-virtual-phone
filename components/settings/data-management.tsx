@@ -437,14 +437,17 @@ export function DataManagement({ onNotice }: DataManagementProps) {
   };
 
   const executeExport = (moduleIds: DataModuleId[]) => runAction("导出中", async () => {
-    const { blob, manifest } = await createBackupBlob(moduleIds, { excludeMedia: cloudConfig.excludeMedia });
+    const { blob, manifest, warnings } = await createBackupBlob(moduleIds, { excludeMedia: cloudConfig.excludeMedia });
     const note = manifest.mediaExcluded ? "（不含图片/多媒体）" : "";
+    // 导出侧不静默：数据库打不开 / 关键模块 0 记录必须当面告知，
+    // 否则用户会带着一个"看起来成功、实际缺整库"的备份走（用户实报踩坑）
+    const warnNote = warnings.length > 0 ? `⚠️ ${warnings.join("；")}` : "";
     if (isIOSBrowser() || isAndroidBrowser()) {
       setPendingExport({ blob, manifest });
-      return `备份文件已生成：${manifest.modules.length} 个模块，${formatBytes(manifest.totalBytes)}${note}。请点“保存备份文件”。`;
+      return `备份文件已生成：${manifest.modules.length} 个模块，${formatBytes(manifest.totalBytes)}${note}。请点“保存备份文件”。${warnNote}`;
     }
     await downloadBackupBlob(blob, manifest, { disableNativeShare: true });
-    return `已导出 ${manifest.modules.length} 个模块，${formatBytes(manifest.totalBytes)}${note}。`;
+    return `已导出 ${manifest.modules.length} 个模块，${formatBytes(manifest.totalBytes)}${note}。${warnNote}`;
   });
 
   const savePendingExport = async () => {
