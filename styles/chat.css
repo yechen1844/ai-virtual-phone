@@ -4638,6 +4638,96 @@
   gap: 6px;
 }
 
+/* 阅读设置：选项卡片 */
+.reading-option-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.reading-option-grid--two {
+  grid-template-columns: 1fr;
+}
+.reading-option-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--reading-warm-card-border, #f0e8da);
+  background: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+}
+.reading-option-card.is-active {
+  border-color: var(--reading-warm-brown, #8a5a2b);
+  background: rgba(237, 227, 207, 0.4);
+  box-shadow: inset 0 0 0 1px rgba(138, 90, 43, 0.25);
+}
+.reading-option-card-label {
+  font-size: calc(11.7px*var(--app-text-scale,1));
+  font-weight: 600;
+  color: var(--reading-warm-ink, #111);
+}
+.reading-option-card-desc {
+  font-size: calc(9.9px*var(--app-text-scale,1));
+  line-height: 1.45;
+  color: var(--reading-warm-ink-tertiary, #999);
+}
+
+/* 阅读设置：批注重试次数步进器 */
+.reading-retry-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+.reading-retry-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--reading-warm-card-border, #f0e8da);
+  background: rgba(255, 255, 255, 0.7);
+  color: var(--reading-warm-brown, #8a5a2b);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+}
+.reading-retry-btn:active:not(:disabled) {
+  background: rgba(237, 227, 207, 0.6);
+}
+.reading-retry-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.reading-retry-value {
+  min-width: 64px;
+  text-align: center;
+  font-size: calc(15.3px*var(--app-text-scale,1));
+  font-weight: 700;
+  color: var(--reading-warm-ink, #111);
+}
+.reading-retry-value em {
+  font-style: normal;
+  font-size: calc(9.9px*var(--app-text-scale,1));
+  font-weight: 400;
+  color: var(--reading-warm-ink-tertiary, #999);
+  margin-left: 2px;
+}
+
+/* 滚动阅读模式 */
+.reading-scroll-content {
+  min-height: 100%;
+  padding: 6px 0 12px;
+  touch-action: pan-y;
+}
+.reading-scroll-block {
+  margin-bottom: 14px;
+}
+
 .chat-bilingual-prompt-dialog {
   width: min(520px, 88vw);
   max-width: 520px;

@@ -52,16 +52,31 @@ registerKvMigration(READING_INTERACTION_CONFIG_KEY);
 const RAW_FILE_DB_NAME = "reading-raw-files";
 const RAW_FILE_STORE_NAME = "files";
 
+/** TXT 导入时的段落划分方式：auto=智能探测（默认）/ blank=空行 / indent=段首缩进 / line=每行一段 */
+export type ReadingParagraphMode = "auto" | "blank" | "indent" | "line";
+
+/** 阅读模式：page=翻页 / scroll=连续滚动 */
+export type ReadingViewMode = "page" | "scroll";
+
 export type ReadingInteractionConfig = {
     bilingualTranslationEnabled: boolean;
     collapseBilingualTranslation: boolean;
     bilingualTranslationPrompt: string;
+    /** 导入 TXT 时如何划分段落（默认自动探测书格式） */
+    paragraphMode: ReadingParagraphMode;
+    /** 阅读模式：翻页 / 连续滚动 */
+    readingMode: ReadingViewMode;
+    /** 自动批注失败时的静默重试次数（0=不重试） */
+    annotationRetryCount: number;
 };
 
 export const DEFAULT_READING_INTERACTION_CONFIG: ReadingInteractionConfig = {
     bilingualTranslationEnabled: true,
     collapseBilingualTranslation: true,
     bilingualTranslationPrompt: DEFAULT_READING_BILINGUAL_PROMPT,
+    paragraphMode: "auto",
+    readingMode: "page",
+    annotationRetryCount: 3,
 };
 
 export async function hydrateReadingStorage(): Promise<void> {
