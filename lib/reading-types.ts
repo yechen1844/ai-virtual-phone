@@ -29,8 +29,6 @@ export type ReadingProgress = {
     bookId: string;
     chapterIndex: number;
     scrollPosition: number;
-    /** Scroll mode only: 0-1 ratio within the current chapter's scrollable flow */
-    scrollRatio?: number;
     companionCharacterId?: string;
     progressFraction?: number;
     progressCurrent?: number;

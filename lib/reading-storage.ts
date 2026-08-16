@@ -56,18 +56,12 @@ export type ReadingInteractionConfig = {
     bilingualTranslationEnabled: boolean;
     collapseBilingualTranslation: boolean;
     bilingualTranslationPrompt: string;
-    /** "paged" = 左右翻页（默认）；"scroll" = 上下连续滚动 */
-    readingMode: "paged" | "scroll";
-    /** 每批批注条数上限，0 = 不限制（默认） */
-    annotationLimit: number;
 };
 
 export const DEFAULT_READING_INTERACTION_CONFIG: ReadingInteractionConfig = {
     bilingualTranslationEnabled: true,
     collapseBilingualTranslation: true,
     bilingualTranslationPrompt: DEFAULT_READING_BILINGUAL_PROMPT,
-    readingMode: "paged",
-    annotationLimit: 0,
 };
 
 export async function hydrateReadingStorage(): Promise<void> {
