@@ -474,22 +474,18 @@ export function appendEmptyGenerateGuardMessage(
     const hasRealUserHistory = history.some(isRealUserHistoryMessage);
     if (!hasRealUserHistory) return;
 
-    let lastAssistantIndex = -1;
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-        if (messages[index].role === "assistant") {
-            lastAssistantIndex = index;
-            break;
-        }
+    // 判定用户这次是否真的输入了新消息：看原始对话 history 的末尾，而不是组装后的 messages。
+    // 原因：预设里 role=assistant 的条目（例如「模型输出格式」放在 chatHistory 标记之后）会以
+    // assistant 角色注入到 messages 末尾，旧逻辑「最后一条 assistant 之后没有 user」就会把
+    // 「用户已输入」误判成「未输入」，错误追加续写提示（EMPTY_GENERATE_CONTINUATION_PROMPT）。
+    // history 末尾是真实用户消息（含图片/红包等媒体输入）→ 本次是正常回复，不追加续写提示；
+    // 末尾是 assistant / system（如 follow-up 静默提示）→ 用户未输入新消息，照常追加。
+    const lastHistoryMessage = history[history.length - 1];
+    if (lastHistoryMessage && isRealUserHistoryMessage(lastHistoryMessage)) {
+        return;
     }
-    if (lastAssistantIndex < 0) return;
 
-    const hasUserAfterLastAssistant = messages
-        .slice(lastAssistantIndex + 1)
-        .some(message => message.role === "user");
-
-    if (!hasUserAfterLastAssistant) {
-        messages.push({ role: "user", content: EMPTY_GENERATE_CONTINUATION_PROMPT });
-    }
+    messages.push({ role: "user", content: EMPTY_GENERATE_CONTINUATION_PROMPT });
 }
 
 export function publishDebugPromptSnapshot(params: {
