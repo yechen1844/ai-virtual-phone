@@ -3901,7 +3901,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
         const rawSource = formatOfflineTurnXml(turn);
         const rawDisplay = renderDisplayText(rawSource, 2, true);
         const parsed = rawDisplay !== rawSource
-            ? parseOfflineResponse(rawDisplay, turn.summaryTag || "summary")
+            ? parseOfflineResponse(rawDisplay, turn.summaryTag || "summary", turn.thinkingTag)
             : null;
         const hasParsedDisplay = Boolean(parsed?.content.trim() || parsed?.summary.trim());
         return {
@@ -4042,7 +4042,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                     const parsed = parseOfflineResponse(offlineStreamAccumRef.current, "summary");
                     // 流式碎片阶段 XML 标签可能未闭合：content 提取不到时，剥掉开标签残片直接显示原文
                     const previewContent = parsed.content || offlineStreamAccumRef.current
-                        .replace(/<\/?(?:content|summary)>/gi, "")
+                        .replace(/<\/?(?:content|summary|thinking|thought)>/gi, "")
                         .replace(/<[^>]+>/g, "")
                         .trim();
                     setOfflineStreamPreview({ content: previewContent, summary: parsed.summary });
@@ -4062,6 +4062,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                     summaryTag: result.summaryTag,
                     rawText: result.rawText,
                     reasoningText: result.reasoning,
+                    thinkingText: result.thinking,
+                    thinkingTag: result.thinkingTag,
                 });
                 setOfflineTurns(prev => [...prev, saved]);
             } catch (error: any) {
@@ -4104,7 +4106,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
         }
 
         const nextContent = applyEditTextRegex(content, 2, true);
-        const parsed = parseOfflineResponse(nextContent, turn.summaryTag || "summary");
+        const parsed = parseOfflineResponse(nextContent, turn.summaryTag || "summary", turn.thinkingTag);
         const assistantContent = parsed.content.trim() || parsed.rawText.trim();
         if (!assistantContent) {
             showChatToast("没有解析到线下正文");
@@ -4116,6 +4118,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
             summary: parsed.summary.trim(),
             summaryTag: parsed.summaryTag,
             rawText: parsed.rawText,
+            thinkingText: parsed.thinking,
+            thinkingTag: parsed.thinkingTag,
         });
         if (updated) setOfflineTurns(prev => prev.map(item => item.id === updated.id ? updated : item));
         setEditingOfflineTarget(null);
@@ -4172,7 +4176,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                 const parsed = parseOfflineResponse(offlineStreamAccumRef.current, "summary");
                 // 流式碎片阶段 XML 标签可能未闭合：content 提取不到时，剥掉开标签残片直接显示原文
                 const previewContent = parsed.content || offlineStreamAccumRef.current
-                    .replace(/<\/?(?:content|summary)>/gi, "")
+                    .replace(/<\/?(?:content|summary|thinking|thought)>/gi, "")
                     .replace(/<[^>]+>/g, "")
                     .trim();
                 setOfflineStreamPreview({ content: previewContent, summary: parsed.summary });
@@ -4192,6 +4196,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                 summaryTag: result.summaryTag,
                 rawText: result.rawText,
                 reasoningText: result.reasoning,
+                thinkingText: result.thinking,
+                thinkingTag: result.thinkingTag,
             });
             setOfflineTurns([...baseTurns, saved]);
         } catch (error: any) {
@@ -5405,16 +5411,16 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                                             </button>
                                         ) : null}
                                     </div>
-                                    {/* 思维链触发条（线下模式，Claude app 风格） */}
-                                    {turn.reasoningText && (
+                                    {/* 思维链触发条（线下模式，Claude app 风格）：优先展示预设格式 <thinking> 解析结果，缺省回退模型 API 原生思考 */}
+                                    {(turn.thinkingText || turn.reasoningText) && (
                                         <button
                                             type="button"
                                             className="chat-reasoning-trigger"
-                                            onClick={(e) => { e.stopPropagation(); setReasoningSheetText(turn.reasoningText || null); }}
+                                            onClick={(e) => { e.stopPropagation(); setReasoningSheetText(turn.thinkingText || turn.reasoningText || null); }}
                                             aria-label="查看思考过程"
                                         >
                                             <Clock size={13} strokeWidth={1.8} className="chat-reasoning-trigger-icon" />
-                                            <span className="chat-reasoning-trigger-text">{reasoningPreviewLine(turn.reasoningText)}</span>
+                                            <span className="chat-reasoning-trigger-text">{reasoningPreviewLine(turn.thinkingText || turn.reasoningText)}</span>
                                             <ChevronRight size={14} strokeWidth={1.8} className="chat-reasoning-trigger-icon" />
                                         </button>
                                     )}

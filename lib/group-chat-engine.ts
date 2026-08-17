@@ -1091,6 +1091,7 @@ export async function generateGroupOfflineChatCompletion(
         },
     );
     const summaryTag = preset?.story_summary_tag?.trim() || "summary";
+    const thinkingTag = preset?.thinking_tag?.trim() || "thinking";
     let reasoning = "";
     const meta = { characterName: `群聊:${session.groupName || "群聊"}` };
     const requestOptions = {
@@ -1114,7 +1115,7 @@ export async function generateGroupOfflineChatCompletion(
     } else {
         rawOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, requestOptions);
     }
-    let parsed = parseOfflineResponse(rawOutput, summaryTag);
+    let parsed = parseOfflineResponse(rawOutput, summaryTag, thinkingTag);
 
     // 摘要缺失时自动补提：拿上次完整输出做上下文，只要求模型补一段摘要，
     // 避免「静默结束」导致该轮线下记录没有摘要、进不了短期记忆事件流。

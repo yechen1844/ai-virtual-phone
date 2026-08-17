@@ -647,6 +647,7 @@ function FollowUpSettingsEditor({ onBack }: { onBack: () => void }) {
 function ApiLogViewer({ onBack }: { onBack: () => void }) {
     const [logs, setLogs] = useState<DebugInfo[]>([]);
     const [expandedId, setExpandedId] = useState<string | null>(null);
+    const [fullResponse, setFullResponse] = useState<string | null>(null);
 
     useEffect(() => {
         setLogs([...getApiLogs()].reverse());
@@ -728,8 +729,15 @@ function ApiLogViewer({ onBack }: { onBack: () => void }) {
                                                         </div>
                                                     </div>
                                                 ))}
-                                                <div className="font-bold mt-3 mb-[6px] text-[var(--c-danger)]">
-                                                    AI 原始回复
+                                                <div className="flex items-center justify-between mt-3 mb-[6px]">
+                                                    <div className="font-bold text-[var(--c-danger)]">AI 原始回复</div>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setFullResponse(log.rawResponse)}
+                                                        className="ui-bare-btn ts-12 font-semibold text-[var(--c-icon-active)] underline"
+                                                    >
+                                                        查看完整回复
+                                                    </button>
                                                 </div>
                                                 <div className="api-log-response whitespace-pre-wrap break-all leading-[1.4]">
                                                     {log.rawResponse}
@@ -752,6 +760,24 @@ function ApiLogViewer({ onBack }: { onBack: () => void }) {
                 )}
 
             </div>
+
+            {/* 完整回复全屏查看：避免长回复（线下 XML、工具调用等）在展开区看不全 */}
+            {fullResponse !== null && (
+                <div
+                    className="fixed inset-0 z-[300] flex flex-col bg-black/70 p-4"
+                    onClick={() => setFullResponse(null)}
+                >
+                    <div
+                        className="flex-1 min-h-0 overflow-auto rounded-xl border border-[var(--c-border)] bg-[#111] p-4 font-mono text-[12px] leading-[1.55] text-[#e0e0e0] whitespace-pre-wrap break-all"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        {fullResponse}
+                    </div>
+                    <div className="flex justify-end pt-3">
+                        <button type="button" className="ui-btn ui-btn-primary" onClick={() => setFullResponse(null)}>关闭</button>
+                    </div>
+                </div>
+            )}
         </PageShell>
     );
 }

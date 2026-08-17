@@ -954,6 +954,19 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                                 用于从剧情模式和聊天线下模式的原始 XML 输出中提取事件摘要字段名。默认读取 {"<summary>"}。
                                                             </div>
                                                         </div>
+                                                        <div className="flex flex-col gap-2 col-span-full">
+                                                            <label className="ui-slider-label">剧情/线下模式思维链字段</label>
+                                                            <input
+                                                                type="text"
+                                                                value={preset.thinking_tag || "thinking"}
+                                                                onChange={(e) => updatePreset(preset.id, { thinking_tag: e.target.value })}
+                                                                placeholder="thinking"
+                                                                className="ui-input"
+                                                            />
+                                                            <div className="ui-slider-hint">
+                                                                从线下模式原始 XML 中提取思考过程（思维链）的字段名，会在消息上方显示思维链入口。默认读取 {"<thinking>"}，兼容 {"<thought>"}。
+                                                            </div>
+                                                        </div>
                                                     </div>
                                                 </div>
                                             )}

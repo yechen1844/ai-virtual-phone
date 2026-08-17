@@ -72,7 +72,9 @@ import { buildCalendarScheduleMarker, getCurrentCalendarScheduleForPrompt } from
 import { getWeekStartIso } from "./calendar-utils";
 import { buildCharacterTimeContext } from "./character-time";
 import { getPromptTimestampOptionsForTimeContext } from "./prompt-time";
-import { kvGet, kvSet, kvRemove, registerKvMigration } from "./kv-db";
+import { kvGet, kvSet, registerKvMigration } from "./kv-db";
+import { pushApiLog } from "./api-log-store";
+export { getApiLogs, clearApiLogs, type DebugInfo } from "./api-log-store";
 import { stripStateAndInnerForPrompt } from "./prompt-sanitizer";
 import { getInternalCapability, getInternalCapabilitySubToolDefinitions } from "./internal-capability-storage";
 import { isMediaStoreRef, loadMediaBlob } from "./media-cache-storage";
@@ -322,32 +324,8 @@ export function applyVisionImagePromptLimit(history: ChatMessage[], limitValue: 
     return history;
 }
 
-// API Log store — captures recent request/response history for inspection
-export type DebugInfo = {
-    id: string;
-    characterName?: string;
-    model?: string;
-    messages: { role: string; content: string; marker?: string }[];
-    rawResponse: string;
-    timestamp: string;
-    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
-};
-const MAX_API_LOGS = 50;
-const API_LOGS_KEY = "ai_phone_api_logs_v1";
-registerKvMigration(API_LOGS_KEY);
-
-function _loadLogs(): DebugInfo[] {
-    try {
-        const raw = typeof window !== "undefined" ? kvGet(API_LOGS_KEY) : null;
-        return raw ? JSON.parse(raw) as DebugInfo[] : [];
-    } catch { return []; }
-}
-function _saveLogs(logs: DebugInfo[]): void {
-    try { kvSet(API_LOGS_KEY, JSON.stringify(logs)); } catch { /* quota exceeded — ignore */ }
-}
-
-export function getApiLogs(): DebugInfo[] { return _loadLogs(); }
-export function clearApiLogs(): void { try { kvRemove(API_LOGS_KEY); } catch { } }
+// API 调用日志存储已抽到 ./api-log-store（聊天引擎与 simpleLLMCall 通用），
+// 本文件通过上方 re-export 保持 getApiLogs/clearApiLogs/DebugInfo 的对外路径不变。
 
 export type DebugPromptRequestOptions = {
     appId?: string;
@@ -804,18 +782,12 @@ export async function sendLLMStreamRequest(
             ...m,
             content: typeof m.content === "string" ? m.content : "[vision: 含图片的多模态消息]",
         }));
-        const logEntry: DebugInfo = {
-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        pushApiLog({
             characterName: meta?.characterName,
             model: config.defaultModel,
             messages: sanitizedMessages,
             rawResponse: rawOutput,
-            timestamp: new Date().toISOString(),
-        };
-        const logs = _loadLogs();
-        logs.push(logEntry);
-        while (logs.length > MAX_API_LOGS) logs.shift();
-        _saveLogs(logs);
+        });
 
         if (!options?.skipOutputRegex) {
             const macroEngine = new MacroEngine(meta?.characterName ?? "", meta?.userName ?? "用户");
@@ -946,19 +918,13 @@ export async function sendLLMRequest(
             ...m,
             content: typeof m.content === "string" ? m.content : "[vision: 含图片的多模态消息]",
         }));
-        const logEntry: DebugInfo = {
-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        pushApiLog({
             characterName: meta?.characterName,
             model: config.defaultModel,
             messages: sanitizedMessages,
             rawResponse: rawOutput,
-            timestamp: new Date().toISOString(),
             usage: parsed.usage,
-        };
-        const logs = _loadLogs();
-        logs.push(logEntry);
-        while (logs.length > MAX_API_LOGS) logs.shift();
-        _saveLogs(logs);
+        });
 
         if (options?.skipOutputRegex) {
             return rawOutput;
@@ -1172,18 +1138,13 @@ export async function sendLLMToolStreamRequest(
             content: typeof m.content === "string" ? m.content : "[vision: 含图片的多模态消息]",
         }));
         const { calls: toolCalls, truncatedNames } = finalizeStreamToolCalls(toolDrafts);
-        const logEntry: DebugInfo = {
-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        const logEntryRaw = JSON.stringify({ content, reasoning, toolCalls, raw: rawResponse });
+        pushApiLog({
             characterName: meta?.characterName,
             model: config.defaultModel,
             messages: sanitizedMessages,
-            rawResponse: JSON.stringify({ content, reasoning, toolCalls, raw: rawResponse }),
-            timestamp: new Date().toISOString(),
-        };
-        const logs = _loadLogs();
-        logs.push(logEntry);
-        while (logs.length > MAX_API_LOGS) logs.shift();
-        _saveLogs(logs);
+            rawResponse: logEntryRaw,
+        });
 
         if (!content && toolCalls.length === 0 && truncatedNames.length === 0) {
             throw new ChatEngineError("原生动作流式响应没有解析到文本或动作。");
@@ -1195,7 +1156,7 @@ export async function sendLLMToolStreamRequest(
             openRouterReasoningDetails: undefined,
             toolCalls,
             truncatedToolCalls: truncatedNames.length ? truncatedNames : undefined,
-            rawResponse: logEntry.rawResponse,
+            rawResponse: logEntryRaw,
             providerKind: request.providerKind,
         };
     } catch (error: unknown) {
@@ -1284,19 +1245,13 @@ export async function sendLLMToolRequest(
             toolCalls: parsed.toolCalls,
             raw: parsed.raw,
         });
-        const logEntry: DebugInfo = {
-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        pushApiLog({
             characterName: meta?.characterName,
             model: config.defaultModel,
             messages: sanitizedMessages,
             rawResponse,
-            timestamp: new Date().toISOString(),
             usage: parsed.usage,
-        };
-        const logs = _loadLogs();
-        logs.push(logEntry);
-        while (logs.length > MAX_API_LOGS) logs.shift();
-        _saveLogs(logs);
+        });
 
         if (!options?.skipOutputRegex && rawOutput) {
             const macroEngine = new MacroEngine(meta?.characterName ?? "", meta?.userName ?? "用户");
@@ -2001,6 +1956,7 @@ export async function generateOfflineChatCompletion(
         },
     );
     const summaryTag = preset?.story_summary_tag?.trim() || "summary";
+    const thinkingTag = preset?.thinking_tag?.trim() || "thinking";
     let reasoning = "";
     const meta = { characterName: character.name, userName: userIdentity?.name };
     const requestOptions = {
@@ -2025,7 +1981,7 @@ export async function generateOfflineChatCompletion(
     } else {
         rawOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, requestOptions);
     }
-    let parsed = parseOfflineResponse(rawOutput, summaryTag);
+    let parsed = parseOfflineResponse(rawOutput, summaryTag, thinkingTag);
 
     // 摘要缺失时自动补提：拿上次完整输出做上下文，只要求模型补一段摘要，
     // 避免「静默结束」导致该轮线下记录没有摘要、进不了短期记忆事件流。

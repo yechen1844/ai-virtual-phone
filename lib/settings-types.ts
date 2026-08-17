@@ -82,6 +82,8 @@ export type PresetConfig = SettingItemMeta & {
     scenario_format?: string;
     personality_format?: string;
     story_summary_tag?: string;
+    /** 线下/剧情模式的思维链标签名：从模型输出的 XML 里提取思考过程（默认 thinking，兼容 thought） */
+    thinking_tag?: string;
     prompt_order?: PromptOrderEntry[];
     prompts: Prompt[];
 };
