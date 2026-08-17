@@ -134,6 +134,9 @@ function HtmlPreviewFrame({ html }: { html: string }) {
             ref={iframeRef}
             srcDoc={srcDoc}
             title="正则渲染预览"
+            // 与聊天卡片同规格的沙箱：脚本可跑但跨源隔离——正则组可从别人处导入，
+            // 预览内容不可信，不加 sandbox 会让脚本摸到主应用的 localStorage/IndexedDB
+            sandbox="allow-scripts"
             style={{ width: "100%", height, border: "none", borderRadius: 12, background: "transparent" }}
         />
     );
@@ -893,20 +896,30 @@ export function RegexManager({ isActive = true }: { isActive?: boolean } = {}) {
                                                                     [2, "AI 输出"],
                                                                     [5, "世界书"],
                                                                     [6, "思维链"],
-                                                                ] as const).map(([val, label]) => (
-                                                                    <label key={val} className="ui-checkbox-label whitespace-nowrap">
-                                                                        <input
-                                                                            type="checkbox"
-                                                                            checked={rule.placement?.includes(val) ?? false}
-                                                                            onChange={(e) => {
-                                                                                const p = new Set(rule.placement || []);
-                                                                                e.target.checked ? p.add(val) : p.delete(val);
-                                                                                updateRule(rule.id, { placement: [...p] });
-                                                                            }}
-                                                                        />
-                                                                        {label}
-                                                                    </label>
-                                                                ))}
+                                                                ] as const).map(([val, label]) => {
+                                                                    // 「仅历史消息」只有在组装提示词（用户输入）这一环才拿得到历史标记，
+                                                                    // 勾在别的环节上规则会彻底不触发——所以开着它时锁死为「用户输入」
+                                                                    const lockedToInput = rule.historyOnly === true;
+                                                                    return (
+                                                                        <label
+                                                                            key={val}
+                                                                            className="ui-checkbox-label whitespace-nowrap"
+                                                                            style={lockedToInput && val !== 1 ? { opacity: 0.35 } : undefined}
+                                                                        >
+                                                                            <input
+                                                                                type="checkbox"
+                                                                                checked={lockedToInput ? val === 1 : (rule.placement?.includes(val) ?? false)}
+                                                                                disabled={lockedToInput}
+                                                                                onChange={(e) => {
+                                                                                    const p = new Set(rule.placement || []);
+                                                                                    e.target.checked ? p.add(val) : p.delete(val);
+                                                                                    updateRule(rule.id, { placement: [...p] });
+                                                                                }}
+                                                                            />
+                                                                            {label}
+                                                                        </label>
+                                                                    );
+                                                                })}
                                                             </div>
                                                         </div>
 
@@ -932,10 +945,13 @@ export function RegexManager({ isActive = true }: { isActive?: boolean } = {}) {
                                                             <div className="flex items-center justify-between gap-6 mt-2">
                                                                 <label className="ui-checkbox-label whitespace-nowrap">
                                                                     <input type="checkbox" checked={rule.historyOnly ?? false}
-                                                                        onChange={(e) => updateRule(rule.id, { historyOnly: e.target.checked || undefined })} />
+                                                                        onChange={(e) => updateRule(rule.id, e.target.checked
+                                                                            // 勾上即锁定为「用户输入」：这是它唯一能生效的环节
+                                                                            ? { historyOnly: true, placement: [1] }
+                                                                            : { historyOnly: undefined })} />
                                                                     仅历史消息
                                                                 </label>
-                                                                <span className="menu-desc !mt-0">勾选后只作用于聊天历史消息，不碰系统提示词/预设/世界书</span>
+                                                                <span className="menu-desc !mt-0">只作用于聊天历史消息，不碰系统提示词/预设/世界书</span>
                                                             </div>
                                                         </div>
 

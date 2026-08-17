@@ -2,18 +2,23 @@ import { NextResponse } from "next/server";
 
 import { getCurrentAccount } from "@/lib/server/account-auth";
 
-// 独家特调 · 酒单/大厅 API：材料（mixology_items）与配方（mixology_recipes）共用一套路由，
+// 独家特调 · 酒材/配方 API：材料（mixology_items）与配方（mixology_recipes）共用一套路由，
 // type=material|recipe 区分。全部经 service key 直连 Supabase REST，anon 无直读。
+//
+// 配方条目的 materials 列只存"槽位引用"数组 [{id,kind,name,builtin?}]：
+// builtin 指官方出厂件（客户端本地解析）；其余 id 指向 mixology_items 条目。
+// 详情接口现场联表把引用换成完整材料内容；已下架的标 gone。
 
-const MATERIAL_KINDS = ["character", "base", "flavor", "glass", "strength", "ticket", "garnish", "encore"] as const;
+const MATERIAL_KINDS = ["character", "persona", "base", "flavor", "glass", "strength", "ticket", "garnish", "encore", "filter"] as const;
 
-const ITEM_SUMMARY_COLUMNS = "id,kind,name,hook,cover,tags,author_id,author_name,like_count,save_count,view_count,comment_count,created_at,updated_at";
+const ITEM_SUMMARY_COLUMNS = "id,kind,name,hook,cover,tags,author_id,author_name,author_avatar,like_count,save_count,view_count,comment_count,created_at,updated_at";
 const ITEM_COLUMNS = `${ITEM_SUMMARY_COLUMNS},payload`;
-const RECIPE_SUMMARY_COLUMNS = "id,name,intro,cover,char_name,part_names,author_id,author_name,like_count,save_count,view_count,comment_count,created_at,updated_at";
+const RECIPE_SUMMARY_COLUMNS = "id,name,intro,cover,char_name,part_names,author_id,author_name,author_avatar,like_count,save_count,view_count,comment_count,created_at,updated_at";
 const RECIPE_COLUMNS = `${RECIPE_SUMMARY_COLUMNS},materials`;
 
 const MAX_MATERIAL_PAYLOAD = 900_000;
-const MAX_RECIPE_PAYLOAD = 2_500_000;
+// 配方只存引用，不再内嵌材料内容，尺寸上限相应收紧
+const MAX_RECIPE_PARTS_PAYLOAD = 20_000;
 
 type HallType = "material" | "recipe";
 
@@ -21,6 +26,19 @@ const TABLES: Record<HallType, string> = {
   material: "mixology_items",
   recipe: "mixology_recipes",
 };
+
+/**
+ * 列表（非"我的发布"）的 CDN 缓存头：列表不含任何按用户注入的字段
+ *（likedByMe/savedByMe 只在详情里给），响应对所有人相同，让 Netlify 边缘
+ * 挡掉重复回源——列表带封面 base64，是特调这边 Supabase 出站的大头。
+ */
+const CDN_LIST_CACHE_HEADERS = {
+  "Cache-Control": "public, max-age=0, must-revalidate",
+  "Netlify-CDN-Cache-Control": "public, s-maxage=60, stale-while-revalidate=300",
+  // 必须显式让缓存键包含查询参数：Netlify 对函数响应默认忽略 query，
+  // 不加这行，第一份缓存会顶掉所有 type/kind/mine/id 组合的响应
+  "Netlify-Vary": "query",
+} as const;
 
 function getSupabaseConfig(): { url: string; key: string } | null {
   const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -117,6 +135,46 @@ function parseType(value: unknown): HallType | null {
   return value === "material" || value === "recipe" ? value : null;
 }
 
+type RecipePartRef = { id: string; kind: string; name: string; builtin?: boolean };
+
+/** 校验并清洗配方槽位引用；不合法返回 null（连带错误信息） */
+function normalizeRecipeParts(value: unknown): { parts: RecipePartRef[] } | { error: string } {
+  if (!Array.isArray(value) || value.length === 0) return { error: "missing_parts" };
+  if (value.length > 12) return { error: "too_many_parts" };
+  const parts: RecipePartRef[] = [];
+  const seenKinds = new Set<string>();
+  for (const item of value) {
+    if (!item || typeof item !== "object") return { error: "invalid_part" };
+    const record = item as Record<string, unknown>;
+    const id = cleanText(record.id, 160);
+    const kind = cleanText(record.kind, 20);
+    const name = cleanText(record.name, 80);
+    const builtin = record.builtin === true;
+    if (!id || !name || !(MATERIAL_KINDS as readonly string[]).includes(kind)) return { error: "invalid_part" };
+    if (builtin && !id.startsWith("mix_builtin_")) return { error: "invalid_builtin_part" };
+    if (seenKinds.has(kind)) return { error: "duplicate_part_kind" };
+    seenKinds.add(kind);
+    parts.push(builtin ? { id, kind, name, builtin: true } : { id, kind, name });
+  }
+  if (!seenKinds.has("character")) return { error: "配方缺角色卡，没法分享。" };
+  if (JSON.stringify(parts).length > MAX_RECIPE_PARTS_PAYLOAD) return { error: "配方引用数据过大。" };
+  return { parts };
+}
+
+/** 分享/更新配方前确认云端引用的酒材条目都还在架上 */
+async function verifyPartsOnShelf(parts: RecipePartRef[]): Promise<string | null> {
+  const cloudIds = parts.filter(p => !p.builtin).map(p => p.id);
+  if (cloudIds.length === 0) return null;
+  const result = await supabaseFetch<Array<{ id?: string }>>(
+    `mixology_items?id=in.(${cloudIds.map(encodeFilter).join(",")})&deleted_at=is.null&select=id`,
+  );
+  if (!result.ok) return result.error;
+  const found = new Set(result.data.map(item => cleanText(item.id, 160)));
+  const missing = parts.filter(p => !p.builtin && !found.has(p.id)).map(p => p.name);
+  if (missing.length > 0) return `这些材料不在酒材页上（未上架或已下架）：${missing.join("、")}`;
+  return null;
+}
+
 function normalizeEntry(type: HallType, value: unknown, options: { withPayload?: boolean } = {}): Record<string, unknown> | null {
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
@@ -128,6 +186,7 @@ function normalizeEntry(type: HallType, value: unknown, options: { withPayload?:
     name,
     authorId: cleanText(record.author_id, 160) || "anonymous",
     authorName: cleanText(record.author_name, 80) || "匿名调酒师",
+    authorAvatar: cleanText(record.author_avatar, 300_000),
     cover: cleanText(record.cover, 2_000_000),
     likeCount: clampCount(record.like_count),
     saveCount: clampCount(record.save_count),
@@ -147,13 +206,54 @@ function normalizeEntry(type: HallType, value: unknown, options: { withPayload?:
       ...(options.withPayload ? { payload: record.payload ?? null } : {}),
     };
   }
+  const rawParts = options.withPayload && Array.isArray(record.materials)
+    ? record.materials.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+      .map(item => ({
+        id: cleanText(item.id, 160),
+        kind: cleanText(item.kind, 20),
+        name: cleanText(item.name, 80),
+        ...(item.builtin === true ? { builtin: true } : {}),
+      }))
+      .filter(part => part.id && part.name && (MATERIAL_KINDS as readonly string[]).includes(part.kind))
+    : undefined;
   return {
     ...base,
     intro: cleanText(record.intro, 400),
     charName: cleanText(record.char_name, 80),
     partNames: normalizeTags(record.part_names),
-    ...(options.withPayload ? { materials: Array.isArray(record.materials) ? record.materials : [] } : {}),
+    ...(rawParts ? { parts: rawParts } : {}),
   };
+}
+
+/** 配方详情联表：把云端引用换成酒材条目的完整内容，下架的标 gone */
+async function hydrateRecipeParts(entry: Record<string, unknown>): Promise<void> {
+  const parts = Array.isArray(entry.parts) ? entry.parts as Array<Record<string, unknown>> : [];
+  const cloudIds = parts.filter(p => p.builtin !== true).map(p => String(p.id));
+  if (cloudIds.length === 0) return;
+  const result = await supabaseFetch<unknown[]>(
+    `mixology_items?id=in.(${cloudIds.map(encodeFilter).join(",")})&deleted_at=is.null&select=${ITEM_COLUMNS}`,
+  );
+  const found = new Map<string, Record<string, unknown>>();
+  if (result.ok) {
+    for (const item of result.data) {
+      const normalized = normalizeEntry("material", item, { withPayload: true });
+      if (normalized) found.set(normalized.id as string, normalized);
+    }
+  }
+  entry.parts = parts.map(part => {
+    if (part.builtin === true) return part;
+    const item = found.get(String(part.id));
+    const payload = item?.payload;
+    if (!item || !payload || typeof payload !== "object") return { ...part, gone: true };
+    return {
+      id: item.id,
+      kind: item.kind,
+      name: item.name,
+      authorName: item.authorName,
+      authorAvatar: item.authorAvatar,
+      material: { ...(payload as Record<string, unknown>), id: item.id, kind: item.kind, name: item.name },
+    };
+  });
 }
 
 async function annotateMine(type: HallType, entries: Record<string, unknown>[], userId: string): Promise<void> {
@@ -194,6 +294,7 @@ export async function GET(request: Request) {
       if (!result.ok) return NextResponse.json({ ok: false, error: result.error }, { status: result.status });
       const entry = normalizeEntry(type, result.data[0], { withPayload: true });
       if (!entry) return NextResponse.json({ ok: false, error: "没有找到这份内容。" }, { status: 404 });
+      if (type === "recipe") await hydrateRecipeParts(entry);
       await annotateMine(type, [entry], userId);
       // 浏览量 +1（尽力而为，不阻塞返回）
       void supabaseFetch<unknown[]>(
@@ -213,7 +314,8 @@ export async function GET(request: Request) {
       const kind = cleanText(url.searchParams.get("kind"), 20);
       if ((MATERIAL_KINDS as readonly string[]).includes(kind)) filters.unshift(`kind=eq.${kind}`);
     }
-    if (url.searchParams.get("mine") === "1") {
+    const isMine = url.searchParams.get("mine") === "1";
+    if (isMine) {
       if (!account) return NextResponse.json({ ok: true, entries: [] });
       filters.unshift(`author_id=eq.${encodeFilter(userId)}`);
     }
@@ -227,8 +329,9 @@ export async function GET(request: Request) {
     const entries = result.data
       .map(item => normalizeEntry(type, item))
       .filter(Boolean) as Record<string, unknown>[];
-    await annotateMine(type, entries, userId);
-    return NextResponse.json({ ok: true, entries });
+    // 列表不做按用户标注（likedByMe/savedByMe 只在详情用得到）：响应因此对所有人相同，
+    // 公共列表可整体进 CDN 缓存；「我的发布」按账号过滤，不缓存
+    return NextResponse.json({ ok: true, entries }, isMine ? undefined : { headers: CDN_LIST_CACHE_HEADERS });
   } catch (err) {
     return NextResponse.json({ ok: false, error: formatSupabaseError(err), entries: [] }, { status: getSupabaseConfig() ? 500 : 503 });
   }
@@ -273,6 +376,7 @@ export async function POST(request: Request) {
             payload,
             author_id: account.id,
             author_name: cleanText(record.authorName, 80) || account.displayName,
+            author_avatar: cleanText(record.authorAvatar, 300_000),
             created_at: now,
             updated_at: now,
           }),
@@ -282,13 +386,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true, entry: normalizeEntry("material", insert.data[0], { withPayload: true }) });
     }
 
-    const materials = Array.isArray(record.materials) ? record.materials : [];
-    if (materials.length === 0) {
-      return NextResponse.json({ ok: false, error: "missing_materials" }, { status: 400 });
+    const normalized = normalizeRecipeParts(record.parts);
+    if ("error" in normalized) {
+      return NextResponse.json({ ok: false, error: normalized.error }, { status: 400 });
     }
-    if (JSON.stringify(materials).length > MAX_RECIPE_PAYLOAD) {
-      return NextResponse.json({ ok: false, error: "配方太大了（封面图请压小一点）。" }, { status: 413 });
-    }
+    const shelfError = await verifyPartsOnShelf(normalized.parts);
+    if (shelfError) return NextResponse.json({ ok: false, error: shelfError }, { status: 409 });
     const insert = await supabaseFetch<unknown[]>(
       `mixology_recipes?select=${RECIPE_COLUMNS}`,
       {
@@ -301,9 +404,10 @@ export async function POST(request: Request) {
           cover: cleanText(record.cover, 2_000_000),
           char_name: cleanText(record.charName, 80),
           part_names: normalizeTags(record.partNames),
-          materials,
+          materials: normalized.parts,
           author_id: account.id,
           author_name: cleanText(record.authorName, 80) || account.displayName,
+          author_avatar: cleanText(record.authorAvatar, 300_000),
           created_at: now,
           updated_at: now,
         }),
@@ -349,23 +453,27 @@ export async function PUT(request: Request) {
         cover: cleanText(record.cover, 2_000_000),
         tags: normalizeTags(record.tags),
         payload: materialPayload,
+        // 更新时同步刷新署名与头像：发布身份以创作者资料当前值为准
+        author_name: cleanText(record.authorName, 80) || account.displayName,
+        author_avatar: cleanText(record.authorAvatar, 300_000),
         updated_at: new Date().toISOString(),
       };
     } else {
-      const materials = Array.isArray(record.materials) ? record.materials : [];
-      if (materials.length === 0) {
-        return NextResponse.json({ ok: false, error: "missing_materials" }, { status: 400 });
+      const normalized = normalizeRecipeParts(record.parts);
+      if ("error" in normalized) {
+        return NextResponse.json({ ok: false, error: normalized.error }, { status: 400 });
       }
-      if (JSON.stringify(materials).length > MAX_RECIPE_PAYLOAD) {
-        return NextResponse.json({ ok: false, error: "配方太大了（封面图请压小一点）。" }, { status: 413 });
-      }
+      const shelfError = await verifyPartsOnShelf(normalized.parts);
+      if (shelfError) return NextResponse.json({ ok: false, error: shelfError }, { status: 409 });
       payload = {
         name,
         intro: cleanText(record.intro, 400),
         cover: cleanText(record.cover, 2_000_000),
         char_name: cleanText(record.charName, 80),
         part_names: normalizeTags(record.partNames),
-        materials,
+        materials: normalized.parts,
+        author_name: cleanText(record.authorName, 80) || account.displayName,
+        author_avatar: cleanText(record.authorAvatar, 300_000),
         updated_at: new Date().toISOString(),
       };
     }

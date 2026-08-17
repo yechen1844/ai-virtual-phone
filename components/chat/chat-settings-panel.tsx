@@ -42,6 +42,7 @@ import { getStatusRegionConfig, saveStatusRegionConfig, presetSupportsStatusRegi
 import { downloadFile } from "@/lib/download-utils";
 import { getSchemes, saveScheme, deleteScheme, type CSSScheme } from "@/lib/css-scheme-storage";
 import { CustomStatusFrame } from "@/components/chat/custom-status-frame";
+import { KeyboardAutoSendDebounceItem } from "@/components/chat/keyboard-auto-send-debounce-item";
 import { ChevronRight, Image as ImageIcon, Video, Mic, UserMinus, UserPlus, Users, Pin, MessageSquare, Search, AlertCircle, Code, Laptop, Trash2, Smile, Sparkles, X, Play, Upload, Download, Save, FolderOpen, type LucideIcon } from "lucide-react";
 import { BINDING_ACCENTS, CONTENT_APP_ACCENTS } from "@/lib/ui-accent-colors";
 import CSSSchemeBar from "@/components/ui/css-scheme-picker";
@@ -1133,6 +1134,7 @@ export function ChatSettingsPanel({
 
                 {/* Advanced */}
                 <div className="menu-group">
+                    <KeyboardAutoSendDebounceItem sessionId={session.id} />
                     <button className="menu-item" onClick={() => setEditingCSS(true)}>
                         <ChatInfoIcon icon={Code} color={BINDING_ACCENTS.embedding} />
                         <div className="menu-label-group"><span className="menu-label">自定义 CSS 样式</span></div>

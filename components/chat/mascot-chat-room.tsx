@@ -1140,13 +1140,18 @@ export function MascotChatRoom({ onBack, onDeleted }: MascotChatRoomProps) {
                     onKeyDown={(event) => {
                         if (shouldSendChatInputOnEnter(event, enterToSendEnabled)) {
                             event.preventDefault();
+                            // 思考中回车吞掉：不发送，也不能落进 handleSend 的停止分支误停生成（停止只走按钮）
+                            if (chat.isThinking) return;
                             void handleSend();
                         }
                     }}
                     enterKeyHint={enterToSendEnabled ? "send" : "enter"}
                     className="chat-input-textarea"
                     placeholder={`跟${settings.nickname || "AI助手"}聊聊...`}
-                    disabled={chat.isThinking}
+                    /* 思考中不再 disable：禁用聚焦中的元素会强制失焦收键盘且不走正常 blur 事件序列，
+                       在 iOS PWA 上与键盘收起的 viewport 复原竞态，偶发把底部输入栏卡在屏幕外
+                       （表现为发送后整条输入栏消失，退出重进恢复）。对齐普通聊天室：生成中可继续打字，
+                       字留在框里；发送键在思考中仍是停止键。 */
                 />
                 <div className="chat-input-actions">
                     <label

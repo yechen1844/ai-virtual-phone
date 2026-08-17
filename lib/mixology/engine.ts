@@ -9,7 +9,7 @@ import type { LLMMessage } from "../llm-prompt-assembler";
 import { loadApiConfigs, loadBindingConfig } from "../settings-storage";
 import type { ApiConfig } from "../settings-types";
 import { applyMixMacros, assembleMixPrompt, MIX_ENCORE_CLOSE, MIX_ENCORE_OPEN, MIX_TICKET_CLOSE, MIX_TICKET_OPEN, type MixAssembledPrompt } from "./assembler";
-import { extractMixBlocks } from "./prose";
+import { applyMixFilterRules, extractMixBlocks } from "./prose";
 import {
     getMixMaterial,
     getMixSession,
@@ -18,12 +18,25 @@ import {
 } from "./storage";
 import {
     createMixId,
+    MIX_SLOT_ORDER,
+    MIX_SLOT_STACK,
+    mixKindAllowsCondition,
+    mixSlotFirstId,
     type MixCharacterCard,
+    type MixMaterial,
+    type MixMaterialKind,
     type MixRecipe,
     type MixSession,
     type MixTicketMaterial,
     type MixTurn,
 } from "./types";
+import {
+    advanceMixState,
+    buildMixConditionContext,
+    initialMixState,
+    pickActiveMixMaterials,
+    rollbackMixState,
+} from "./state";
 
 export const MIX_PROMPT_APP_ID = "mixology";
 const MIX_PROMPT_TAGS = ["mixology"];
@@ -41,20 +54,27 @@ export function resolveMixApiConfig(): ApiConfig | null {
 }
 
 /** 从方案快照装配提示词（材料从酒柜按 id 现取；角色卡被删则报错） */
-function assembleFromSession(session: MixSession): { prompt: MixAssembledPrompt; ticket?: MixTicketMaterial } {
-    const { materials } = resolveMixRecipeMaterials(session.recipe);
-    const character = materials.character;
+function assembleFromSession(session: MixSession): {
+    prompt: MixAssembledPrompt;
+    ticket?: MixTicketMaterial;
+    active: Partial<Record<MixMaterialKind, MixMaterial[]>>;
+} {
+    const { entries } = resolveMixRecipeMaterials(session.recipe);
+    const active = pickActiveMixMaterials(entries, buildMixConditionContext(session));
+    const character = active.character?.[0];
     if (!character || character.kind !== "character") {
         throw new ChatEngineError("这杯特调的角色卡已不在酒柜里，无法继续对局。");
     }
     const prompt = assembleMixPrompt({
         character: character as MixCharacterCard,
-        materials,
+        materials: active,
         userName: session.userName,
         openingIndex: session.openingIndex,
+        state: session.state,
     });
-    const ticket = materials.ticket?.kind === "ticket" ? (materials.ticket as MixTicketMaterial) : undefined;
-    return { prompt, ticket };
+    const ticketMat = active.ticket?.[0];
+    const ticket = ticketMat?.kind === "ticket" ? (ticketMat as MixTicketMaterial) : undefined;
+    return { prompt, ticket, active };
 }
 
 /**
@@ -63,8 +83,10 @@ function assembleFromSession(session: MixSession): { prompt: MixAssembledPrompt;
  */
 export function mixTurnRawText(turn: MixTurn): string {
     if (turn.role !== "assistant") return turn.text;
-    const parts = [turn.text];
+    // 顺序与输出要求一致：状态栏在正文前、小剧场在正文后——历史回放就是模型的"输出习惯"示范
+    const parts = [];
     if (turn.ticketRaw) parts.push(`${MIX_TICKET_OPEN}\n${turn.ticketRaw}\n${MIX_TICKET_CLOSE}`);
+    parts.push(turn.text);
     if (turn.encoreRaw) parts.push(`${MIX_ENCORE_OPEN}\n${turn.encoreRaw}\n${MIX_ENCORE_CLOSE}`);
     return parts.filter(Boolean).join("\n\n");
 }
@@ -111,19 +133,27 @@ export function startMixSession(
     recipe: MixRecipe,
     options?: { openingIndex?: number; userName?: string },
 ): MixSession {
-    const characterId = recipe.slots.character;
+    const characterId = mixSlotFirstId(recipe.slots, "character");
     const card = characterId ? getMixMaterial(characterId) : null;
     if (!card || card.kind !== "character") {
         throw new ChatEngineError("特调里没有角色卡，装不满这一杯。");
     }
+    // 代入名：显式传入 > 面具材料的代入名（装配器同规则，这里快照进对局供界面用）
+    const personaId = mixSlotFirstId(recipe.slots, "persona");
+    const personaMat = personaId ? getMixMaterial(personaId) : null;
+    const personaUserName = personaMat?.kind === "persona" ? personaMat.userName?.trim() : undefined;
     const openingIndex = options?.openingIndex ?? 0;
+    // 记住的值的开局初值：小票里声明过初始值的项
+    const ticketId = mixSlotFirstId(recipe.slots, "ticket");
+    const ticketMat = ticketId ? getMixMaterial(ticketId) : null;
     const session: MixSession = {
         id: createMixId("mixsess"),
         recipe: { ...recipe, slots: { ...recipe.slots } },
         charName: card.charName.trim() || card.name,
-        userName: options?.userName?.trim() || undefined,
+        userName: options?.userName?.trim() || personaUserName || undefined,
         openingIndex,
         turns: [],
+        state: initialMixState(ticketMat?.kind === "ticket" ? ticketMat : undefined),
         createdAt: Date.now(),
         updatedAt: Date.now(),
     };
@@ -207,7 +237,7 @@ async function runMixGeneration(
     if (!apiConfig) {
         throw new ChatEngineError("还没有配置 API 接口，请先到设置里添加。");
     }
-    const { prompt: assembled, ticket } = assembleFromSession(session);
+    const { prompt: assembled, ticket, active } = assembleFromSession(session);
     const messages = buildMixMessages(session, assembled, nudge);
     const raw = await sendLLMRequest(
         apiConfig,
@@ -218,23 +248,32 @@ async function runMixGeneration(
         { appId: MIX_PROMPT_APP_ID, appTags: MIX_PROMPT_TAGS, skipOutputRegex: true, signal },
     );
     const extracted = extractMixBlocks(raw);
-    const { text, encoreRaw } = extracted;
+    const { encoreRaw } = extracted;
     let { ticketRaw } = extracted;
+    // 滤网「进上下文」模式：拆完块后清洗正文再入库，历史发回模型的就是洗过的。
+    // 这一格是累加型，条件命中的几张滤网按顺序串联清洗。
+    const filterRules = (active.filter ?? [])
+        .flatMap((m) => (m.kind === "filter" ? m.rules : []));
+    const text = applyMixFilterRules(extracted.text, filterRules.length ? filterRules : undefined, "context");
     if (!text && !ticketRaw) {
         throw new ChatEngineError("模型没有给出内容，请再试一次。");
     }
     if (assembled.hasTicket && !ticketRaw && ticket && text) {
         ticketRaw = await repairMixTicket(apiConfig, session, ticket, text, signal);
     }
+    // 记住的值：用这一轮的小票原文更新，抽不到的保留上一轮；顺带把结果快照在这一轮上，
+    // 回溯/重说/编辑时直接取剩下最后一轮的快照还原。
+    const nextState = advanceMixState(session.state, ticket, ticketRaw);
     const turn: MixTurn = {
         id: createMixId("mixturn"),
         role: "assistant",
         text,
         ticketRaw: assembled.hasTicket ? ticketRaw : undefined,
         encoreRaw: assembled.hasEncore ? encoreRaw : undefined,
+        state: nextState,
         createdAt: Date.now(),
     };
-    const updated: MixSession = { ...session, turns: [...session.turns, turn] };
+    const updated: MixSession = { ...session, turns: [...session.turns, turn], state: nextState };
     saveMixSession(updated);
     return { session: updated, turn };
 }
@@ -260,6 +299,22 @@ export async function generateMixReply(
     return runMixGeneration(withUser, undefined, signal);
 }
 
+/** 本局小票材料（记住的值的声明来源）；一格叠了多张时以第一张为准 */
+function sessionTicket(session: MixSession): MixTicketMaterial | undefined {
+    const ticketId = mixSlotFirstId(session.recipe.slots, "ticket");
+    const found = ticketId ? getMixMaterial(ticketId) : null;
+    return found?.kind === "ticket" ? found : undefined;
+}
+
+/**
+ * 截断历史之后把记住的值退回去：取剩下最后一轮的快照，全删光就退回开局初值。
+ * 不做这一步的话，回溯三轮重打，好感度还停在被丢掉的那个未来上。
+ */
+function withRolledBackState(session: MixSession, turns: MixTurn[]): MixSession {
+    const initial = initialMixState(sessionTicket(session));
+    return { ...session, turns, state: rollbackMixState(turns, initial) };
+}
+
 /** 重说：丢弃最后一条 assistant 回复重新生成（开场白除外） */
 export async function rerollMixReply(sessionId: string, signal?: AbortSignal): Promise<MixReplyResult> {
     const current = getMixSession(sessionId);
@@ -268,7 +323,7 @@ export async function rerollMixReply(sessionId: string, signal?: AbortSignal): P
     if (!last || last.role !== "assistant" || current.turns.length <= 1) {
         throw new ChatEngineError("现在没有可以重说的回复。");
     }
-    const trimmedSession: MixSession = { ...current, turns: current.turns.slice(0, -1) };
+    const trimmedSession = withRolledBackState(current, current.turns.slice(0, -1));
     saveMixSession(trimmedSession);
     const beforeLast = trimmedSession.turns[trimmedSession.turns.length - 1];
     // 上一条也是 assistant（继续产生的），补一个不落库的推进指令避免连续 assistant 消息
@@ -291,7 +346,7 @@ export function truncateMixAfterTurn(sessionId: string, turnId: string): MixSess
     if (!current) throw new ChatEngineError("对局不存在。");
     const idx = current.turns.findIndex((t) => t.id === turnId);
     if (idx < 0) throw new ChatEngineError("消息不存在。");
-    const updated: MixSession = { ...current, turns: current.turns.slice(0, idx + 1) };
+    const updated = withRolledBackState(current, current.turns.slice(0, idx + 1));
     saveMixSession(updated);
     return updated;
 }
@@ -309,14 +364,23 @@ export function editMixTurn(sessionId: string, turnId: string, newText: string):
     if (idx < 0) throw new ChatEngineError("消息不存在。");
     const trimmed = newText.trim();
     if (!trimmed) throw new ChatEngineError("消息不能为空。");
+    const kept = current.turns.slice(0, idx);
     let edited: MixTurn;
     if (current.turns[idx].role === "assistant") {
         const { text, ticketRaw, encoreRaw } = extractMixBlocks(trimmed);
-        edited = { ...current.turns[idx], text, ticketRaw, encoreRaw };
+        // 状态栏被手工改过，这一轮的快照要按新原文重算，否则数字和界面对不上
+        const before = withRolledBackState(current, kept).state;
+        edited = {
+            ...current.turns[idx],
+            text,
+            ticketRaw,
+            encoreRaw,
+            state: advanceMixState(before, sessionTicket(current), ticketRaw),
+        };
     } else {
         edited = { ...current.turns[idx], text: trimmed };
     }
-    const updated: MixSession = { ...current, turns: [...current.turns.slice(0, idx), edited] };
+    const updated = withRolledBackState(current, [...kept, edited]);
     saveMixSession(updated);
     return updated;
 }
@@ -337,7 +401,7 @@ export function undoMixLastRound(sessionId: string): MixSession {
         if (current.turns[i].role === "user") { lastUserIdx = i; break; }
     }
     if (lastUserIdx < 0) throw new ChatEngineError("还没有可以撤回的发言。");
-    const updated: MixSession = { ...current, turns: current.turns.slice(0, lastUserIdx) };
+    const updated = withRolledBackState(current, current.turns.slice(0, lastUserIdx));
     saveMixSession(updated);
     return updated;
 }

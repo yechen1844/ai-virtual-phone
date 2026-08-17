@@ -150,6 +150,45 @@
 }
 
 /* ── TAG 胶囊行 ── */
+/* 固定 TAG 工具行：位于头部与滚动区之间、不在滚动容器内，橡皮筋回弹带不动它 */
+.mix-topbar {
+    flex: 0 0 auto;
+    padding: 0 14px 4px;
+    background: var(--mix-bg);
+    box-shadow: 0 6px 12px -8px rgba(0, 0, 0, 0.6);
+    position: relative;
+    z-index: 20;
+}
+
+/* 大厅 / 我的发布 滑动切换：头部刷新按钮左侧的小胶囊 */
+.mix-scope-toggle {
+    flex: 0 0 auto;
+    display: inline-flex;
+    gap: 2px;
+    padding: 3px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.mix-scope-toggle button {
+    border: none;
+    background: none;
+    color: var(--mix-dim);
+    font-size: 11px;
+    line-height: 1;
+    padding: 5px 10px;
+    border-radius: 999px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.2s, color 0.2s;
+}
+
+.mix-scope-toggle button[data-active="true"] {
+    background: rgba(141, 123, 245, 0.25);
+    color: var(--mix-violet);
+    font-weight: 600;
+}
+
 .mix-chip-row {
     display: flex;
     gap: 8px;
@@ -157,6 +196,7 @@
     padding: 12px 2px 4px;
     scrollbar-width: none;
 }
+
 
 .mix-chip-row::-webkit-scrollbar {
     display: none;
@@ -203,11 +243,169 @@
     color: rgba(141, 123, 245, 0.75);
 }
 
-/* 右下角悬浮创建按钮：当前 TAB 是哪类就建哪类 */
+/* 头部刷新图标：拉取中旋转 */
+.mix-spin {
+    animation: mixSpin 0.9s linear infinite;
+}
+
+@keyframes mixSpin {
+    to { transform: rotate(360deg); }
+}
+
+/* 行内加载态：小转圈 + 文案（评论/详情等占位） */
+.mix-loading-inline {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+
+/* ── 滤网编辑器：规则行 + 试跑结果 ── */
+.mix-filter-rule {
+    position: relative;
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    padding: 8px;
+    border-radius: 12px;
+    background: var(--mix-panel);
+}
+
+.mix-filter-rule[data-bad="true"] {
+    outline: 1px solid rgba(226, 163, 163, 0.5);
+}
+
+.mix-filter-rule-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.mix-filter-mode {
+    flex: 0 0 auto;
+    align-self: center;
+    border: none;
+    border-radius: 999px;
+    padding: 6px 10px;
+    font-size: 11px;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    background: rgba(141, 123, 245, 0.2);
+    color: var(--mix-violet);
+}
+
+.mix-filter-mode[data-mode="context"] {
+    background: rgba(217, 176, 106, 0.16);
+    color: var(--mix-gold);
+}
+
+.mix-filter-rule-bad {
+    font-size: 10.5px;
+    color: #e2a3a3;
+}
+
+.mix-filter-result {
+    margin-top: 8px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.04);
+    font-size: 12.5px;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--mix-dim);
+}
+
+/* ── 创作者资料：头部入口胶囊 + 头像 + 详情作者行 ── */
+.mix-profile-chip {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 150px;
+    padding: 3px 10px 3px 3px;
+    border: none;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--mix-dim);
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.mix-profile-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mix-avatar {
+    flex: 0 0 auto;
+    border-radius: 50%;
+    object-fit: cover;
+    background: var(--mix-panel);
+}
+
+.mix-avatar-fallback {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: rgba(141, 123, 245, 0.25);
+    color: var(--mix-violet);
+    font-weight: 700;
+}
+
+.mix-author-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.mix-author-name {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--mix-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mix-author-row .mix-mat-stats {
+    margin-top: 0;
+}
+
+/* 云端关联徽章：已上架（紫）/ 有未上架修改（金），配方卡与材料详情标题共用 */
+.mix-cloud-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 7px 2px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1.5;
+    vertical-align: 2px;
+    background: rgba(141, 123, 245, 0.18);
+    color: var(--mix-violet);
+    white-space: nowrap;
+}
+
+.mix-cloud-badge[data-dirty="true"] {
+    background: rgba(217, 176, 106, 0.16);
+    color: var(--mix-gold);
+}
+
+/* 右下角悬浮创建按钮：当前 TAB 是哪类就建哪类。
+   bottom 要整个越过底部导航（导航自身高度 + 安全区），否则会压在 TAB 栏上 */
 .mix-fab {
     position: absolute;
     right: 16px;
-    bottom: 78px;
+    bottom: calc(92px + env(safe-area-inset-bottom, 0px));
     z-index: 30;
     display: flex;
     align-items: center;
@@ -569,6 +767,10 @@
 }
 
 .mix-pill-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
     border: none;
     border-radius: 999px;
     padding: 7px 16px;
@@ -1204,6 +1406,9 @@
 }
 
 .mix-comment-op {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
     border: none;
     background: none;
     color: var(--mix-faint);

@@ -309,6 +309,18 @@ function QaMessageItem({
     const y = touch.clientY;
     pressTimer.current = setTimeout(() => setMenu({ x, y }), 500);
   }, [cancelPress]);
+  // 菜单打开期间：Esc 关闭，页面滚动也关闭（否则菜单会停在原坐标与气泡脱节）
+  useEffect(() => {
+    if (!menu) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setMenu(null); };
+    const onScroll = () => setMenu(null);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [menu]);
   // 菜单尺寸（用于边缘防溢出翻转）
   const MENU_W = 150;
   const MENU_H = 56;
@@ -334,6 +346,15 @@ function QaMessageItem({
       onTouchCancel={cancelPress}
     >
       {node}
+      {menu && (
+        // 点任意处关闭：菜单本身没有关闭按钮，必须有这层透明遮罩兜底，
+        // 否则弹出后（尤其桌面端右键）除了「复制/编辑」无路可退
+        <div
+          className="qa-msg-menu-backdrop"
+          onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); setMenu(null); }}
+          onContextMenu={(e) => { e.preventDefault(); setMenu(null); }}
+        />
+      )}
       {menu && (
         <div className="qa-msg-menu" role="menu" style={menuStyle} onPointerDown={(e) => e.stopPropagation()}>
           <button

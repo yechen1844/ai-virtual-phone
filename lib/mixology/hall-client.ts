@@ -3,12 +3,19 @@
 // 独家特调 · 酒单/大厅客户端：走站内 /api/mixology/*（官网专用；
 // 自部署没配 Supabase 时接口返回 503/setupRequired，界面按未开张处理）。
 
-import type { MixMaterial, MixMaterialKind } from "./types";
+import { loadMixProfile } from "./storage";
+import type { MixCondition, MixMaterial, MixMaterialKind } from "./types";
 
-/** publishedId 是本地记账用的，不该随内容发到线上被别人继承 */
+/** publishedId/publishedAt 是本地记账用的，不该随内容发到线上被别人继承 */
 function stripLocalOnly(material: MixMaterial): MixMaterial {
-    const { publishedId: _publishedId, ...rest } = material;
+    const { publishedId: _publishedId, publishedAt: _publishedAt, ...rest } = material;
     return rest as MixMaterial;
+}
+
+/** 发布/更新时附带的创作者身份（酒柜头部可编辑；名字留空线上回退账号昵称） */
+function authorFields(): { authorName: string; authorAvatar: string } {
+    const profile = loadMixProfile();
+    return { authorName: profile.name ?? "", authorAvatar: profile.avatar ?? "" };
 }
 
 export type MixHallType = "material" | "recipe";
@@ -18,6 +25,7 @@ export type MixHallEntryBase = {
     name: string;
     authorId: string;
     authorName: string;
+    authorAvatar: string;
     cover: string;
     likeCount: number;
     saveCount: number;
@@ -37,12 +45,34 @@ export type MixHallMaterial = MixHallEntryBase & {
     payload?: MixMaterial | null;
 };
 
+/**
+ * 配方线上条目里的一味：只存引用，材料本体在酒材页各自的条目里。
+ * builtin = 官方出厂件（人人本地都有，线上不建条目）；其余 id 是酒材条目 id（mxi_）。
+ * gone/material/authorName 由详情接口联表回填。
+ */
+export type MixHallRecipePart = {
+    id: string;
+    kind: MixMaterialKind;
+    name: string;
+    /** 官方出厂件：导入时直接用本地出厂版解析 */
+    builtin?: boolean;
+    /** 详情接口回填：对应的酒材条目已下架/不存在 */
+    gone?: boolean;
+    /** 详情接口回填：酒材条目的完整材料内容（id 即条目 id） */
+    material?: MixMaterial | null;
+    /** 详情接口回填：这味酒材的作者 */
+    authorName?: string;
+    authorAvatar?: string;
+    /** 作者给这一件设的生效条件（不写 = 一直生效） */
+    when?: MixCondition;
+};
+
 export type MixHallRecipe = MixHallEntryBase & {
     intro: string;
     charName: string;
     partNames: string[];
-    /** 详情接口才有：内嵌完整材料快照 */
-    materials?: MixMaterial[];
+    /** 详情接口才有：槽位引用（云端件已联表带回完整内容） */
+    parts?: MixHallRecipePart[];
 };
 
 export type MixHallComment = {
@@ -83,8 +113,8 @@ async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit): Promi
 
 // ── 列表 / 详情 ──
 
-export async function fetchHallMaterials(kind?: MixMaterialKind): Promise<{ entries: MixHallMaterial[]; setupRequired: boolean }> {
-    const query = kind ? `&kind=${kind}` : "";
+export async function fetchHallMaterials(kind?: MixMaterialKind, mine?: boolean): Promise<{ entries: MixHallMaterial[]; setupRequired: boolean }> {
+    const query = `${kind ? `&kind=${kind}` : ""}${mine ? "&mine=1" : ""}`;
     const data = await fetchJson<HallListResponse>(`/api/mixology/hall?type=material${query}`, { cache: "no-store" });
     return { entries: (data.entries ?? []) as MixHallMaterial[], setupRequired: Boolean(data.setupRequired) };
 }
@@ -95,8 +125,8 @@ export async function fetchHallMaterial(id: string): Promise<MixHallMaterial> {
     return data.entry as MixHallMaterial;
 }
 
-export async function fetchHallRecipes(): Promise<{ entries: MixHallRecipe[]; setupRequired: boolean }> {
-    const data = await fetchJson<HallListResponse>("/api/mixology/hall?type=recipe", { cache: "no-store" });
+export async function fetchHallRecipes(mine?: boolean): Promise<{ entries: MixHallRecipe[]; setupRequired: boolean }> {
+    const data = await fetchJson<HallListResponse>(`/api/mixology/hall?type=recipe${mine ? "&mine=1" : ""}`, { cache: "no-store" });
     return { entries: (data.entries ?? []) as MixHallRecipe[], setupRequired: Boolean(data.setupRequired) };
 }
 
@@ -120,24 +150,28 @@ export async function shareHallMaterial(material: MixMaterial): Promise<MixHallM
             cover: material.cover ?? "",
             tags: material.tags ?? [],
             payload: stripLocalOnly(material),
+            ...authorFields(),
         }),
     });
     if (!data.entry) throw new Error("分享失败");
     return data.entry as MixHallMaterial;
 }
 
-export async function shareHallRecipe(input: {
+/** 分享配方＝发布搭配与引用；材料内容以酒材页各自条目为准 */
+export type MixHallRecipeShareInput = {
     name: string;
     intro?: string;
     cover?: string;
     charName?: string;
     partNames: string[];
-    materials: MixMaterial[];
-}): Promise<MixHallRecipe> {
+    parts: Array<Pick<MixHallRecipePart, "id" | "kind" | "name" | "builtin">>;
+};
+
+export async function shareHallRecipe(input: MixHallRecipeShareInput): Promise<MixHallRecipe> {
     const data = await fetchJson<HallEntryResponse>("/api/mixology/hall", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: "recipe", ...input, materials: input.materials.map(stripLocalOnly) }),
+        body: JSON.stringify({ type: "recipe", ...input, ...authorFields() }),
     });
     if (!data.entry) throw new Error("分享失败");
     return data.entry as MixHallRecipe;
@@ -181,22 +215,16 @@ export async function updateHallMaterial(publishedId: string, material: MixMater
         cover: material.cover ?? "",
         tags: material.tags ?? [],
         payload: stripLocalOnly(material),
+        ...authorFields(),
     }) as MixHallMaterial;
 }
 
-export async function updateHallRecipe(publishedId: string, input: {
-    name: string;
-    intro?: string;
-    cover?: string;
-    charName?: string;
-    partNames: string[];
-    materials: MixMaterial[];
-}): Promise<MixHallRecipe> {
+export async function updateHallRecipe(publishedId: string, input: MixHallRecipeShareInput): Promise<MixHallRecipe> {
     return await putHall({
         type: "recipe",
         id: publishedId,
         ...input,
-        materials: input.materials.map(stripLocalOnly),
+        ...authorFields(),
     }) as MixHallRecipe;
 }
 

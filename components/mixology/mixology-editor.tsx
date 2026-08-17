@@ -3,15 +3,17 @@
 // 独家特调 · 材料编辑器：八类材料的自建/编辑表单（底部弹层里渲染）。
 // Phase ③ 先给够用的表单闭环，创作工坊阶段再上专业编辑体验。
 
-import { useRef, useState, type ReactNode } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 import { FileText, Play, Plus, Trash2 } from "lucide-react";
 import type {
     MixCharacterCard,
+    MixFilterRule,
     MixMaterial,
     MixMaterialKind,
     MixTextMaterial,
 } from "@/lib/mixology/types";
 import { createMixId, MIX_KIND_LABELS, mixKindHasCover } from "@/lib/mixology/types";
+import { applyMixFilterRules } from "@/lib/mixology/prose";
 import { MixPreviewSheet, MixStructureSheet, type MixPreviewTarget } from "./mixology-preview";
 
 const OPENING_SEPARATOR = "\n---\n";
@@ -21,6 +23,10 @@ const KIND_GUIDE: Record<MixMaterialKind, { what: string; where: string }> = {
     character: {
         what: "这里写角色资料：身份、外貌、性格、所处世界、与玩家的初始关系，以及开场白与示例对话。",
         where: "拆分为「角色资料」「世界与剧情」「示例对话」三段进入提示词。",
+    },
+    persona: {
+        what: "这里写用户人设：{{user}} 是谁——身份、性格、外貌，以及与{{char}}关系中用户一侧的设定；可另填一个代入名替换全部 {{user}}。",
+        where: "进入提示词「用户资料」段，位于「角色资料」之后；代入名会替换提示词中所有 {{user}}。",
     },
     base: {
         what: "这里写扮演总纲：如何入戏、能否代替玩家发言、是否允许冲突与负面情绪。约束态度，不涉及文笔。",
@@ -36,7 +42,7 @@ const KIND_GUIDE: Record<MixMaterialKind, { what: string; where: string }> = {
     },
     strength: {
         what: "这里写最高优先级要求：一到两条最需要被贯彻的规则。因排在全部对话之后、生成之前，模型对其服从度最高；条目越多越互相稀释。",
-        where: "进入对话历史之后的「最高优先级要求」段，八味中仅此一味在此位置。",
+        where: "进入对话历史之后的「最高优先级要求」段，十味中仅此一味在此位置。",
     },
     ticket: {
         what: "这里写状态栏：每轮附带的一张数据卡，好感度、当前心情、随身物品等由创作者自定。契约决定模型报告什么，渲染代码决定卡片如何呈现。",
@@ -49,6 +55,10 @@ const KIND_GUIDE: Record<MixMaterialKind, { what: string; where: string }> = {
     encore: {
         what: "这里写小剧场：正文之外的加演，例如旁观视角、朋友圈动态、一段监控录像。输出契约决定 AI 何时写什么，渲染代码决定它长什么样；契约留空则为纯静态小品（手账、排班表）。",
         where: "契约进入提示词「小剧场」段；渲染代码不进提示词，仅在界面中执行。",
+    },
+    filter: {
+        what: "这里写滤网：一组正则替换规则，自动清洗 AI 正文里的怪癖（markdown 残留、口癖词、错标点）。每条规则可选「仅显示」（存原文，只在渲染时替换，改规则全部历史立即生效）或「进上下文」（入库前清洗，发回模型的历史也是洗过的，只对新回复生效）。",
+        where: "不进入提示词。在状态栏/小剧场拆分之后执行，只作用于正文，不会碰坏数据块。",
     },
 };
 
@@ -141,6 +151,7 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
     const [content, setContent] = useState(
         initial && "content" in initial ? (initial as MixTextMaterial).content : "",
     );
+    const [personaUserName, setPersonaUserName] = useState(initial?.kind === "persona" ? initial.userName ?? "" : "");
     const [contract, setContract] = useState(initial?.kind === "ticket" ? initial.contract : "");
     const [renderHtml, setRenderHtml] = useState(initial?.kind === "ticket" ? initial.renderHtml : "");
     const [previewRaw, setPreviewRaw] = useState(initial?.kind === "ticket" ? initial.previewRaw ?? "" : "");
@@ -148,6 +159,23 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
     const [html, setHtml] = useState(initial?.kind === "encore" ? (initial.renderHtml ?? initial.html ?? "") : "");
     const [encoreContract, setEncoreContract] = useState(initial?.kind === "encore" ? initial.contract ?? "" : "");
     const [encorePreviewRaw, setEncorePreviewRaw] = useState(initial?.kind === "encore" ? initial.previewRaw ?? "" : "");
+    // 滤网
+    const [rules, setRules] = useState<MixFilterRule[]>(
+        initial?.kind === "filter" ? initial.rules.map((r) => ({ ...r })) : [],
+    );
+    const [filterSample, setFilterSample] = useState("");
+    // 试跑：所有规则按顺序全部跑一遍（不分模式），看替换效果；正则写错的条目单独标出来
+    const filterTest = useMemo(() => {
+        const badIndexes: number[] = [];
+        rules.forEach((rule, i) => {
+            if (!rule.find) return;
+            try { new RegExp(rule.find, "g"); } catch { badIndexes.push(i); }
+        });
+        const result = filterSample
+            ? applyMixFilterRules(applyMixFilterRules(filterSample, rules, "context"), rules, "display")
+            : "";
+        return { badIndexes, result };
+    }, [rules, filterSample]);
     const [error, setError] = useState("");
     const [preview, setPreview] = useState<MixPreviewTarget | null>(null);
     const [structureOpen, setStructureOpen] = useState(false);
@@ -236,6 +264,30 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
                 renderHtml: html,
                 previewRaw: encorePreviewRaw.trim() || undefined,
             });
+            return;
+        }
+        if (kind === "persona") {
+            if (!content.trim()) {
+                setError("面具的人设内容不能为空。");
+                return;
+            }
+            onSave({ ...meta, kind: "persona", userName: personaUserName.trim() || undefined, content: content.trim() });
+            return;
+        }
+        if (kind === "filter") {
+            const cleaned = rules
+                .map((r) => ({ find: r.find.trim(), replace: r.replace, mode: r.mode }))
+                .filter((r) => r.find);
+            if (!cleaned.length) {
+                setError("滤网至少要有一条查找不为空的规则。");
+                return;
+            }
+            const bad = cleaned.findIndex((r) => { try { new RegExp(r.find, "g"); return false; } catch { return true; } });
+            if (bad >= 0) {
+                setError(`第 ${bad + 1} 条规则的正则写法有误，先在下面试跑区改对再保存。`);
+                return;
+            }
+            onSave({ ...meta, kind: "filter", rules: cleaned });
             return;
         }
         if (!content.trim()) {
@@ -373,6 +425,22 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
                     </button>
                 </>
             ) : null}
+            {kind === "persona" ? (
+                <>
+                    <Field label="代入名" hint="选填，替换提示词里的 {{user}}；留空则用「你」">
+                        <input className="mix-input" value={personaUserName} onChange={(e) => setPersonaUserName(e.target.value)} placeholder="例：阿澈" />
+                    </Field>
+                    <Field label="用户人设" hint="必填，可用 {{char}} / {{user}}">
+                        <textarea
+                            className="mix-textarea"
+                            style={{ minHeight: 170 }}
+                            value={content}
+                            onChange={(e) => setContent(e.target.value)}
+                            placeholder={"例：\n{{user}}：22 岁，插画系学生，寄住江家的故人之女。\n- 表面顺从，实际一直在攒离开的底气。\n- 怕打雷；说谎时会攥紧左手。"}
+                        />
+                    </Field>
+                </>
+            ) : null}
             {kind === "base" || kind === "flavor" || kind === "glass" || kind === "strength" ? (
                 <Field label={TEXT_FIELD_COPY[kind].label} hint="必填，可用 {{char}} / {{user}}">
                     <textarea
@@ -481,6 +549,71 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
                     >
                         <Play size={13} style={{ verticalAlign: "-2px" }} /> 跑一下
                     </button>
+                </>
+            ) : null}
+            {kind === "filter" ? (
+                <>
+                    <Field label="清洗规则" hint="从上到下依次执行；查找是 JS 正则（自动带 g），替换可用 $1 引用捕获组，留空即删除">
+                        <div className="mix-example-list">
+                            {rules.map((rule, i) => (
+                                <div className="mix-filter-rule" key={i} data-bad={filterTest.badIndexes.includes(i) ? "true" : undefined}>
+                                    <div className="mix-filter-rule-main">
+                                        <input
+                                            className="mix-input"
+                                            data-code="true"
+                                            value={rule.find}
+                                            onChange={(e) => setRules((prev) => prev.map((r, idx) => (idx === i ? { ...r, find: e.target.value } : r)))}
+                                            placeholder="查找（正则），例：\*\*|——+"
+                                        />
+                                        <input
+                                            className="mix-input"
+                                            data-code="true"
+                                            value={rule.replace}
+                                            onChange={(e) => setRules((prev) => prev.map((r, idx) => (idx === i ? { ...r, replace: e.target.value } : r)))}
+                                            placeholder="替换为（留空=删除）"
+                                        />
+                                        {filterTest.badIndexes.includes(i) ? <div className="mix-filter-rule-bad">正则写法有误，这条不会生效</div> : null}
+                                    </div>
+                                    <button
+                                        type="button"
+                                        className="mix-filter-mode"
+                                        data-mode={rule.mode}
+                                        onClick={() => setRules((prev) => prev.map((r, idx) => (idx === i ? { ...r, mode: r.mode === "display" ? "context" : "display" } : r)))}
+                                        title="仅显示：存原文，渲染时替换，全部历史即时生效；进上下文：入库前清洗，发回模型的历史也是洗过的，只对新回复生效"
+                                    >
+                                        {rule.mode === "display" ? "仅显示" : "进上下文"}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="mix-icon-btn"
+                                        onClick={() => setRules((prev) => prev.filter((_, idx) => idx !== i))}
+                                        aria-label="删除这条规则"
+                                    >
+                                        <Trash2 size={15} />
+                                    </button>
+                                </div>
+                            ))}
+                            <button
+                                type="button"
+                                className="mix-pill-btn"
+                                onClick={() => setRules((prev) => [...prev, { find: "", replace: "", mode: "display" }])}
+                            >
+                                <Plus size={13} style={{ verticalAlign: "-2px" }} /> 加一条规则
+                            </button>
+                        </div>
+                    </Field>
+                    <Field label="试跑" hint="贴一段样文，即时看全部规则跑完的结果">
+                        <textarea
+                            className="mix-textarea"
+                            style={{ minHeight: 90 }}
+                            value={filterSample}
+                            onChange={(e) => setFilterSample(e.target.value)}
+                            placeholder={"例：\n**他顿了顿**——「嗯……今天也加班？」"}
+                        />
+                        {filterSample ? (
+                            <div className="mix-filter-result">{filterTest.result || "（全部被清空了）"}</div>
+                        ) : null}
+                    </Field>
                 </>
             ) : null}
             {preview ? <MixPreviewSheet target={preview} onClose={() => setPreview(null)} /> : null}

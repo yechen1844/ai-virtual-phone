@@ -9,7 +9,7 @@
 create table if not exists public.mixology_items (
   id text primary key,
 
-  kind text not null check (kind in ('character', 'base', 'flavor', 'glass', 'strength', 'ticket', 'garnish', 'encore')),
+  kind text not null check (kind in ('character', 'persona', 'base', 'flavor', 'glass', 'strength', 'ticket', 'garnish', 'encore', 'filter')),
   name text not null,
   hook text not null default '',
   cover text not null default '',
@@ -18,6 +18,7 @@ create table if not exists public.mixology_items (
 
   author_id text not null default 'anonymous',
   author_name text not null default '匿名调酒师',
+  author_avatar text not null default '',
 
   like_count integer not null default 0 check (like_count >= 0),
   save_count integer not null default 0 check (save_count >= 0),
@@ -52,6 +53,7 @@ create table if not exists public.mixology_recipes (
 
   author_id text not null default 'anonymous',
   author_name text not null default '匿名调酒师',
+  author_avatar text not null default '',
 
   like_count integer not null default 0 check (like_count >= 0),
   save_count integer not null default 0 check (save_count >= 0),
@@ -128,4 +130,16 @@ revoke select on public.mixology_likes from anon;
 revoke select on public.mixology_saves from anon;
 revoke select on public.mixology_comments from anon;
 
+notify pgrst, 'reload schema';
+
+-- ─────────────────────────────────────────────────────────────
+-- 已建库升级（老库执行这一段即可，重复执行安全）：
+--  1) 材料十类：kind 检查约束补上 persona（面具）与 filter（滤网）
+--  2) 创作者头像：两张表加 author_avatar 列
+alter table public.mixology_items drop constraint if exists mixology_items_kind_check;
+alter table public.mixology_items
+  add constraint mixology_items_kind_check
+  check (kind in ('character', 'persona', 'base', 'flavor', 'glass', 'strength', 'ticket', 'garnish', 'encore', 'filter'));
+alter table public.mixology_items add column if not exists author_avatar text not null default '';
+alter table public.mixology_recipes add column if not exists author_avatar text not null default '';
 notify pgrst, 'reload schema';

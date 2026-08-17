@@ -45,6 +45,7 @@ import { generateGroupChatCompletion, generateGroupOfflineChatCompletion, parseG
 import { appendChatOfflineTurn, deleteChatOfflineTurn, deleteChatOfflineTurnsFrom, loadChatOfflineTurns, parseOfflineResponse, saveChatOfflineTurns, updateChatOfflineTurn, type ChatOfflineTurn } from "@/lib/chat-offline-storage";
 import { applyDisplayRegex, applyEditRegex } from "@/lib/llm-prompt-assembler";
 import { scheduleFollowUp, cancelFollowUp } from "@/lib/follow-up-service";
+import { useKeyboardDismissAutoSend } from "@/components/chat/use-keyboard-dismiss-auto-send";
 import { PENDING_REPLY_PREFIX } from "@/lib/friend-request-engine";
 import type { UserIdentity } from "@/components/settings/user-identity";
 import { AlertCircle, Blocks, Check, Trash2, User, ChevronLeft, ChevronRight, Clapperboard, Clock, Gift, Languages, Loader2, MoreHorizontal, X } from "lucide-react";
@@ -3681,6 +3682,17 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
         }
         if (shouldRunDeclineReply) await triggerReply();
     };
+
+    // 收起键盘（或关掉表情/加号面板）并安静 N 秒后自动触发回复，
+    // 等价于替用户点一次「触发回复」。判定全在 hook 内部，配置关掉后与手动模式一致。
+    useKeyboardDismissAutoSend(wrapperRef, {
+        active: !offlineMode && !isMultiSelectMode,
+        pending: pendingGenerate,
+        generating: isGenerating,
+        panelOpen: showEmojiPanel || showStickerPanel || showPlusMenu,
+        sessionId: session.id,
+        onTrigger: () => { void triggerAIResponse(); },
+    });
 
     useEffect(() => {
         const handleCustomAppReplyRequest = (event: Event) => {

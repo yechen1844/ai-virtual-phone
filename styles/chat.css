@@ -1606,16 +1606,37 @@
   overflow-wrap: anywhere;
 }
 
+/* 生图失败提示的忽略按钮：点掉即清状态落库，不再提示 */
+.feed-post-photo-error-dismiss {
+  margin-left: 6px;
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: inherit;
+  opacity: 0.65;
+  font-size: inherit;
+  line-height: 1;
+  cursor: pointer;
+  vertical-align: baseline;
+}
+
+.feed-post-photo-error-dismiss:active {
+  opacity: 1;
+}
+
+/* 文字描述占位块要铺满整行：三层默认都是收缩到内容宽（stack 的 flex-start、
+   row 的 inline-flex、描述块自己的 inline-block），描述短时灰底只包住那几个字，
+   一列帖子看下来宽窄参差。这里让 stack 与 row 都撑满，描述块在 JSX 里配 w-full。 */
 .feed-post-photo-retry-stack {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  align-items: stretch;
   gap: 6px;
   max-width: 100%;
 }
 
 .feed-post-photo-retry-row {
-  display: inline-flex;
+  display: flex;
   align-items: flex-end;
   gap: 8px;
   max-width: 100%;

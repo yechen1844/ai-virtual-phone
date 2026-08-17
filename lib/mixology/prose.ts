@@ -7,7 +7,33 @@
 //   ~强调~    → accent      其余     → narration（普通叙述）
 // 状态栏块 [状态栏]...[/状态栏] 在解析正文前剥离，交给沙盒 iframe 渲染。
 
+import type { MixFilterRule } from "./types";
+
 export type MixProseSegmentType = "dialogue" | "thought" | "accent" | "narration";
+
+/**
+ * 按滤网规则清洗正文。只在拆完状态栏/小剧场块之后调用（规则碰不到块数据）：
+ * - mode="context"：回复入库前清洗一次（引擎调用）
+ * - mode="display"：渲染前清洗（界面调用，不改存储）
+ * 单条正则编译失败就跳过那条，绝不因为规则写错拦住整轮。
+ */
+export function applyMixFilterRules(
+    text: string,
+    rules: MixFilterRule[] | undefined,
+    mode: MixFilterRule["mode"],
+): string {
+    if (!text || !rules?.length) return text;
+    let out = text;
+    for (const rule of rules) {
+        if (rule.mode !== mode || !rule.find) continue;
+        try {
+            out = out.replace(new RegExp(rule.find, "g"), rule.replace ?? "");
+        } catch {
+            // 正则写错：这条作废，其余照跑
+        }
+    }
+    return out;
+}
 
 export type MixProseSegment = {
     type: MixProseSegmentType;

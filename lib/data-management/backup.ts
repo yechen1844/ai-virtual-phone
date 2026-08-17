@@ -138,6 +138,21 @@ function stripMediaFromSource(payload: SourceBackup): SourceBackup {
   };
 }
 
+
+/** 从模块 payload 收集告警：数据源导出失败、关键模块 0 记录（很可能是坏备份） */
+function collectModuleWarnings(dataModule: ReturnType<typeof getSelectedModules>[number], payload: ModulePayload, records: number): string[] {
+  const warnings: string[] = [];
+  for (const sourcePayload of payload.sources) {
+    if (sourcePayload.type === "indexeddb" && sourcePayload.error) {
+      warnings.push(`「${dataModule.label}」${sourcePayload.error}`);
+    }
+  }
+  if (dataModule.critical && records === 0) {
+    warnings.push(`「${dataModule.label}」导出了 0 条记录——如果这台设备上有过这类数据，说明备份不完整，请勿依赖。`);
+  }
+  return warnings;
+}
+
 export async function buildBackupEnvelope(moduleIds?: DataModuleId[], options: BackupOptions = {}): Promise<BackupEnvelope> {
   return buildEnvelope(moduleIds, options);
 }
@@ -158,7 +173,7 @@ export async function buildSingleModulePayload(
   dataModule: ReturnType<typeof getSelectedModules>[number],
   options: BackupOptions = {},
   collector?: MediaCollector,
-): Promise<{ payload: ModulePayload; records: number }> {
+): Promise<{ payload: ModulePayload; records: number; warnings: string[] }> {
   const stripping = Boolean(options.excludeMedia) && !MEDIA_KEEP_MODULE_IDS.has(dataModule.id);
   // Stripped modules export media as dataURL strings so stripMediaFromSource can
   // remove it; extracting to media-refs first would make "exclude media" a no-op.
@@ -178,7 +193,8 @@ export async function buildSingleModulePayload(
       records += sourcePayload.records.length;
     }
   }
-  return { payload: { moduleId: dataModule.id, sources }, records };
+  const payload: ModulePayload = { moduleId: dataModule.id, sources };
+  return { payload, records, warnings: collectModuleWarnings(dataModule, payload, records) };
 }
 
 async function buildEnvelope(moduleIds?: DataModuleId[], options: BackupOptions = {}, collector?: MediaCollector): Promise<BackupEnvelope> {
@@ -232,9 +248,23 @@ async function buildEnvelope(moduleIds?: DataModuleId[], options: BackupOptions 
   return { manifest, modules: modulePayloads };
 }
 
-export async function createBackupBlob(moduleIds?: DataModuleId[], options: BackupOptions = {}): Promise<{ blob: Blob; manifest: BackupManifest }> {
+export async function createBackupBlob(moduleIds?: DataModuleId[], options: BackupOptions = {}): Promise<{ blob: Blob; manifest: BackupManifest; warnings: string[] }> {
   const collector = createMediaCollector();
   const envelope = await buildEnvelope(moduleIds, options, collector);
+  const warnings: string[] = [];
+  for (const modulePayload of envelope.modules) {
+    const definition = DATA_MODULES.find((item) => item.id === modulePayload.moduleId);
+    if (!definition) continue;
+    let records = 0;
+    for (const sourcePayload of modulePayload.sources) {
+      if (sourcePayload.type === "indexeddb") {
+        for (const store of sourcePayload.stores) records += store.records.length;
+      } else {
+        records += sourcePayload.records.length;
+      }
+    }
+    warnings.push(...collectModuleWarnings(definition, modulePayload, records));
+  }
   const zip = new JSZip();
   zip.file("manifest.json", JSON.stringify(envelope.manifest, null, 2));
   for (const modulePayload of envelope.modules) {
@@ -246,7 +276,7 @@ export async function createBackupBlob(moduleIds?: DataModuleId[], options: Back
     zip.file(`media/${ref}.bin`, mediaBlob, { compression: "STORE" });
   }
   const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE", mimeType: "application/zip" });
-  return { blob, manifest: envelope.manifest };
+  return { blob, manifest: envelope.manifest, warnings };
 }
 
 export async function readBackupBlob(blob: Blob): Promise<BackupEnvelope> {

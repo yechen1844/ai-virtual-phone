@@ -1450,6 +1450,14 @@
 .qa-msg-wrap {
   position: relative;
 }
+/* 长按菜单的关闭遮罩：全屏透明，点任意处即关（菜单本身无关闭按钮） */
+.qa-msg-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 59;
+  background: transparent;
+}
+
 .qa-msg-menu {
   position: fixed;
   z-index: 60;
@@ -1652,7 +1660,6 @@
 }
 .qa-file-card-btn:active { opacity: 0.7; }
 .qa-file-card-error { width: 100%; font-size: 11px; color: var(--c-danger, #d33); }
-
 .qa-file-card-ready {
   width: 100%;
   border: 0;

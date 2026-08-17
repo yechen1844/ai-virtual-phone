@@ -1,6 +1,7 @@
 // lib/chat-storage.ts
 
 import {
+    chatDb,
     initChatDb,
     dbPutMessage, dbDeleteMessage, dbDeleteMessagesBySession, dbDeleteMessagesByIds,
     dbPutMessages, dbPutSessions, dbPutContacts, dbDeleteSession,
@@ -1707,6 +1708,41 @@ export function updateMessageMediaUrl(messageId: string, mediaUrl: string) {
     if (idx !== -1) {
         _messagesCache[idx] = { ..._messagesCache[idx], mediaUrl };
         dbPutMessage(_messagesCache[idx]);
+    }
+}
+
+/**
+ * 语音合成结果落库：优先走内存缓存（当前会话可见时同步生效）；缓存里没有
+ * （合成期间用户已切走会话）就直接读库改库——合成一次的音频绝不能丢，
+ * 丢了就是下一次白花钱的重新合成。
+ */
+export async function persistMessageVoiceAudio(
+    messageId: string,
+    mediaUrl: string,
+    synthesizedFromText: string,
+): Promise<void> {
+    const idx = _messagesCache.findIndex(m => m.id === messageId);
+    if (idx !== -1) {
+        const next = {
+            ..._messagesCache[idx],
+            mediaUrl,
+            mediaData: { ..._messagesCache[idx].mediaData, synthesizedFromText },
+        };
+        _messagesCache[idx] = next;
+        dbPutMessage(next);
+        return;
+    }
+    try {
+        const stored = await chatDb.messages.get(messageId);
+        if (stored) {
+            await chatDb.messages.put({
+                ...stored,
+                mediaUrl,
+                mediaData: { ...stored.mediaData, synthesizedFromText },
+            });
+        }
+    } catch (err) {
+        console.warn("[ChatDB] persist voice audio failed:", err);
     }
 }
 
