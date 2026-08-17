@@ -162,14 +162,23 @@ export function ReadingInteractionDialog({ onClose }: Props) {
                     </div>
                     <div className="reading-settings-toggle-row">
                         <span className="reading-settings-toggle-label">
-                            提前生成下一批批注
+                            TXT 预批注
                         </span>
                         <Toggle
                             checked={config.autoAnnotatePrefetch === true}
                             onChange={(next) => setConfig((prev) => ({ ...prev, autoAnnotatePrefetch: next }))}
                         />
                     </div>
-                    {config.autoAnnotatePrefetch && (
+                    <div className="reading-settings-toggle-row">
+                        <span className="reading-settings-toggle-label">
+                            PDF 预批注
+                        </span>
+                        <Toggle
+                            checked={config.autoAnnotatePrefetchPdf === true}
+                            onChange={(next) => setConfig((prev) => ({ ...prev, autoAnnotatePrefetchPdf: next }))}
+                        />
+                    </div>
+                    {(config.autoAnnotatePrefetch || config.autoAnnotatePrefetchPdf) && (
                         <>
                             <p className="reading-settings-inline-note">
                                 <span>读到上一批批注的多少时开始生成下一批：</span>
@@ -190,7 +199,7 @@ export function ReadingInteractionDialog({ onClose }: Props) {
                         </>
                     )}
                     <p className="reading-settings-inline-note">
-                        <span>利用读上一批批注的时间生成下一批，避免你读到时批注还没生成完。不会重复批注。</span>
+                        <span>TXT 预批注按段落分批，PDF 预批注按页分批，批次大小与自动批注一致（可在批注对话框里调整）。利用读上一批批注的时间生成下一批，不会重复批注。</span>
                     </p>
                 </section>
 
@@ -243,29 +252,6 @@ export function ReadingInteractionDialog({ onClose }: Props) {
                     <p className="reading-settings-inline-note">
                         <span>开启后阅读 PDF 时会提前渲染当前页之后的页面，滚动更平滑；关闭则只渲染屏幕内的页。</span>
                     </p>
-                    <div className="reading-settings-toggle-row">
-                        <span className="reading-settings-toggle-label">PDF 预批注</span>
-                        <Toggle
-                            checked={config.autoAnnotatePrefetch === true}
-                            onChange={(next) => setConfig((prev) => ({ ...prev, autoAnnotatePrefetch: next }))}
-                        />
-                    </div>
-                    <p className="reading-settings-inline-note">
-                        <span>配合自动批注使用：读到当前批注批次的阈值时，提前解析并生成下一批批注，翻过去就是现成的，省等待时间。触发阈值见上方「批注预生成」。</span>
-                    </p>
-                    <div className="reading-settings-inline-note">
-                        <span>批注批次页数（自定义范围）</span>
-                        <span>{config.pdfAnnotationBatchSize ?? 5} 页</span>
-                    </div>
-                    <input
-                        type="range"
-                        className="w-full my-1"
-                        min={1}
-                        max={30}
-                        step={1}
-                        value={config.pdfAnnotationBatchSize ?? 5}
-                        onChange={(e) => setConfig((prev) => ({ ...prev, pdfAnnotationBatchSize: Number(e.target.value) }))}
-                    />
                     <div className="reading-settings-inline-note">
                         <span>页面缩放率</span>
                         <span>{Math.round((config.pdfZoom ?? 1) * 100)}%</span>

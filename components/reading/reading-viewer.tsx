@@ -275,8 +275,8 @@ export function ReadingViewer({ book, onBack }: Props) {
     const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
     const [chatting, setChatting] = useState(false);
     const [autoAnnotate, setAutoAnnotate] = useState(false);
-    const [annotationBatchSize, setAnnotationBatchSize] = useState(isPdf ? (readingConfig.pdfAnnotationBatchSize ?? 5) : 50);
-    const [annotationBatchInput, setAnnotationBatchInput] = useState(String(isPdf ? (readingConfig.pdfAnnotationBatchSize ?? 5) : 50));
+    const [annotationBatchSize, setAnnotationBatchSize] = useState(isPdf ? 5 : 50);
+    const [annotationBatchInput, setAnnotationBatchInput] = useState(String(isPdf ? 5 : 50));
     const [annotationDialogMode, setAnnotationDialogMode] = useState<AnnotationDialogMode | null>(null);
     const [showReadingSettings, setShowReadingSettings] = useState(false);
     const [showNavigationDialog, setShowNavigationDialog] = useState(false);
@@ -897,14 +897,6 @@ export function ReadingViewer({ book, onBack }: Props) {
         const size = clampBatchSize(Number(annotationBatchInput));
         setAnnotationBatchSize(size);
         setAnnotationBatchInput(String(size));
-        // PDF：手动改批次页数后写回持久化配置，下次打开仍是这个自定义范围
-        if (isPdf && readingConfig.pdfAnnotationBatchSize !== size) {
-            setReadingConfig((prev) => {
-                const next = { ...prev, pdfAnnotationBatchSize: size };
-                saveReadingInteractionConfig(next);
-                return next;
-            });
-        }
 
         if (annotationDialogMode === "auto") {
             setAnnotationDialogMode(null);
@@ -930,7 +922,7 @@ export function ReadingViewer({ book, onBack }: Props) {
     /** 打开手动预批注对话框：默认预生成「当前页起一个批次」的范围 */
     const openPdfPrefetchDialog = () => {
         const start = Math.max(1, pdfCurrentPage || 1);
-        const batch = Math.max(1, readingConfig.pdfAnnotationBatchSize ?? 5);
+        const batch = Math.max(1, annotationBatchSize || 5);
         const end = Math.min(pdfTotalPages || (start + batch - 1), start + batch - 1);
         setPdfPrefetchStartInput(String(start));
         setPdfPrefetchEndInput(String(end));
@@ -1166,15 +1158,18 @@ export function ReadingViewer({ book, onBack }: Props) {
 
     // 批注预生成：当前批注批读到用户设置的阈值时，提前生成下一批，
     // 把生成时间差放在用户读上一批批注的时间里，避免用户读到下一批时批注还没生成完。不会重复批注（批次按 key 去重）。
-    // TXT 按「段落」分批次；PDF 按「页数」分批次（自定义范围，见 pdfAnnotationBatchSize）。
+    // TXT 按「段落」分批次（autoAnnotatePrefetch 控制）；PDF 按「页数」分批次（autoAnnotatePrefetchPdf 控制），
+    // 两者各自独立开关，批次大小统一跟随自动批注的 annotationBatchSize。
     const prefetchedBatchStartRef = useRef(-1);
     useEffect(() => {
         if (!autoAnnotate) { prefetchedBatchStartRef.current = -1; return; }
-        if (!readingConfig.autoAnnotatePrefetch || !companionId || generating) return;
+        if (!companionId || generating) return;
         const size = Math.max(1, annotationBatchSize || (isPdf ? 5 : 50));
         const threshold = Math.max(0, Math.min(1, readingConfig.annotationPrefetchThreshold ?? 2 / 3));
 
         if (isPdf) {
+            // PDF 预批注开关：关闭时不预生成
+            if (!readingConfig.autoAnnotatePrefetchPdf) { prefetchedBatchStartRef.current = -1; return; }
             // PDF：按页分批次。当前页所在批次读到阈值时，预解析并预生成下一批批注。
             if (pdfTotalPages <= 0) return;
             const batchStartPage = Math.floor((pdfCurrentPage - 1) / size) * size + 1;
@@ -1210,6 +1205,9 @@ export function ReadingViewer({ book, onBack }: Props) {
             })();
             return;
         }
+
+        // TXT 预批注开关：关闭时不预生成
+        if (!readingConfig.autoAnnotatePrefetch) { prefetchedBatchStartRef.current = -1; return; }
 
         // TXT：当前阅读位置 → 全书记绝对段落索引
         if (paragraphRefs.length === 0) return;
@@ -1250,7 +1248,7 @@ export function ReadingViewer({ book, onBack }: Props) {
         void executeBatchAnnotation(request).then((started) => {
             if (!started) prefetchedBatchStartRef.current = -1;
         });
-    }, [annotationBatchSize, autoAnnotate, chapterIndex, companionId, ensurePdfPageRangeParsed, executeBatchAnnotation, generating, isPdf, isScrollMode, paragraphRefs, pdfCurrentPage, pdfTotalPages, readingConfig.autoAnnotatePrefetch, readingConfig.annotationPrefetchThreshold, scrollFraction, txtPage, txtPages]);
+    }, [annotationBatchSize, autoAnnotate, chapterIndex, companionId, ensurePdfPageRangeParsed, executeBatchAnnotation, generating, isPdf, isScrollMode, paragraphRefs, pdfCurrentPage, pdfTotalPages, readingConfig.autoAnnotatePrefetch, readingConfig.autoAnnotatePrefetchPdf, readingConfig.annotationPrefetchThreshold, scrollFraction, txtPage, txtPages]);
 
     useEffect(() => {
         // 自动批注开启时，随滚动把当前 5 页的文本层预先解析好，让批注生成请求不用临时等待解析。
@@ -2039,18 +2037,13 @@ export function ReadingViewer({ book, onBack }: Props) {
         ? chatMessages.find((msg) => msg.id === readingMessageMenu.messageId) || null
         : null;
 
-    /** 更新 PDF 渲染配置（缩放率/预渲染页数/预加载开关/预批注开关/批注批次页数），改动即时生效并持久化 */
-    const updatePdfRenderConfig = (patch: { pdfZoom?: number; pdfPreloadRadius?: number; pdfPreloadEnabled?: boolean; autoAnnotatePrefetch?: boolean; pdfAnnotationBatchSize?: number }) => {
+    /** 更新 PDF 渲染配置（缩放率/预渲染页数/预加载开关），改动即时生效并持久化 */
+    const updatePdfRenderConfig = (patch: { pdfZoom?: number; pdfPreloadRadius?: number; pdfPreloadEnabled?: boolean }) => {
         setReadingConfig((prev) => {
             const next = { ...prev, ...patch };
             saveReadingInteractionConfig(next);
             return next;
         });
-        // 批次页数变化时同步到当前批注批次大小，立即生效
-        if (typeof patch.pdfAnnotationBatchSize === "number") {
-            setAnnotationBatchSize(patch.pdfAnnotationBatchSize);
-            setAnnotationBatchInput(String(patch.pdfAnnotationBatchSize));
-        }
     };
 
     return (
@@ -2676,29 +2669,6 @@ export function ReadingViewer({ book, onBack }: Props) {
                                 <p className="reading-settings-inline-note">
                                     <span>开启后阅读时会提前渲染当前页之后的页面，滚动更平滑；关闭则只渲染屏幕内的页。</span>
                                 </p>
-                                <div className="reading-settings-toggle-row">
-                                    <span className="reading-settings-toggle-label">PDF 预批注</span>
-                                    <Toggle
-                                        checked={readingConfig.autoAnnotatePrefetch === true}
-                                        onChange={(next) => updatePdfRenderConfig({ autoAnnotatePrefetch: next })}
-                                    />
-                                </div>
-                                <p className="reading-settings-inline-note">
-                                    <span>配合自动批注使用：读到当前批注批次的阈值时，提前解析并生成下一批批注，翻过去就是现成的，省等待时间。读到批次多少比例触发，在书架「阅读设置 → 批注预生成」里可调。</span>
-                                </p>
-                                <div className="reading-settings-inline-note">
-                                    <span>批注批次页数（自定义范围）</span>
-                                    <span>{readingConfig.pdfAnnotationBatchSize ?? 5} 页</span>
-                                </div>
-                                <input
-                                    type="range"
-                                    className="w-full my-1"
-                                    min={1}
-                                    max={30}
-                                    step={1}
-                                    value={readingConfig.pdfAnnotationBatchSize ?? 5}
-                                    onChange={(e) => updatePdfRenderConfig({ pdfAnnotationBatchSize: Number(e.target.value) })}
-                                />
                                 <div className="reading-settings-inline-note">
                                     <span>页面缩放率</span>
                                     <span>{Math.round((readingConfig.pdfZoom ?? 1) * 100)}%</span>
