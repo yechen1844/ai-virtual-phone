@@ -2066,7 +2066,7 @@ export function ReadingViewer({ book, onBack }: Props) {
                         <div className="reading-debug-line">总段落数：{totalParagraphs}</div>
                         <div className="reading-debug-line">当前章节索引：{chapterIndex}</div>
                         <div className="reading-debug-line">当前页进度：{txtPage + 1}/{txtTotalPages}</div>
-                        <div className="reading-debug-hint">章节数据存在，但当前索引取不到正文。这个状态不是"正在加载"，而是本地章节数据和进度状态不一致。</div>
+                        <div className="reading-debug-hint">章节数据存在，但当前索引取不到正文。这个状态不是“正在加载”，而是本地章节数据和进度状态不一致。</div>
                     </div>
                 ) : isScrollMode ? (
                     <div ref={scrollContentRef} className="reading-scroll-content">
