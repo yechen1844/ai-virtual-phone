@@ -580,13 +580,18 @@ export function ReadingViewer({ book, onBack }: Props) {
                     : 0;
                 setChapterIndex(safeChapterIndex);
                 setCompanionId(progress.companionCharacterId || null);
-                if (!isPdf) {
-                    if (progress.readingMode === "scroll") {
-                        // 滚动模式：scrollPosition 存的是章节内滚动比例(0-1)
-                        initialScrollFractionRef.current = Math.max(0, Math.min(1, progress.scrollPosition || 0));
-                    } else {
-                        setTxtPage(Math.max(0, progress.scrollPosition || 0));
-                    }
+                if (isPdf) {
+                    // PDF 恢复：scrollPosition 存的是「当前页 - 1」。
+                    // 同时设置 pdfCurrentPage（避免跳转前保存逻辑把它覆盖回第 1 页）
+                    // 与 pdfJumpPage（让 PdfPageRenderer 渲染完成后滚到该页）。
+                    const restoredPage = Math.max(1, Math.round((progress.scrollPosition ?? 0) + 1));
+                    setPdfCurrentPage(restoredPage);
+                    setPdfJumpPage(restoredPage);
+                } else if (progress.readingMode === "scroll") {
+                    // 滚动模式：scrollPosition 存的是章节内滚动比例(0-1)
+                    initialScrollFractionRef.current = Math.max(0, Math.min(1, progress.scrollPosition || 0));
+                } else {
+                    setTxtPage(Math.max(0, progress.scrollPosition || 0));
                 }
             }
             // Default companion: first contact
