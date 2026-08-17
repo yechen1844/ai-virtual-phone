@@ -760,6 +760,14 @@ function ApiLogViewer({ onBack }: { onBack: () => void }) {
                                                 </div>
                                             </div>
                                             <div className="menu-right">
+                                                <span
+                                                    className="api-log-raw-tag"
+                                                    role="button"
+                                                    tabIndex={0}
+                                                    onClick={(e) => { e.stopPropagation(); setExpandedId(isOpen ? null : log.id); }}
+                                                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setExpandedId(isOpen ? null : log.id); } }}
+                                                    title="查看这条记录的真实原始响应（含思维链）"
+                                                >查看原始</span>
                                                 <ChevronRight
                                                     size={16}
                                                     className="ui-chevron-flip"
@@ -790,10 +798,28 @@ function ApiLogViewer({ onBack }: { onBack: () => void }) {
                                                         </div>
                                                     </div>
                                                 ))}
+                                                {log.reasoning && (
+                                                    <>
+                                                        <div className="font-bold px-1 pt-3 pb-2 text-[var(--c-warning)]">
+                                                            思维链（Reasoning）
+                                                        </div>
+                                                        <div className="api-log-reasoning whitespace-pre-wrap break-all leading-[1.4]">
+                                                            {log.reasoning}
+                                                        </div>
+                                                    </>
+                                                )}
                                                 <div className="font-bold mt-3 mb-[6px] text-[var(--c-danger)]">AI 原始回复</div>
                                                 <div className="api-log-response whitespace-pre-wrap break-all leading-[1.4]">
                                                     {log.rawResponse}
                                                 </div>
+                                                {log.rawData && (
+                                                    <>
+                                                        <div className="font-bold mt-3 mb-[6px] text-[var(--c-danger)]">真实原始响应（服务端返回，含思维链）</div>
+                                                        <div className="api-log-rawdata whitespace-pre-wrap break-all leading-[1.4]">
+                                                            {log.rawData}
+                                                        </div>
+                                                    </>
+                                                )}
                                             </div>
                                         )}
                                     </div>

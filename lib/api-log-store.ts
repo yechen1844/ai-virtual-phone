@@ -13,6 +13,10 @@ export type DebugInfo = {
     rawResponse: string;
     timestamp: string;
     usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+    /** 模型思维链（reasoning/CoT）原文，独立于回复内容存储，避免被清洗吞掉 */
+    reasoning?: string;
+    /** 服务端真实原始响应（流式=原始 SSE 事件文本；非流式=原始 JSON），可能被截断 */
+    rawData?: string;
 };
 
 const MAX_API_LOGS = 50;

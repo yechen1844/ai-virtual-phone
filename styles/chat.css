@@ -6697,6 +6697,45 @@
   color: var(--c-text-title, var(--c-text));
 }
 
+/* ── 底层调用日志：「查看原始」按钮 + 思维链 / 真实原始响应 ── */
+.api-log-raw-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border: 1px solid color-mix(in srgb, var(--c-icon-active) 45%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--c-icon-active) 10%, transparent);
+  color: var(--c-icon-active);
+  font-size: calc(11px * var(--app-text-scale, 1));
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+.api-log-raw-tag:active {
+  opacity: 0.65;
+}
+.api-log-reasoning {
+  padding: 8px;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.4;
+  background: rgba(255,149,0,0.12);
+  border-left: 3px solid var(--c-warning);
+}
+.api-log-rawdata {
+  padding: 8px;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.4;
+  background: rgba(0,0,0,0.45);
+  border-left: 3px solid var(--c-icon-active);
+  max-height: 320px;
+  overflow-y: auto;
+}
+
 /* ── 全屏特效设置弹窗（底部全宽弹层）── */
 .screen-fx-sheet {
   background: var(--c-page-body-bg);
