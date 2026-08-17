@@ -1164,13 +1164,17 @@ export function ReadingViewer({ book, onBack }: Props) {
     }, [annotationBatchSize, autoAnnotate, chapterIndex, companionId, executeBatchAnnotation, generating, isPdf, isScrollMode, paragraphRefs, readingConfig.autoAnnotatePrefetch, readingConfig.annotationPrefetchThreshold, scrollFraction, txtPage, txtPages]);
 
     useEffect(() => {
-        if (!isPdf || pdfCurrentPage <= 0 || chapters.length === 0) return;
+        // 仅自动批注开启时才随滚动预解析当前 5 页的文本层：文本解析完成后会 setChapters
+        // 触发 PdfPageRenderer 的 chapter prop 变化 → 整本页面全量重建，滚动时反复重建就是
+        // PDF 渲染闪烁卡顿的直接来源。手动写批注 / 共读讨论内部会自行 ensurePdfPageRangeParsed，
+        // 关闭自动批注时纯阅读不预解析，功能不受影响。
+        if (!isPdf || !autoAnnotate || pdfCurrentPage <= 0 || chapters.length === 0) return;
         const chunkStart = Math.floor((pdfCurrentPage - 1) / PDF_PAGES_PER_CHAPTER) * PDF_PAGES_PER_CHAPTER + 1;
         const chunkEnd = Math.min(chunkStart + PDF_PAGES_PER_CHAPTER - 1, pdfTotalPages || chunkStart + PDF_PAGES_PER_CHAPTER - 1);
         void ensurePdfPageRangeParsed(chunkStart, chunkEnd).catch((err) => {
             console.error("[Reading] PDF lazy parse error:", err);
         });
-    }, [chapters.length, ensurePdfPageRangeParsed, isPdf, pdfCurrentPage, pdfTotalPages]);
+    }, [autoAnnotate, chapters.length, ensurePdfPageRangeParsed, isPdf, pdfCurrentPage, pdfTotalPages]);
 
     // Chapter navigation
     const goToChapter = (idx: number, startFromEnd = false) => {

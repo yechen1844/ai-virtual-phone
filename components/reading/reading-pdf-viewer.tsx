@@ -85,7 +85,10 @@ export function PdfPageRenderer({
     const getRenderMetrics = () => {
         const scrollParent = canvasContainerRef.current?.closest("[data-ui='body']") as HTMLElement | null;
         const cssWidth = wrapperRef.current?.clientWidth || scrollParent?.clientWidth || 350;
-        const renderDpr = Math.max(window.devicePixelRatio || 1, 2);
+        // 渲染分辨率封顶 2 倍：@3x 设备上 3 倍 canvas 像素量是 2 倍的 2.25 倍，
+        // PDF.js 光栅化与 canvas 上传都明显变慢，是滚动卡顿的重要放大器；
+        // 手机上 2x 已足够清晰（4 倍像素），降到 2x 渲染速度大幅提升。
+        const renderDpr = Math.min(Math.max(window.devicePixelRatio || 1, 1), 2);
         return { cssWidth, scrollParent, renderDpr };
     };
 
