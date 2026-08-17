@@ -2023,7 +2023,7 @@ export async function generateOfflineChatCompletion(
             signal: options?.signal,
         }, {
             onDelta: (text) => options.onStreamDelta?.(text),
-            onReasoningDelta: (t) => { reasoning = t; },
+            onReasoningDelta: (t) => { reasoning += t; },
         });
         rawOutput = streamResult.content;
     } else {
@@ -2046,7 +2046,8 @@ export async function generateOfflineChatCompletion(
             },
         ];
         throwIfAborted(options?.signal);
-        const retryRaw = await sendLLMRequest(config, preset, retryMessages, regexes, meta, requestOptions);
+        // 补提请求不带 onReasoning：避免用补提请求的思维链覆盖主请求已累积的完整思维链
+        const retryRaw = await sendLLMRequest(config, preset, retryMessages, regexes, meta, { ...requestOptions, onReasoning: undefined });
         const retried = parseOfflineResponse(retryRaw, summaryTag);
         if (retried.summary.trim()) {
             parsed = { ...parsed, summary: retried.summary.trim() };
@@ -2099,6 +2100,7 @@ async function generateNativeChatCompletion(
         let result: LLMToolRequestResult;
         try {
             if (isChatStreamingEnabled()) {
+                let streamReasoning = "";
                 result = await sendLLMToolStreamRequest(
                     config,
                     preset,
@@ -2115,7 +2117,9 @@ async function generateNativeChatCompletion(
                     },
                     {
                         onDelta: (text) => callbacks?.onStreamDelta?.(text),
-                        onReasoningDelta: (text) => callbacks?.onReasoning?.(text),
+                        // 流式下 onReasoningDelta 收到的是单段增量：本地累积后再喂 onReasoning，
+                        // 保证下游拿到的是完整思维链（与整段请求的 onReasoning 语义一致）
+                        onReasoningDelta: (text) => { streamReasoning += text; callbacks?.onReasoning?.(streamReasoning); },
                     },
                 );
             } else {
@@ -2367,6 +2371,7 @@ export async function generateChatCompletion(
             if (isChatStreamingEnabled()) {
                 // 流式分支：与 sendLLMRequest 走同一套请求构造/日志/正则，仅把「整段等待」换成
                 // SSE 增量，并通过 onStreamDelta 把原文增量实时交给 UI 层做预览显示。
+                let streamReasoning = "";
                 const streamResult = await sendLLMStreamRequest(config, preset, llmMessages, regexes, meta, {
                     appId: options?.appId ?? "chat",
                     appTags: requestAppTags,
@@ -2374,7 +2379,8 @@ export async function generateChatCompletion(
                     signal: options?.signal,
                 }, {
                     onDelta: (text) => callbacks?.onStreamDelta?.(text),
-                    onReasoningDelta: (text) => callbacks?.onReasoning?.(text),
+                    // 流式下 onReasoningDelta 是单段增量：累积后再喂 onReasoning（保持整段请求语义）
+                    onReasoningDelta: (text) => { streamReasoning += text; callbacks?.onReasoning?.(streamReasoning); },
                 });
                 filteredOutput = streamResult.content;
             } else {
@@ -2546,6 +2552,7 @@ export async function generateChatCompletion(
                 try {
                     let finalOutput: string;
                     if (isChatStreamingEnabled()) {
+                        let streamReasoning = "";
                         const streamFinal = await sendLLMStreamRequest(config, preset, llmMessages, regexes, meta, {
                             appId: options?.appId ?? "chat",
                             appTags: requestAppTags,
@@ -2553,7 +2560,8 @@ export async function generateChatCompletion(
                             signal: options?.signal,
                         }, {
                             onDelta: (text) => callbacks?.onStreamDelta?.(text),
-                            onReasoningDelta: (text) => callbacks?.onReasoning?.(text),
+                            // 流式下 onReasoningDelta 是单段增量：累积后再喂 onReasoning（保持整段请求语义）
+                            onReasoningDelta: (text) => { streamReasoning += text; callbacks?.onReasoning?.(streamReasoning); },
                         });
                         finalOutput = streamFinal.content;
                     } else {

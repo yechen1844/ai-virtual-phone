@@ -573,6 +573,7 @@ async function runNativeGroupToolLoop(params: {
         let result: Awaited<ReturnType<typeof sendLLMToolRequest>>;
         try {
             if (isChatStreamingEnabled()) {
+                let streamReasoning = "";
                 result = await sendLLMToolStreamRequest(config, preset, requestMessages, nativeBundle.definitions, regexes, meta, {
                     appId: "group_chat",
                     appTags,
@@ -580,7 +581,8 @@ async function runNativeGroupToolLoop(params: {
                     signal,
                 }, {
                     onDelta: (text) => callbacks?.onStreamDelta?.(text),
-                    onReasoningDelta: (text) => callbacks?.onReasoning?.(text),
+                    // 流式下 onReasoningDelta 是单段增量：累积后再喂 onReasoning（保持整段请求语义）
+                    onReasoningDelta: (text) => { streamReasoning += text; callbacks?.onReasoning?.(streamReasoning); },
                 });
             } else {
                 result = await sendLLMToolRequest(config, preset, requestMessages, nativeBundle.definitions, regexes, meta, {
@@ -809,13 +811,15 @@ export async function generateGroupChatCompletion(
         let filteredOutput: string;
         try {
             if (isChatStreamingEnabled()) {
+                let streamReasoning = "";
                 const streamResult = await sendLLMStreamRequest(config, preset, llmMessages, regexes, meta, {
                     appId: "group_chat",
                     appTags,
                     signal: options?.signal,
                 }, {
                     onDelta: (text) => callbacks?.onStreamDelta?.(text),
-                    onReasoningDelta: (text) => callbacks?.onReasoning?.(text),
+                    // 流式下 onReasoningDelta 是单段增量：累积后再喂 onReasoning（保持整段请求语义）
+                    onReasoningDelta: (text) => { streamReasoning += text; callbacks?.onReasoning?.(streamReasoning); },
                 });
                 filteredOutput = streamResult.content;
             } else {
@@ -970,13 +974,15 @@ export async function generateGroupChatCompletion(
             if (round === MAX_TOOL_ROUNDS - 1) {
                 try {
                     if (isChatStreamingEnabled()) {
+                        let streamReasoning = "";
                         const streamFinal = await sendLLMStreamRequest(config, preset, llmMessages, regexes, meta, {
                             appId: "group_chat",
                             appTags,
                             signal: options?.signal,
                         }, {
                             onDelta: (text) => callbacks?.onStreamDelta?.(text),
-                            onReasoningDelta: (text) => callbacks?.onReasoning?.(text),
+                            // 流式下 onReasoningDelta 是单段增量：累积后再喂 onReasoning（保持整段请求语义）
+                            onReasoningDelta: (text) => { streamReasoning += text; callbacks?.onReasoning?.(streamReasoning); },
                         });
                         finalRawOutput = streamFinal.content;
                     } else {
@@ -1102,7 +1108,7 @@ export async function generateGroupOfflineChatCompletion(
             signal: options?.signal,
         }, {
             onDelta: (text) => options.onStreamDelta?.(text),
-            onReasoningDelta: (t) => { reasoning = t; },
+            onReasoningDelta: (t) => { reasoning += t; },
         });
         rawOutput = streamResult.content;
     } else {
@@ -1125,7 +1131,8 @@ export async function generateGroupOfflineChatCompletion(
             },
         ];
         throwIfAborted(options?.signal);
-        const retryRaw = await sendLLMRequest(config, preset, retryMessages, regexes, meta, requestOptions);
+        // 补提请求不带 onReasoning：避免用补提请求的思维链覆盖主请求已累积的完整思维链
+        const retryRaw = await sendLLMRequest(config, preset, retryMessages, regexes, meta, { ...requestOptions, onReasoning: undefined });
         const retried = parseOfflineResponse(retryRaw, summaryTag);
         if (retried.summary.trim()) {
             parsed = { ...parsed, summary: retried.summary.trim() };
