@@ -106,6 +106,132 @@ export function PdfPageRenderer({
         return { cssWidth, effectiveWidth, scrollParent, renderDpr };
     };
 
+    /** 渲染完成版本号：渲染 effect 每完成一轮全量渲染 +1，驱动批注钉同步 effect 重放 */
+    const [renderDone, setRenderDone] = useState(0);
+
+    /**
+     * 批注钉与页面渲染解耦：页面 canvas 渲染只依赖文档与渲染参数；
+     * 文本层解析（chapter 变化）或批注增删时，仅通过本函数局部重建批注钉，
+     * 不再触发整本页面重建（开自动批注/生成批注也不闪烁）。
+     */
+    const createAnnotationPin = useCallback((pageNum: number) => {
+        if (!chapter?.paragraphPages || !annotations?.length) return [] as HTMLDivElement[];
+        const elements: HTMLDivElement[] = [];
+        for (const ann of annotations) {
+            const pIdx = ann.paragraphIndex;
+            if (pIdx < 0 || pIdx >= (chapter.paragraphPages?.length || 0)) continue;
+            if (chapter.paragraphPages[pIdx] !== pageNum) continue;
+            const yRatio = chapter.paragraphYPositions?.[pIdx] ?? 0.5;
+
+            const annEl = document.createElement("div");
+            annEl.className = "reading-ann-pin";
+            annEl.style.top = `${yRatio * 100}%`;
+            annEl.dataset.expanded = "false";
+            annEl.dataset.noNav = "true";
+            const tagEl = document.createElement("span");
+            tagEl.className = "reading-ann-pin-tag";
+            tagEl.textContent = `💬 ${ann.characterName}`;
+
+            const bodyEl = document.createElement("div");
+            bodyEl.className = "reading-ann-pin-body";
+
+            const nameEl = document.createElement("span");
+            nameEl.className = "reading-annotation-name";
+            nameEl.textContent = ann.characterName;
+
+            const textEl = document.createElement("div");
+            textEl.className = "reading-annotation-text";
+
+            const bilingual = bilingualTranslationEnabled ? splitBilingualText(ann.content) : null;
+            if (!bilingual) {
+                textEl.textContent = ann.content;
+            } else {
+                const originalEl = document.createElement("div");
+                originalEl.textContent = bilingual.original;
+
+                const toggleBtn = document.createElement("button");
+                toggleBtn.type = "button";
+                toggleBtn.className = "chat-bilingual-toggle reading-annotation-bilingual-toggle";
+                toggleBtn.textContent = collapseBilingualTranslation ? "中文" : "收起中文";
+
+                const translationEl = document.createElement("div");
+                translationEl.className = "reading-annotation-translation";
+                translationEl.textContent = bilingual.translated;
+                translationEl.style.display = collapseBilingualTranslation ? "none" : "block";
+
+                toggleBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    const expanded = translationEl.style.display !== "none";
+                    translationEl.style.display = expanded ? "none" : "block";
+                    toggleBtn.textContent = expanded ? "中文" : "收起中文";
+                };
+
+                textEl.append(originalEl, toggleBtn, translationEl);
+            }
+
+            const menuEl = document.createElement("div");
+            menuEl.className = "ctx-menu reading-annotation-menu";
+
+            const copyBtn = document.createElement("button");
+            copyBtn.className = "ctx-menu-btn";
+            copyBtn.textContent = "复制";
+            copyBtn.onclick = (e) => {
+                e.stopPropagation();
+                onCopyAnnotation?.(ann.content);
+                menuEl.dataset.open = "false";
+            };
+
+            const deleteBtn = document.createElement("button");
+            deleteBtn.className = "ctx-menu-btn ctx-menu-btn-danger";
+            deleteBtn.textContent = "删除";
+            deleteBtn.onclick = (e) => {
+                e.stopPropagation();
+                onDeleteAnnotation?.(ann.id);
+                menuEl.dataset.open = "false";
+            };
+
+            menuEl.dataset.open = "false";
+            menuEl.append(copyBtn, deleteBtn);
+            bodyEl.append(nameEl, textEl, menuEl);
+            annEl.append(tagEl, bodyEl);
+
+            let longPressTimer: number | null = null;
+            let didLongPress = false;
+            const clearLongPress = () => {
+                if (longPressTimer !== null) {
+                    window.clearTimeout(longPressTimer);
+                    longPressTimer = null;
+                }
+            };
+            const openMenu = () => {
+                annEl.dataset.expanded = "true";
+                menuEl.dataset.open = "true";
+                didLongPress = true;
+            };
+            bodyEl.onpointerdown = (e) => {
+                e.stopPropagation();
+                clearLongPress();
+                longPressTimer = window.setTimeout(openMenu, 500);
+            };
+            bodyEl.onpointerup = clearLongPress;
+            bodyEl.onpointercancel = clearLongPress;
+            bodyEl.onpointerleave = clearLongPress;
+            annEl.onclick = (e) => {
+                e.stopPropagation();
+                clearLongPress();
+                if (didLongPress) {
+                    didLongPress = false;
+                    return;
+                }
+                const isExpanded = annEl.dataset.expanded === "true";
+                annEl.dataset.expanded = isExpanded ? "false" : "true";
+                if (isExpanded) menuEl.dataset.open = "false";
+            };
+            elements.push(annEl);
+        }
+        return elements;
+    }, [annotations, bilingualTranslationEnabled, chapter, collapseBilingualTranslation, onCopyAnnotation, onDeleteAnnotation]);
+
     // Load PDF document once per book.
     useEffect(() => {
         let cancelled = false;
@@ -177,124 +303,6 @@ export function PdfPageRenderer({
                 const fragment = document.createDocumentFragment();
                 const pageWrappers = new Map<number, HTMLDivElement>();
 
-                const createAnnotationPin = (pageNum: number) => {
-                    if (!chapter?.paragraphPages || !annotations?.length) return [] as HTMLDivElement[];
-                    const elements: HTMLDivElement[] = [];
-                    for (const ann of annotations) {
-                        const pIdx = ann.paragraphIndex;
-                        if (pIdx < 0 || pIdx >= (chapter.paragraphPages?.length || 0)) continue;
-                        if (chapter.paragraphPages[pIdx] !== pageNum) continue;
-                        const yRatio = chapter.paragraphYPositions?.[pIdx] ?? 0.5;
-
-                        const annEl = document.createElement("div");
-                        annEl.className = "reading-ann-pin";
-                        annEl.style.top = `${yRatio * 100}%`;
-                        annEl.dataset.expanded = "false";
-                        annEl.dataset.noNav = "true";
-                        const tagEl = document.createElement("span");
-                        tagEl.className = "reading-ann-pin-tag";
-                        tagEl.textContent = `💬 ${ann.characterName}`;
-
-                        const bodyEl = document.createElement("div");
-                        bodyEl.className = "reading-ann-pin-body";
-
-                        const nameEl = document.createElement("span");
-                        nameEl.className = "reading-annotation-name";
-                        nameEl.textContent = ann.characterName;
-
-                        const textEl = document.createElement("div");
-                        textEl.className = "reading-annotation-text";
-
-                        const bilingual = bilingualTranslationEnabled ? splitBilingualText(ann.content) : null;
-                        if (!bilingual) {
-                            textEl.textContent = ann.content;
-                        } else {
-                            const originalEl = document.createElement("div");
-                            originalEl.textContent = bilingual.original;
-
-                            const toggleBtn = document.createElement("button");
-                            toggleBtn.type = "button";
-                            toggleBtn.className = "chat-bilingual-toggle reading-annotation-bilingual-toggle";
-                            toggleBtn.textContent = collapseBilingualTranslation ? "中文" : "收起中文";
-
-                            const translationEl = document.createElement("div");
-                            translationEl.className = "reading-annotation-translation";
-                            translationEl.textContent = bilingual.translated;
-                            translationEl.style.display = collapseBilingualTranslation ? "none" : "block";
-
-                            toggleBtn.onclick = (e) => {
-                                e.stopPropagation();
-                                const expanded = translationEl.style.display !== "none";
-                                translationEl.style.display = expanded ? "none" : "block";
-                                toggleBtn.textContent = expanded ? "中文" : "收起中文";
-                            };
-
-                            textEl.append(originalEl, toggleBtn, translationEl);
-                        }
-
-                        const menuEl = document.createElement("div");
-                        menuEl.className = "ctx-menu reading-annotation-menu";
-
-                        const copyBtn = document.createElement("button");
-                        copyBtn.className = "ctx-menu-btn";
-                        copyBtn.textContent = "复制";
-                        copyBtn.onclick = (e) => {
-                            e.stopPropagation();
-                            onCopyAnnotation?.(ann.content);
-                            menuEl.dataset.open = "false";
-                        };
-
-                        const deleteBtn = document.createElement("button");
-                        deleteBtn.className = "ctx-menu-btn ctx-menu-btn-danger";
-                        deleteBtn.textContent = "删除";
-                        deleteBtn.onclick = (e) => {
-                            e.stopPropagation();
-                            onDeleteAnnotation?.(ann.id);
-                            menuEl.dataset.open = "false";
-                        };
-
-                        menuEl.dataset.open = "false";
-                        menuEl.append(copyBtn, deleteBtn);
-                        bodyEl.append(nameEl, textEl, menuEl);
-                        annEl.append(tagEl, bodyEl);
-
-                        let longPressTimer: number | null = null;
-                        let didLongPress = false;
-                        const clearLongPress = () => {
-                            if (longPressTimer !== null) {
-                                window.clearTimeout(longPressTimer);
-                                longPressTimer = null;
-                            }
-                        };
-                        const openMenu = () => {
-                            annEl.dataset.expanded = "true";
-                            menuEl.dataset.open = "true";
-                            didLongPress = true;
-                        };
-                        bodyEl.onpointerdown = (e) => {
-                            e.stopPropagation();
-                            clearLongPress();
-                            longPressTimer = window.setTimeout(openMenu, 500);
-                        };
-                        bodyEl.onpointerup = clearLongPress;
-                        bodyEl.onpointercancel = clearLongPress;
-                        bodyEl.onpointerleave = clearLongPress;
-                        annEl.onclick = (e) => {
-                            e.stopPropagation();
-                            clearLongPress();
-                            if (didLongPress) {
-                                didLongPress = false;
-                                return;
-                            }
-                            const isExpanded = annEl.dataset.expanded === "true";
-                            annEl.dataset.expanded = isExpanded ? "false" : "true";
-                            if (isExpanded) menuEl.dataset.open = "false";
-                        };
-                        elements.push(annEl);
-                    }
-                    return elements;
-                };
-
                 const renderRadius = Math.max(0, Math.min(8, Math.round(preloadRadius) || 0));
                 const buildRenderOrder = (centerPage: number) => {
                     const ordered = [centerPage];
@@ -357,7 +365,7 @@ export function PdfPageRenderer({
 
                         renderedPagesRef.current.add(pageNum);
                         pageWrapper.style.height = `${cssHeight}px`;
-                        pageWrapper.replaceChildren(canvas, ...createAnnotationPin(pageNum));
+                        pageWrapper.replaceChildren(canvas);
                         } finally {
                             activeRendersRef.current -= 1;
                         }
@@ -459,6 +467,8 @@ export function PdfPageRenderer({
 
                 if (!cancelled && renderSeq === renderSeqRef.current) {
                     setLoading(false);
+                    // 通知批注钉同步 effect：整页渲染完成，可以重放批注钉
+                    setRenderDone((v) => v + 1);
                 }
 
                 return () => {
@@ -486,7 +496,22 @@ export function PdfPageRenderer({
             cleanupRef.current?.();
             cleanupRef.current = null;
         };
-    }, [bilingualTranslationEnabled, chapter, collapseBilingualTranslation, docVersion, onCurrentPage, annotations, scale, zoom, preloadRadius, preloadEnabled]);
+    // 渲染 effect 只依赖文档与渲染参数；chapter（文本层数据）/annotations（批注）变化不再触发整本重建。
+    }, [docVersion, onCurrentPage, preloadEnabled, preloadRadius, scale, zoom]);
+
+    // 批注钉同步：文本层更新（chapter 变化）/批注增删/双语开关变化时，只重放批注钉，不重建页面。
+    // 与渲染 effect 解耦——渲染 effect 不再依赖 chapter/annotations，开自动批注/生成批注也不闪烁。
+    useEffect(() => {
+        const container = canvasContainerRef.current;
+        if (!container) return;
+        for (const child of Array.from(container.children)) {
+            const pageNum = Number((child as HTMLElement).dataset.page);
+            if (!pageNum) continue;
+            child.querySelectorAll(".reading-ann-pin").forEach((pin) => pin.remove());
+            const pins = createAnnotationPin(pageNum);
+            if (pins.length) child.append(...pins);
+        }
+    }, [createAnnotationPin, renderDone]);
 
     useEffect(() => {
         if (!jumpToPage || !canvasContainerRef.current || !wrapperRef.current) return;
