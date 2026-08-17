@@ -1094,6 +1094,7 @@ export async function generateGroupOfflineChatCompletion(
         signal: options?.signal,
         onReasoning: (t: string) => { reasoning = t; },
     };
+    let rawOutput: string;
     if (isChatStreamingEnabled() && options?.onStreamDelta) {
         const streamResult = await sendLLMStreamRequest(config, preset, llmMessages, regexes, meta, {
             appId: "group_chat",

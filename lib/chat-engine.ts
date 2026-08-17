@@ -2013,6 +2013,7 @@ export async function generateOfflineChatCompletion(
         signal: options?.signal,
         onReasoning: (t: string) => { reasoning = t; },
     };
+    let rawOutput: string;
     if (isChatStreamingEnabled() && options?.onStreamDelta) {
         // 线下流式：正文边生成边通过 onStreamDelta 交给 UI 做实时预览；
         // 摘要补提仍走整段请求（输出短，无需流式）。
