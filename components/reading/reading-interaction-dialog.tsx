@@ -227,6 +227,52 @@ export function ReadingInteractionDialog({ onClose }: Props) {
                         重置悬浮球位置
                     </button>
                 </section>
+
+                <section className="reading-settings-group">
+                    <div className="reading-settings-heading">
+                        <Settings size={15} />
+                        <span>PDF 渲染</span>
+                    </div>
+                    <div className="reading-settings-toggle-row">
+                        <span className="reading-settings-toggle-label">预加载后续页</span>
+                        <Toggle
+                            checked={config.pdfPreloadEnabled !== false}
+                            onChange={(next) => setConfig((prev) => ({ ...prev, pdfPreloadEnabled: next }))}
+                        />
+                    </div>
+                    <p className="reading-settings-inline-note">
+                        <span>开启后阅读 PDF 时会提前渲染当前页之后的页面，滚动更平滑；关闭则只渲染屏幕内的页。</span>
+                    </p>
+                    <div className="reading-settings-inline-note">
+                        <span>页面缩放率</span>
+                        <span>{Math.round((config.pdfZoom ?? 1) * 100)}%</span>
+                    </div>
+                    <input
+                        type="range"
+                        className="w-full my-1"
+                        min={0.5}
+                        max={2}
+                        step={0.05}
+                        value={config.pdfZoom ?? 1}
+                        onChange={(e) => setConfig((prev) => ({ ...prev, pdfZoom: Number(e.target.value) }))}
+                    />
+                    <div className="reading-settings-inline-note">
+                        <span>一次渲染页数（当前页前后各几页）</span>
+                        <span>{config.pdfPreloadRadius ?? 3} 页</span>
+                    </div>
+                    <input
+                        type="range"
+                        className="w-full my-1"
+                        min={1}
+                        max={8}
+                        step={1}
+                        value={config.pdfPreloadRadius ?? 3}
+                        onChange={(e) => setConfig((prev) => ({ ...prev, pdfPreloadRadius: Number(e.target.value) }))}
+                    />
+                    <p className="reading-settings-inline-note">
+                        <span>提示：一次渲染页数过少时，滑动到未渲染的页会反复渲染，造成闪烁卡顿；调大并开启预加载可缓解。缩放率调大后一页更接近一屏。</span>
+                    </p>
+                </section>
             </div>
         </ContentDialog>
     );

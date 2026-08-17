@@ -377,7 +377,8 @@ export function PdfPageRenderer({
                     pageWrapper.style.width = `${effectiveWidth}px`;
                     pageWrapper.style.height = `${defaultCssHeight}px`;
                     pageWrapper.dataset.page = String(i);
-                    pageWrapper.dataset.noNav = "true";
+                    // 注意：页面容器不能标 data-no-nav，否则点击页面唤不出沉浸菜单
+                    // （底部翻页/批注/设置按钮）。批注钉与「点击恢复原始大小」自身仍保留 noNav。
 
                     const placeholder = document.createElement("div");
                     placeholder.style.width = "100%";
