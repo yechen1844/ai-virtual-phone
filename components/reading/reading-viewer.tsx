@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from "react";
-import { Bot, ChevronDown, ChevronRight, Languages, Menu, Minus, PenLine, SendHorizontal, X, ZoomIn } from "lucide-react";
+import { Bot, ChevronDown, ChevronRight, Languages, Menu, Minus, PenLine, Rocket, SendHorizontal, X, ZoomIn } from "lucide-react";
 import {
     loadChapters,
     loadProgress,
@@ -281,6 +281,10 @@ export function ReadingViewer({ book, onBack }: Props) {
     const [showReadingSettings, setShowReadingSettings] = useState(false);
     const [showNavigationDialog, setShowNavigationDialog] = useState(false);
     const [pdfJumpPage, setPdfJumpPage] = useState<number | undefined>(undefined);
+    /** PDF 手动预批注对话框：自定义起始页/结束页，确认后立即预解析并预生成该范围批注 */
+    const [pdfPrefetchDialogOpen, setPdfPrefetchDialogOpen] = useState(false);
+    const [pdfPrefetchStartInput, setPdfPrefetchStartInput] = useState("");
+    const [pdfPrefetchEndInput, setPdfPrefetchEndInput] = useState("");
     const [chaptersLoaded, setChaptersLoaded] = useState(false);
     const touchStartRef = useRef({ x: 0, y: 0 });
     const [activeMessageId, setActiveMessageId] = useState<string | null>(null);
@@ -921,6 +925,45 @@ export function ReadingViewer({ book, onBack }: Props) {
         if (!request) return;
         generatedBatchesRef.current.delete(`${book.id}:${companionId || ""}:${request.key}`);
         await executeBatchAnnotation(request, { force: true });
+    };
+
+    /** 打开手动预批注对话框：默认预生成「当前页起一个批次」的范围 */
+    const openPdfPrefetchDialog = () => {
+        const start = Math.max(1, pdfCurrentPage || 1);
+        const batch = Math.max(1, readingConfig.pdfAnnotationBatchSize ?? 5);
+        const end = Math.min(pdfTotalPages || (start + batch - 1), start + batch - 1);
+        setPdfPrefetchStartInput(String(start));
+        setPdfPrefetchEndInput(String(end));
+        setPdfPrefetchDialogOpen(true);
+    };
+
+    /** 手动预批注：按用户自定义的页码范围，预解析文本层并立即生成批注 */
+    const handlePdfManualPrefetch = async () => {
+        setPdfPrefetchDialogOpen(false);
+        if (!companionId) return;
+        const total = Math.max(1, pdfTotalPages || 1);
+        const start = Math.max(1, Math.min(total, Math.round(Number(pdfPrefetchStartInput) || 1)));
+        const end = Math.max(start, Math.min(total, Math.round(Number(pdfPrefetchEndInput) || start)));
+        try {
+            // 预解析指定范围的文本层（渲染已解耦，不会重建页面）
+            const merged = await ensurePdfPageRangeParsed(start, end);
+            const refs = buildParagraphRefsFromChapters(merged);
+            const items = refs.filter((item) => (item.pageNum || 0) >= start && (item.pageNum || 0) <= end && item.text.trim());
+            if (items.length === 0) {
+                setAnnotationError("所选范围没有可批注的文本");
+                return;
+            }
+            const request: AnnotationBatchRequest = {
+                key: `pdf:${start}:${end}:manual`,
+                title: `第${start}-${end}页`,
+                size: end - start + 1,
+                items,
+            };
+            await executeBatchAnnotation(request, { force: true });
+        } catch (err) {
+            console.error("[Reading] PDF manual prefetch error:", err);
+            setAnnotationError(`预批注失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
     };
 
     const openNavigationDialog = () => {
@@ -2253,6 +2296,17 @@ export function ReadingViewer({ book, onBack }: Props) {
                             <PenLine size={22} strokeWidth={1.7} />
                             <span>写批注</span>
                         </button>
+                        {isPdf && (
+                            <button
+                                type="button"
+                                className="reading-footer-icon-btn"
+                                onClick={openPdfPrefetchDialog}
+                                disabled={generating || !companionId}
+                            >
+                                <Rocket size={22} strokeWidth={1.7} />
+                                <span>预批注</span>
+                            </button>
+                        )}
                         <button
                             type="button"
                             className="reading-footer-icon-btn"
@@ -2501,6 +2555,42 @@ export function ReadingViewer({ book, onBack }: Props) {
                                 </div>
                             </>
                         )}
+                    </div>
+                </ContentDialog>
+            )}
+            {pdfPrefetchDialogOpen && (
+                <ContentDialog
+                    title="PDF 预批注"
+                    confirmLabel="开始预批注"
+                    cancelLabel="取消"
+                    onConfirm={() => { void handlePdfManualPrefetch(); }}
+                    onCancel={() => setPdfPrefetchDialogOpen(false)}
+                >
+                    <div className="reading-settings-grid">
+                        <p className="reading-settings-inline-note">
+                            <span>为指定页码范围提前生成批注（先解析文本层再生成，翻到那里就是现成的）。</span>
+                        </p>
+                        <div className="reading-settings-inline-note">
+                            <span>起始页</span>
+                            <input
+                                value={pdfPrefetchStartInput}
+                                onChange={(e) => setPdfPrefetchStartInput(e.target.value.replace(/[^\d]/g, ""))}
+                                className="ui-input"
+                                inputMode="numeric"
+                            />
+                        </div>
+                        <div className="reading-settings-inline-note">
+                            <span>结束页</span>
+                            <input
+                                value={pdfPrefetchEndInput}
+                                onChange={(e) => setPdfPrefetchEndInput(e.target.value.replace(/[^\d]/g, ""))}
+                                className="ui-input"
+                                inputMode="numeric"
+                            />
+                        </div>
+                        <p className="reading-settings-inline-note">
+                            <span>当前第 {Math.max(1, pdfCurrentPage)} / {Math.max(1, pdfTotalPages)} 页。页码范围越大，批注生成越久。</span>
+                        </p>
                     </div>
                 </ContentDialog>
             )}

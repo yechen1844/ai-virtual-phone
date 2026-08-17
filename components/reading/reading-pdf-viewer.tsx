@@ -78,6 +78,8 @@ export function PdfPageRenderer({
     const [error, setError] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [docVersion, setDocVersion] = useState(0);
+    /** 上一次完成渲染的 pdf 文档对象：换书（docVersion 变化）时旧 canvas 一律不复用，防止串书 */
+    const renderedPdfRef = useRef<any | null>(null);
     const scaleRef = useRef(1);
     const [scale, setScale] = useState(1);
     const renderedPagesRef = useRef(new Set<number>());
@@ -300,6 +302,19 @@ export function PdfPageRenderer({
                 const defaultCssHeight = effectiveWidth * (firstViewport.height / firstViewport.width);
                 firstPage.cleanup?.();
 
+                // 换书（pdf 对象变化）时旧 canvas 一律丢弃重渲；同书重建（缩放/预渲染设置变化）时尽量复用已渲染的 canvas，
+                // 避免整本闪回米黄色占位块。
+                const isNewPdf = renderedPdfRef.current !== pdf;
+                if (isNewPdf) renderedPdfRef.current = pdf;
+                const reusableCanvases = new Map<number, HTMLCanvasElement>();
+                if (!isNewPdf) {
+                    for (const child of Array.from(container.children)) {
+                        const n = Number((child as HTMLElement).dataset.page);
+                        const canvas = (child as HTMLElement).querySelector("canvas[data-page]") as HTMLCanvasElement | null;
+                        if (n && canvas) reusableCanvases.set(n, canvas);
+                    }
+                }
+
                 const fragment = document.createDocumentFragment();
                 const pageWrappers = new Map<number, HTMLDivElement>();
 
@@ -388,12 +403,20 @@ export function PdfPageRenderer({
                     // 注意：页面容器不能标 data-no-nav，否则点击页面唤不出沉浸菜单
                     // （底部翻页/批注/设置按钮）。批注钉与「点击恢复原始大小」自身仍保留 noNav。
 
-                    const placeholder = document.createElement("div");
-                    placeholder.style.width = "100%";
-                    placeholder.style.height = "100%";
-                    placeholder.style.borderRadius = "12px";
-                    placeholder.style.background = "rgba(255, 252, 237, 0.5)";
-                    pageWrapper.appendChild(placeholder);
+                    // 同书重建且缩放率未变：复用已渲染的 canvas，不闪回米黄占位
+                    const reused = reusableCanvases.get(i);
+                    if (reused && Math.abs(parseFloat(reused.style.width || "0") - effectiveWidth) < 1) {
+                        pageWrapper.style.height = reused.style.height || `${defaultCssHeight}px`;
+                        pageWrapper.replaceChildren(reused);
+                        renderedPagesRef.current.add(i);
+                    } else {
+                        const placeholder = document.createElement("div");
+                        placeholder.style.width = "100%";
+                        placeholder.style.height = "100%";
+                        placeholder.style.borderRadius = "12px";
+                        placeholder.style.background = "rgba(255, 252, 237, 0.5)";
+                        pageWrapper.appendChild(placeholder);
+                    }
 
                     pageWrappers.set(i, pageWrapper);
                     fragment.appendChild(pageWrapper);
