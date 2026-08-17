@@ -17,31 +17,53 @@ export type DebugInfo = {
 
 const MAX_API_LOGS = 50;
 const API_LOGS_KEY = "ai_phone_api_logs_v1";
+// 工坊（QA 助手）专用调用记录：与聊天/记忆等底层调用日志彻底隔离，
+// 只在工坊界面右上角「调用记录」里查看，绝不混进聊天页的「底层调用大模型日志」。
+const QA_LOGS_KEY = "ai_phone_qa_api_logs_v1";
 registerKvMigration(API_LOGS_KEY);
+registerKvMigration(QA_LOGS_KEY);
 
-function _loadLogs(): DebugInfo[] {
+function _loadLogs(key: string): DebugInfo[] {
     try {
-        const raw = typeof window !== "undefined" ? kvGet(API_LOGS_KEY) : null;
+        const raw = typeof window !== "undefined" ? kvGet(key) : null;
         return raw ? JSON.parse(raw) as DebugInfo[] : [];
     } catch { return []; }
 }
-function _saveLogs(logs: DebugInfo[]): void {
-    try { kvSet(API_LOGS_KEY, JSON.stringify(logs)); } catch { /* quota exceeded — ignore */ }
+function _saveLogs(key: string, logs: DebugInfo[]): void {
+    try { kvSet(key, JSON.stringify(logs)); } catch { /* quota exceeded — ignore */ }
 }
 
-export function getApiLogs(): DebugInfo[] { return _loadLogs(); }
+export function getApiLogs(): DebugInfo[] { return _loadLogs(API_LOGS_KEY); }
 export function clearApiLogs(): void { try { kvRemove(API_LOGS_KEY); } catch { } }
+
+/** 工坊专用调用记录（仅工坊 UI 读取，与底层日志完全隔离）。 */
+export function getQaApiLogs(): DebugInfo[] { return _loadLogs(QA_LOGS_KEY); }
+export function clearQaApiLogs(): void { try { kvRemove(QA_LOGS_KEY); } catch { } }
 
 /** 追加一条调用日志（id/timestamp 自动生成），超出上限时裁掉最旧的记录。 */
 export function pushApiLog(entry: Omit<DebugInfo, "id" | "timestamp">): void {
+    // 工坊（QA 助手）的调用单独归档，不进聊天页的底层调用日志
+    if (entry.characterName === "工坊") {
+        try {
+            const logs = _loadLogs(QA_LOGS_KEY);
+            logs.push({
+                ...entry,
+                id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                timestamp: new Date().toISOString(),
+            });
+            while (logs.length > MAX_API_LOGS) logs.shift();
+            _saveLogs(QA_LOGS_KEY, logs);
+        } catch { /* 日志写入失败不影响主流程 */ }
+        return;
+    }
     try {
-        const logs = _loadLogs();
+        const logs = _loadLogs(API_LOGS_KEY);
         logs.push({
             ...entry,
             id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             timestamp: new Date().toISOString(),
         });
         while (logs.length > MAX_API_LOGS) logs.shift();
-        _saveLogs(logs);
+        _saveLogs(API_LOGS_KEY, logs);
     } catch { /* 日志写入失败不影响主流程 */ }
 }

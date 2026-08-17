@@ -6652,6 +6652,51 @@
   color: var(--c-danger, #e5484d);
 }
 
+/* ── AI 原始回复：消息旁小按钮 + 底部弹窗内容 ── */
+.chat-raw-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--c-icon) 30%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--c-icon) 6%, transparent);
+  cursor: pointer;
+  color: var(--c-icon);
+  font-size: calc(11px * var(--app-text-scale, 1));
+  line-height: 1.4;
+  white-space: nowrap;
+  transition: opacity 0.12s ease;
+}
+.chat-raw-trigger:active {
+  opacity: 0.65;
+}
+.chat-raw-trigger-icon {
+  flex: 0 0 auto;
+  opacity: 0.85;
+}
+.chat-raw-sheet-label {
+  margin: 14px 0 6px;
+  font-size: calc(12px * var(--app-text-scale, 1));
+  font-weight: 600;
+  color: var(--c-warning, #e5484d);
+}
+.chat-raw-sheet-label:first-child {
+  margin-top: 0;
+}
+.chat-raw-sheet-pre {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--c-text) 6%, transparent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: calc(12.5px * var(--app-text-scale, 1));
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--c-text-title, var(--c-text));
+}
+
 /* ── 全屏特效设置弹窗（底部全宽弹层）── */
 .screen-fx-sheet {
   background: var(--c-page-body-bg);

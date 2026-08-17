@@ -647,8 +647,6 @@ function FollowUpSettingsEditor({ onBack }: { onBack: () => void }) {
 function ApiLogViewer({ onBack }: { onBack: () => void }) {
     const [logs, setLogs] = useState<DebugInfo[]>([]);
     const [expandedId, setExpandedId] = useState<string | null>(null);
-    // 「完整显示回复」开关：开启后所有日志直接完整展示 Prompt 与原始回复（不再折叠成条目）
-    const [showAll, setShowAll] = useState(false);
     // 来源过滤：hiddenSources 里记录被取消勾选的来源；空集 = 全部显示
     const [hiddenSources, setHiddenSources] = useState<Set<string>>(new Set());
 
@@ -702,17 +700,8 @@ function ApiLogViewer({ onBack }: { onBack: () => void }) {
                     </div>
                 ) : (
                     <>
-                        {/* 显示设置：完整显示开关 + 来源过滤复选框 */}
+                        {/* 显示设置：来源过滤复选框（查看原始回复请逐条展开，或到聊天界面点消息旁的「AI 原始回复」按钮） */}
                         <div className="menu-group">
-                            <div className="menu-item">
-                                <div className="menu-label-group">
-                                    <span className="menu-label">完整显示回复</span>
-                                    <span className="menu-desc">开启后所有日志直接展示完整 Prompt 与原始回复，无需逐条展开</span>
-                                </div>
-                                <div className="menu-right">
-                                    <Toggle checked={showAll} onChange={setShowAll} />
-                                </div>
-                            </div>
                             <div className="px-4 py-3 flex flex-col gap-2">
                                 <div className="flex items-center justify-between">
                                     <span className="menu-label">来源过滤</span>
@@ -746,7 +735,7 @@ function ApiLogViewer({ onBack }: { onBack: () => void }) {
                         ) : (
                         <div className="flex flex-col gap-3">
                             {visibleLogs.map(log => {
-                                const isOpen = showAll || expandedId === log.id;
+                                const isOpen = expandedId === log.id;
                                 return (
                                     <div key={log.id} className="menu-group">
                                         <button

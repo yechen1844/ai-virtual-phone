@@ -49,7 +49,7 @@ import { scheduleFollowUp, cancelFollowUp } from "@/lib/follow-up-service";
 import { useKeyboardDismissAutoSend } from "@/components/chat/use-keyboard-dismiss-auto-send";
 import { PENDING_REPLY_PREFIX } from "@/lib/friend-request-engine";
 import type { UserIdentity } from "@/components/settings/user-identity";
-import { AlertCircle, Blocks, Check, Trash2, User, ChevronLeft, ChevronRight, Clapperboard, Clock, Gift, Languages, Loader2, MoreHorizontal, X } from "lucide-react";
+import { AlertCircle, Blocks, Check, FileCode2, Trash2, User, ChevronLeft, ChevronRight, Clapperboard, Clock, Gift, Languages, Loader2, MoreHorizontal, X } from "lucide-react";
 import { setDebugChatState } from "@/lib/debug-store";
 import { SessionCustomCSS } from "@/components/ui/session-custom-css";
 import { setChatActive } from "@/lib/music-action-queue";
@@ -1280,6 +1280,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
     const [reasoningTranslateError, setReasoningTranslateError] = useState<string | null>(null);
     // 译文显示模式：对照（中文在上）/ 仅中文 / 仅原文
     const [reasoningViewMode, setReasoningViewMode] = useState<"both" | "zh" | "orig">("both");
+    // 「AI 原始回复」底部弹窗：存当前查看的原始回复文本（含思维链），null = 关闭
+    const [rawSheet, setRawSheet] = useState<{ text: string; reasoning?: string } | null>(null);
     useEffect(() => {
         setReasoningTranslation(null);
         setReasoningTranslating(false);
@@ -5446,6 +5448,20 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                                             defaultExpanded={session.collapseBilingualTranslation !== false ? false : true}
                                         />
                                     </div>
+                                    {/* 离线模式：查看该轮 AI 原始回复（含思维链） */}
+                                    {turn.rawText?.trim() && (
+                                        <button
+                                            type="button"
+                                            className="chat-raw-trigger"
+                                            style={{ marginLeft: 40 }}
+                                            onClick={(e) => { e.stopPropagation(); setRawSheet({ text: turn.rawText!, reasoning: turn.thinkingText || turn.reasoningText || undefined }); }}
+                                            aria-label="查看 AI 原始回复"
+                                            title="查看 AI 原始回复"
+                                        >
+                                            <FileCode2 size={12} strokeWidth={2} className="chat-raw-trigger-icon" />
+                                            <span>AI 原始回复</span>
+                                        </button>
+                                    )}
                                     {turn.summary.trim() && (
                                         <details className="chat-offline-summary-fold">
                                             <summary>摘要（{turn.summaryTag || "summary"}）</summary>
@@ -5654,6 +5670,12 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                     const isMediaBubble = (renderMsg.mediaType && CHAT_MEDIA_BUBBLE_TYPES.has(renderMsg.mediaType)) || isStandaloneHtmlPreview;
                     // Empty bubble: no visible content AND no visual media AND no folded panel.
                     const isEmptyBubble = !isVisualMedia && !visibleContent && uiRole(msg) !== "system" && !hasFoldedPanel;
+                    // 本条消息对应的 AI 原始回复：一整批回复共享同一份原文，取批首消息上存的那份
+                    const rawResponseForMsg = (msg.rawResponseText && msg.rawResponseText.trim())
+                        ? msg.rawResponseText
+                        : (msg.responseBatchId
+                            ? dedupedMessages.find(m => m.responseBatchId === msg.responseBatchId && m.rawResponseText && m.rawResponseText.trim())?.rawResponseText
+                            : undefined);
                     const selectableStoredId = getSelectableStoredMessageId(msg);
                     const isMultiSelectable = isMultiSelectMode && !!selectableStoredId && !hiddenEmpty;
                     const isMultiSelected = !!selectableStoredId && selectedMessageIds.has(selectableStoredId);
@@ -5910,6 +5932,28 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                                     </>
                                 )}
                             </div>
+                            {/* 查看 AI 原始回复：小展开按钮挂在每条 AI 回复气泡下方，点开看该条回复的模型原文（含思维链） */}
+                            {msg.role !== "user" && uiRole(msg) !== "system" && !isSilentThought && !isEmptyBubble && rawResponseForMsg && (
+                                <div className="chat-msg-wrapper" data-role={uiRole(msg)} style={{ marginTop: -8 }}>
+                                    <div className="w-[40px] shrink-0" />
+                                    <button
+                                        type="button"
+                                        className="chat-raw-trigger"
+                                        onClick={(e) => { e.stopPropagation(); setRawSheet({
+                                            text: rawResponseForMsg,
+                                            reasoning: renderMsg.reasoningText
+                                                || (msg.responseBatchId
+                                                    ? dedupedMessages.find(m => m.responseBatchId === msg.responseBatchId && m.reasoningText)?.reasoningText
+                                                    : undefined),
+                                        }); }}
+                                        aria-label="查看 AI 原始回复"
+                                        title="查看 AI 原始回复"
+                                    >
+                                        <FileCode2 size={12} strokeWidth={2} className="chat-raw-trigger-icon" />
+                                        <span>AI 原始回复</span>
+                                    </button>
+                                </div>
+                            )}
                             {/* Voice message: text transcription bubble */}
                             {renderMsg.mediaType === "audio" && voiceTextIds.has(msg.id) && renderMsg.mediaData?.label && (
                                 <div className={`chat-msg-wrapper`} data-role={uiRole(msg)} style={{ marginTop: -12 }}>
@@ -6355,6 +6399,44 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                             {(reasoningViewMode !== "zh" || !reasoningTranslation) && (
                                 <BilingualTextBlock text={reasoningSheetText} mode="markdown" defaultExpanded />
                             )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* AI 原始回复底部弹窗：包含思维链（如有）与模型原始输出 */}
+            {rawSheet && (
+                <div
+                    className="modal-overlay modal-overlay-bottom"
+                    data-ui="modal"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-label="AI 原始回复"
+                    onClick={() => setRawSheet(null)}
+                >
+                    <div className="modal-sheet chat-reasoning-sheet" onClick={(e) => e.stopPropagation()}>
+                        <div className="chat-reasoning-sheet-handle" />
+                        <div className="chat-reasoning-sheet-header">
+                            <span className="chat-reasoning-sheet-close-spacer" />
+                            <span className="chat-reasoning-sheet-title">AI 原始回复</span>
+                            <button
+                                type="button"
+                                className="chat-reasoning-sheet-close"
+                                onClick={() => setRawSheet(null)}
+                                aria-label="关闭"
+                            >
+                                <X size={18} strokeWidth={2} />
+                            </button>
+                        </div>
+                        <div className="chat-reasoning-sheet-body">
+                            {rawSheet.reasoning && (
+                                <>
+                                    <div className="chat-raw-sheet-label">思考过程</div>
+                                    <BilingualTextBlock text={rawSheet.reasoning} mode="markdown" defaultExpanded />
+                                </>
+                            )}
+                            <div className="chat-raw-sheet-label">模型原文</div>
+                            <pre className="chat-raw-sheet-pre">{rawSheet.text}</pre>
                         </div>
                     </div>
                 </div>
