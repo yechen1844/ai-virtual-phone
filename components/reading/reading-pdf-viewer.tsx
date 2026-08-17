@@ -18,12 +18,19 @@ type Props = {
     jumpToPage?: number;
     onCopyAnnotation?: (text: string) => void;
     onDeleteAnnotation?: (annotationId: string) => void;
+    /** 页面缩放率：1=按容器宽度原样，>1 放大（如 1.5 一页近似一屏） */
+    zoom?: number;
+    /** 当前页前后各预渲染几页（懒加载粒度） */
+    preloadRadius?: number;
+    /** 是否预加载后续页（阅读时提前渲染视口之外的页，滚动更平滑） */
+    preloadEnabled?: boolean;
 };
 
 const PDFJS_VERSION = "3.11.174";
 const PDFJS_CDN = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${PDFJS_VERSION}`;
-const PRELOAD_RADIUS = 3;
 const PRELOAD_ROOT_MARGIN = "1800px 0px";
+/** 渲染并发上限：预加载页多时限制同时光栅化的页数，避免一次把主线程塞满导致卡顿 */
+const MAX_CONCURRENT_RENDERS = 2;
 let _pdfjsPromise: Promise<any> | null = null;
 
 function loadPdfjs(): Promise<any> {
@@ -57,12 +64,17 @@ export function PdfPageRenderer({
     jumpToPage,
     onCopyAnnotation,
     onDeleteAnnotation,
+    zoom = 1,
+    preloadRadius = 3,
+    preloadEnabled = true,
 }: Props) {
     const canvasContainerRef = useRef<HTMLDivElement>(null);
     const wrapperRef = useRef<HTMLDivElement>(null);
     const pdfDocRef = useRef<any | null>(null);
     const observerRef = useRef<IntersectionObserver | null>(null);
     const renderSeqRef = useRef(0);
+    /** 正在光栅化的页数（并发限流用） */
+    const activeRendersRef = useRef(0);
     const [error, setError] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [docVersion, setDocVersion] = useState(0);
@@ -85,11 +97,13 @@ export function PdfPageRenderer({
     const getRenderMetrics = () => {
         const scrollParent = canvasContainerRef.current?.closest("[data-ui='body']") as HTMLElement | null;
         const cssWidth = wrapperRef.current?.clientWidth || scrollParent?.clientWidth || 350;
+        // 页面有效宽度 = 容器宽度 × 用户缩放率（zoom 可调，放大后一页接近一屏）
+        const effectiveWidth = Math.max(1, cssWidth * zoom);
         // 渲染分辨率封顶 2 倍：@3x 设备上 3 倍 canvas 像素量是 2 倍的 2.25 倍，
         // PDF.js 光栅化与 canvas 上传都明显变慢，是滚动卡顿的重要放大器；
         // 手机上 2x 已足够清晰（4 倍像素），降到 2x 渲染速度大幅提升。
         const renderDpr = Math.min(Math.max(window.devicePixelRatio || 1, 1), 2);
-        return { cssWidth, scrollParent, renderDpr };
+        return { cssWidth, effectiveWidth, scrollParent, renderDpr };
     };
 
     // Load PDF document once per book.
@@ -146,16 +160,18 @@ export function PdfPageRenderer({
 
         (async () => {
             try {
+                // 记录重建前正在看的页：缩放率/预渲染设置变化导致重建后仍停留在该页，避免跳位
+                const prevReportedPage = reportedPageRef.current;
                 observerRef.current?.disconnect();
                 renderedPagesRef.current.clear();
                 renderingPagesRef.current.clear();
                 reportedPageRef.current = 0;
 
-                const { cssWidth, scrollParent, renderDpr } = getRenderMetrics();
+                const { effectiveWidth, scrollParent, renderDpr } = getRenderMetrics();
                 const pageRoot = scrollParent || wrapperRef.current;
                 const firstPage = await pdf.getPage(1);
                 const firstViewport = firstPage.getViewport({ scale: 1 });
-                const defaultCssHeight = cssWidth * (firstViewport.height / firstViewport.width);
+                const defaultCssHeight = effectiveWidth * (firstViewport.height / firstViewport.width);
                 firstPage.cleanup?.();
 
                 const fragment = document.createDocumentFragment();
@@ -279,9 +295,10 @@ export function PdfPageRenderer({
                     return elements;
                 };
 
+                const renderRadius = Math.max(0, Math.min(8, Math.round(preloadRadius) || 0));
                 const buildRenderOrder = (centerPage: number) => {
                     const ordered = [centerPage];
-                    for (let offset = 1; offset <= PRELOAD_RADIUS; offset += 1) {
+                    for (let offset = 1; offset <= renderRadius; offset += 1) {
                         ordered.push(centerPage + offset);
                         ordered.push(centerPage - offset);
                     }
@@ -289,6 +306,7 @@ export function PdfPageRenderer({
                 };
 
                 const preloadNeighborhood = (centerPage: number) => {
+                    if (!preloadEnabled) return; // 关闭预加载：只渲染进入视口的页
                     for (const pageNum of buildRenderOrder(centerPage)) {
                         void renderPage(pageNum);
                     }
@@ -306,10 +324,18 @@ export function PdfPageRenderer({
                     const pageWrapper = pageWrappers.get(pageNum);
                     if (!pageWrapper) return;
                     const renderTask = (async () => {
+                        // 并发限流：同时最多光栅化 MAX_CONCURRENT_RENDERS 页，
+                        // 预加载页多时不把主线程一次性塞满（轮询等待，16ms 一拍）
+                        while (activeRendersRef.current >= MAX_CONCURRENT_RENDERS) {
+                            if (cancelled || renderSeq !== renderSeqRef.current) return;
+                            await new Promise<void>((resolve) => setTimeout(resolve, 16));
+                        }
+                        activeRendersRef.current += 1;
+                        try {
                         const page = await pdf.getPage(pageNum);
                         const viewport = page.getViewport({ scale: 1 });
-                        const cssHeight = cssWidth * (viewport.height / viewport.width);
-                        const bufferWidth = Math.round(cssWidth * renderDpr * scale);
+                        const cssHeight = effectiveWidth * (viewport.height / viewport.width);
+                        const bufferWidth = Math.round(effectiveWidth * renderDpr * scale);
                         const bufferHeight = Math.round(cssHeight * renderDpr * scale);
                         const renderScale = bufferWidth / viewport.width;
                         const scaledViewport = page.getViewport({ scale: renderScale });
@@ -317,7 +343,7 @@ export function PdfPageRenderer({
                         const canvas = document.createElement("canvas");
                         canvas.width = bufferWidth;
                         canvas.height = bufferHeight;
-                        canvas.style.width = `${cssWidth}px`;
+                        canvas.style.width = `${effectiveWidth}px`;
                         canvas.style.height = `${cssHeight}px`;
                         canvas.style.display = "block";
                         canvas.dataset.page = String(pageNum);
@@ -332,6 +358,9 @@ export function PdfPageRenderer({
                         renderedPagesRef.current.add(pageNum);
                         pageWrapper.style.height = `${cssHeight}px`;
                         pageWrapper.replaceChildren(canvas, ...createAnnotationPin(pageNum));
+                        } finally {
+                            activeRendersRef.current -= 1;
+                        }
                     })();
 
                     renderingPagesRef.current.set(pageNum, renderTask);
@@ -345,7 +374,7 @@ export function PdfPageRenderer({
                 for (let i = 1; i <= pdf.numPages; i++) {
                     const pageWrapper = document.createElement("div");
                     pageWrapper.style.position = "relative";
-                    pageWrapper.style.width = `${cssWidth}px`;
+                    pageWrapper.style.width = `${effectiveWidth}px`;
                     pageWrapper.style.height = `${defaultCssHeight}px`;
                     pageWrapper.dataset.page = String(i);
                     pageWrapper.dataset.noNav = "true";
@@ -417,7 +446,8 @@ export function PdfPageRenderer({
                     observerRef.current.observe(child);
                 }
 
-                const initialPage = Math.min(Math.max(jumpToPage || 1, 1), pdf.numPages);
+                // 优先跳转目标页；没有跳转目标时停留在重建前正在读的页（缩放/预渲染设置调整后不跳位）
+                const initialPage = Math.min(Math.max(jumpToPage || prevReportedPage || 1, 1), pdf.numPages);
                 await renderPage(initialPage);
                 preloadNeighborhood(initialPage);
                 scheduleCurrentPageReport();
@@ -455,7 +485,7 @@ export function PdfPageRenderer({
             cleanupRef.current?.();
             cleanupRef.current = null;
         };
-    }, [bilingualTranslationEnabled, chapter, collapseBilingualTranslation, docVersion, onCurrentPage, annotations, scale]);
+    }, [bilingualTranslationEnabled, chapter, collapseBilingualTranslation, docVersion, onCurrentPage, annotations, scale, zoom, preloadRadius, preloadEnabled]);
 
     useEffect(() => {
         if (!jumpToPage || !canvasContainerRef.current || !wrapperRef.current) return;

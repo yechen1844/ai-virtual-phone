@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from "react";
-import { Bot, ChevronDown, ChevronRight, Languages, Menu, Minus, PenLine, SendHorizontal, X } from "lucide-react";
+import { Bot, ChevronDown, ChevronRight, Languages, Menu, Minus, PenLine, SendHorizontal, X, ZoomIn } from "lucide-react";
 import {
     loadChapters,
     loadProgress,
@@ -1951,6 +1951,15 @@ export function ReadingViewer({ book, onBack }: Props) {
         ? chatMessages.find((msg) => msg.id === readingMessageMenu.messageId) || null
         : null;
 
+    /** 更新 PDF 渲染配置（缩放率/预渲染页数/预加载开关），改动即时生效并持久化 */
+    const updatePdfRenderConfig = (patch: { pdfZoom?: number; pdfPreloadRadius?: number; pdfPreloadEnabled?: boolean }) => {
+        setReadingConfig((prev) => {
+            const next = { ...prev, ...patch };
+            saveReadingInteractionConfig(next);
+            return next;
+        });
+    };
+
     return (
         <div className="reading-app-surface absolute inset-0 z-[100] flex flex-col bg-[var(--c-page-body-bg)]" data-immersive={immersive} style={{ paddingTop: "var(--page-header-safe-top, 48px)" }}>
             {/* Page flip overlay */}
@@ -2050,6 +2059,9 @@ export function ReadingViewer({ book, onBack }: Props) {
                             jumpToPage={pdfJumpPage}
                             onCopyAnnotation={copyToClipboard}
                             onDeleteAnnotation={(annotationId) => { void handleDeleteReadingAnnotation(annotationId); }}
+                            zoom={readingConfig.pdfZoom ?? 1}
+                            preloadRadius={readingConfig.pdfPreloadRadius ?? 3}
+                            preloadEnabled={readingConfig.pdfPreloadEnabled !== false}
                         />
                     </>
                 ) : !chaptersLoaded ? (
@@ -2444,7 +2456,7 @@ export function ReadingViewer({ book, onBack }: Props) {
             )}
             {showReadingSettings && (
                 <ContentDialog
-                    title="阅读双语翻译"
+                    title="阅读设置"
                     confirmLabel="完成"
                     cancelLabel="关闭"
                     onConfirm={() => setShowReadingSettings(false)}
@@ -2506,6 +2518,54 @@ export function ReadingViewer({ book, onBack }: Props) {
                                     }}
                                 />
                             </div>
+                        )}
+
+                        {isPdf && (
+                            <section className="reading-settings-group">
+                                <div className="reading-settings-heading">
+                                    <ZoomIn size={15} />
+                                    <span>PDF 渲染</span>
+                                </div>
+                                <div className="reading-settings-toggle-row">
+                                    <span className="reading-settings-toggle-label">预加载后续页</span>
+                                    <Toggle
+                                        checked={readingConfig.pdfPreloadEnabled !== false}
+                                        onChange={(next) => updatePdfRenderConfig({ pdfPreloadEnabled: next })}
+                                    />
+                                </div>
+                                <p className="reading-settings-inline-note">
+                                    <span>开启后阅读时会提前渲染当前页之后的页面，滚动更平滑；关闭则只渲染屏幕内的页。</span>
+                                </p>
+                                <div className="reading-settings-inline-note">
+                                    <span>页面缩放率</span>
+                                    <span>{Math.round((readingConfig.pdfZoom ?? 1) * 100)}%</span>
+                                </div>
+                                <input
+                                    type="range"
+                                    className="w-full my-1"
+                                    min={0.5}
+                                    max={2}
+                                    step={0.05}
+                                    value={readingConfig.pdfZoom ?? 1}
+                                    onChange={(e) => updatePdfRenderConfig({ pdfZoom: Number(e.target.value) })}
+                                />
+                                <div className="reading-settings-inline-note">
+                                    <span>一次渲染页数（当前页前后各几页）</span>
+                                    <span>{readingConfig.pdfPreloadRadius ?? 3} 页</span>
+                                </div>
+                                <input
+                                    type="range"
+                                    className="w-full my-1"
+                                    min={1}
+                                    max={8}
+                                    step={1}
+                                    value={readingConfig.pdfPreloadRadius ?? 3}
+                                    onChange={(e) => updatePdfRenderConfig({ pdfPreloadRadius: Number(e.target.value) })}
+                                />
+                                <p className="reading-settings-inline-note">
+                                    <span>提示：一次渲染页数过少时，滑动到未渲染的页会反复渲染，造成闪烁卡顿；调大并开启预加载可缓解。缩放率调大后一页更接近一屏。</span>
+                                </p>
+                            </section>
                         )}
                     </div>
                 </ContentDialog>

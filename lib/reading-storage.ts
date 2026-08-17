@@ -74,6 +74,12 @@ export type ReadingInteractionConfig = {
     annotationPrefetchThreshold: number;
     /** 共读讨论悬浮窗展开时是否自动滚动到最新消息（默认开启；用户可随后自由滑动打断） */
     chatAutoScrollOnOpen: boolean;
+    /** PDF 渲染：页面缩放率（1=按容器宽度原样，>1 放大；配合「一屏一页」使用） */
+    pdfZoom: number;
+    /** PDF 渲染：当前页前后各预渲染几页（懒加载粒度；过小会导致滚动到未渲染页反复渲染闪烁） */
+    pdfPreloadRadius: number;
+    /** PDF 预加载：开启后阅读时提前渲染后续页，滚动更平滑 */
+    pdfPreloadEnabled: boolean;
 };
 
 export const DEFAULT_READING_INTERACTION_CONFIG: ReadingInteractionConfig = {
@@ -86,6 +92,9 @@ export const DEFAULT_READING_INTERACTION_CONFIG: ReadingInteractionConfig = {
     autoAnnotatePrefetch: false,
     annotationPrefetchThreshold: 2 / 3,
     chatAutoScrollOnOpen: true,
+    pdfZoom: 1,
+    pdfPreloadRadius: 3,
+    pdfPreloadEnabled: true,
 };
 
 export async function hydrateReadingStorage(): Promise<void> {
