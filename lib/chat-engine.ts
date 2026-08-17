@@ -19,6 +19,7 @@ import {
     normalizeVisionImagePromptLimit,
     createResponseBatchId,
     createToolExecutionId,
+    isChatStreamingEnabled,
 } from "./chat-storage";
 import { extractTextToolDirectiveText, stripTextToolDirectives } from "./text-tool-protocol";
 import type { ApiConfig, PresetConfig, Prompt, PromptOrderEntry, RegexConfig } from "./settings-types";
@@ -1954,6 +1955,9 @@ export type ChatCompletionCallbacks = {
         responseBatchId?: string;
         rawResponseText?: string;
     }) => void | Promise<void>;
+    /** 流式生成增量回调（仅在开启流式生成时触发）：每到达一段原文增量就调用一次，
+     *  由 UI 层累积后做预览净化显示。delta 为原始增量（可能含未闭合的富媒体/工具标签）。 */
+    onStreamDelta?: (delta: string) => void | Promise<void>;
     onToolNotice?: (notice: string) => void;
     onToolResult?: (content: string, options?: { toolExecutionId?: string }) => void;
     onToolAssistantTurn?: (content: string, options?: {
@@ -1990,7 +1994,7 @@ export type OfflineChatCompletionResult = ParsedOfflineResponse & {
 export async function generateOfflineChatCompletion(
     session: ChatSession,
     history: ChatMessage[],
-    options?: { signal?: AbortSignal },
+    options?: { signal?: AbortSignal; onStreamDelta?: (delta: string) => void },
 ): Promise<OfflineChatCompletionResult> {
     const { llmMessages, character, config, preset, regexes, userIdentity } = await buildChatPromptMessages(
         session,
@@ -2009,7 +2013,21 @@ export async function generateOfflineChatCompletion(
         signal: options?.signal,
         onReasoning: (t: string) => { reasoning = t; },
     };
-    let rawOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, requestOptions);
+    if (isChatStreamingEnabled() && options?.onStreamDelta) {
+        // 线下流式：正文边生成边通过 onStreamDelta 交给 UI 做实时预览；
+        // 摘要补提仍走整段请求（输出短，无需流式）。
+        const streamResult = await sendLLMStreamRequest(config, preset, llmMessages, regexes, meta, {
+            appId: "chat",
+            appTags: ["chat", "offline"],
+            signal: options?.signal,
+        }, {
+            onDelta: (text) => options.onStreamDelta?.(text),
+            onReasoningDelta: (t) => { reasoning = t; },
+        });
+        rawOutput = streamResult.content;
+    } else {
+        rawOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, requestOptions);
+    }
     let parsed = parseOfflineResponse(rawOutput, summaryTag);
 
     // 摘要缺失时自动补提：拿上次完整输出做上下文，只要求模型补一段摘要，
@@ -2079,21 +2097,43 @@ async function generateNativeChatCompletion(
     for (let round = 0; round < maxToolRounds; round += 1) {
         let result: LLMToolRequestResult;
         try {
-            result = await sendLLMToolRequest(
-                config,
-                preset,
-                requestMessages,
-                nativeBundle.definitions,
-                regexes,
-                meta,
-                {
-                    appId: options?.appId ?? "chat",
-                    appTags: requestAppTags,
-                    followUpCount: options?.followUpCount,
-                    debugSessionId: session.id,
-                    signal: options?.signal,
-                },
-            );
+            if (isChatStreamingEnabled()) {
+                result = await sendLLMToolStreamRequest(
+                    config,
+                    preset,
+                    requestMessages,
+                    nativeBundle.definitions,
+                    regexes,
+                    meta,
+                    {
+                        appId: options?.appId ?? "chat",
+                        appTags: requestAppTags,
+                        followUpCount: options?.followUpCount,
+                        debugSessionId: session.id,
+                        signal: options?.signal,
+                    },
+                    {
+                        onDelta: (text) => callbacks?.onStreamDelta?.(text),
+                        onReasoningDelta: (text) => callbacks?.onReasoning?.(text),
+                    },
+                );
+            } else {
+                result = await sendLLMToolRequest(
+                    config,
+                    preset,
+                    requestMessages,
+                    nativeBundle.definitions,
+                    regexes,
+                    meta,
+                    {
+                        appId: options?.appId ?? "chat",
+                        appTags: requestAppTags,
+                        followUpCount: options?.followUpCount,
+                        debugSessionId: session.id,
+                        signal: options?.signal,
+                    },
+                );
+            }
         } catch (err) {
             const errMsg = `⚠️ 回复生成失败: ${err instanceof Error ? err.message : String(err)}`;
             if (parts.length > 0) {
@@ -2323,14 +2363,29 @@ export async function generateChatCompletion(
     for (let round = 0; round < maxToolRounds; round++) {
         let filteredOutput: string;
         try {
-            filteredOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
-                appId: options?.appId ?? "chat",
-                appTags: requestAppTags,
-                followUpCount: options?.followUpCount,
-                debugSessionId: session.id,
-                signal: options?.signal,
-                onReasoning: callbacks?.onReasoning,
-            });
+            if (isChatStreamingEnabled()) {
+                // 流式分支：与 sendLLMRequest 走同一套请求构造/日志/正则，仅把「整段等待」换成
+                // SSE 增量，并通过 onStreamDelta 把原文增量实时交给 UI 层做预览显示。
+                const streamResult = await sendLLMStreamRequest(config, preset, llmMessages, regexes, meta, {
+                    appId: options?.appId ?? "chat",
+                    appTags: requestAppTags,
+                    followUpCount: options?.followUpCount,
+                    signal: options?.signal,
+                }, {
+                    onDelta: (text) => callbacks?.onStreamDelta?.(text),
+                    onReasoningDelta: (text) => callbacks?.onReasoning?.(text),
+                });
+                filteredOutput = streamResult.content;
+            } else {
+                filteredOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
+                    appId: options?.appId ?? "chat",
+                    appTags: requestAppTags,
+                    followUpCount: options?.followUpCount,
+                    debugSessionId: session.id,
+                    signal: options?.signal,
+                    onReasoning: callbacks?.onReasoning,
+                });
+            }
         } catch (err) {
             const errMsg = `⚠️ 回复生成失败: ${err instanceof Error ? err.message : String(err)}`;
             if (parts.length > 0) {
@@ -2488,14 +2543,28 @@ export async function generateChatCompletion(
             // Last round — one final call
             if (round === maxToolRounds - 1) {
                 try {
-                    const finalOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
-                        appId: options?.appId ?? "chat",
-                        appTags: requestAppTags,
-                        followUpCount: options?.followUpCount,
-                        debugSessionId: session.id,
-                        signal: options?.signal,
-                        onReasoning: callbacks?.onReasoning,
-                    });
+                    let finalOutput: string;
+                    if (isChatStreamingEnabled()) {
+                        const streamFinal = await sendLLMStreamRequest(config, preset, llmMessages, regexes, meta, {
+                            appId: options?.appId ?? "chat",
+                            appTags: requestAppTags,
+                            followUpCount: options?.followUpCount,
+                            signal: options?.signal,
+                        }, {
+                            onDelta: (text) => callbacks?.onStreamDelta?.(text),
+                            onReasoningDelta: (text) => callbacks?.onReasoning?.(text),
+                        });
+                        finalOutput = streamFinal.content;
+                    } else {
+                        finalOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
+                            appId: options?.appId ?? "chat",
+                            appTags: requestAppTags,
+                            followUpCount: options?.followUpCount,
+                            debugSessionId: session.id,
+                            signal: options?.signal,
+                            onReasoning: callbacks?.onReasoning,
+                        });
+                    }
                     throwIfAborted(options?.signal);
                     await callbacks?.onTextPart?.(finalOutput);
                     parts.push({ text: finalOutput });
