@@ -80,6 +80,8 @@ export type ReadingInteractionConfig = {
     pdfPreloadRadius: number;
     /** PDF 预加载：开启后阅读时提前渲染后续页，滚动更平滑 */
     pdfPreloadEnabled: boolean;
+    /** PDF 批注：每个批注批次的页数（自定义范围，默认 5 页，可 1~30） */
+    pdfAnnotationBatchSize: number;
 };
 
 export const DEFAULT_READING_INTERACTION_CONFIG: ReadingInteractionConfig = {
@@ -95,6 +97,7 @@ export const DEFAULT_READING_INTERACTION_CONFIG: ReadingInteractionConfig = {
     pdfZoom: 1,
     pdfPreloadRadius: 3,
     pdfPreloadEnabled: true,
+    pdfAnnotationBatchSize: 5,
 };
 
 export async function hydrateReadingStorage(): Promise<void> {
