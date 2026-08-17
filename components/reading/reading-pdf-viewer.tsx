@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { loadRawFileBlob } from "@/lib/reading-storage";
 import { splitBilingualText } from "@/lib/bilingual-text";
 import { scrollElementWithinContainer } from "@/lib/dom-scroll";
