@@ -64,6 +64,8 @@ export type ReadingInteractionConfig = {
     bilingualTranslationPrompt: string;
     /** 导入 TXT 时如何划分段落（默认自动探测书格式） */
     paragraphMode: ReadingParagraphMode;
+    /** TXT 编码解析：auto=自动探测（默认）/ utf-8 / gb18030 / gbk / big5 / utf-16le / utf-16be */
+    txtEncoding: "auto" | "utf-8" | "gb18030" | "gbk" | "big5" | "utf-16le" | "utf-16be";
     /** 阅读模式：翻页 / 连续滚动 */
     readingMode: ReadingViewMode;
     /** 自动批注失败时的静默重试次数（0=不重试） */
@@ -89,6 +91,7 @@ export const DEFAULT_READING_INTERACTION_CONFIG: ReadingInteractionConfig = {
     collapseBilingualTranslation: true,
     bilingualTranslationPrompt: DEFAULT_READING_BILINGUAL_PROMPT,
     paragraphMode: "auto",
+    txtEncoding: "auto",
     readingMode: "page",
     annotationRetryCount: 3,
     autoAnnotatePrefetch: false,

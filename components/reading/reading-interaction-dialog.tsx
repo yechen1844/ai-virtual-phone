@@ -19,6 +19,16 @@ const PARAGRAPH_MODE_OPTIONS: { value: ReadingParagraphMode; label: string; desc
     { value: "line", label: "每行一段", desc: "纯回车换行分段落（无空行无缩进）" },
 ];
 
+const TXT_ENCODING_OPTIONS: { value: NonNullable<ReadingInteractionConfig["txtEncoding"]>; label: string; desc: string }[] = [
+    { value: "auto", label: "自动", desc: "自动识别文件的编码（推荐）" },
+    { value: "utf-8", label: "UTF-8", desc: "现代标准编码，多数文件默认" },
+    { value: "gb18030", label: "GB18030", desc: "中文国标全集（含 GBK/GB2312）" },
+    { value: "gbk", label: "GBK", desc: "简体中文常用编码" },
+    { value: "big5", label: "Big5", desc: "繁体中文常用编码" },
+    { value: "utf-16le", label: "UTF-16LE", desc: "Windows 记事本可存此编码" },
+    { value: "utf-16be", label: "UTF-16BE", desc: "大端 UTF-16" },
+];
+
 const VIEW_MODE_OPTIONS: { value: ReadingViewMode; label: string; desc: string }[] = [
     { value: "page", label: "翻页", desc: "一屏一页，左右点击/滑动翻页" },
     { value: "scroll", label: "滚动", desc: "连续滚动阅读，上下滑动翻读" },
@@ -90,6 +100,29 @@ export function ReadingInteractionDialog({ onClose }: Props) {
                                 type="button"
                                 className={`reading-option-card ${config.paragraphMode === opt.value ? "is-active" : ""}`}
                                 onClick={() => setConfig((prev) => ({ ...prev, paragraphMode: opt.value }))}
+                            >
+                                <span className="reading-option-card-label">{opt.label}</span>
+                                <span className="reading-option-card-desc">{opt.desc}</span>
+                            </button>
+                        ))}
+                    </div>
+                </section>
+
+                <section className="reading-settings-group">
+                    <div className="reading-settings-heading">
+                        <Settings size={15} />
+                        <span>导入 TXT 编码</span>
+                    </div>
+                    <p className="reading-settings-inline-note">
+                        <span>导入 TXT 小说时按哪种编码解析。自动识别一般够用；个别 TXT 自动识别出错导致乱码时，可手动指定其真实编码后重新导入。</span>
+                    </p>
+                    <div className="reading-option-grid">
+                        {TXT_ENCODING_OPTIONS.map((opt) => (
+                            <button
+                                key={opt.value}
+                                type="button"
+                                className={`reading-option-card ${config.txtEncoding === opt.value ? "is-active" : ""}`}
+                                onClick={() => setConfig((prev) => ({ ...prev, txtEncoding: opt.value }))}
                             >
                                 <span className="reading-option-card-label">{opt.label}</span>
                                 <span className="reading-option-card-desc">{opt.desc}</span>

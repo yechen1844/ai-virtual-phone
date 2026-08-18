@@ -548,7 +548,7 @@ export function ReadingViewer({ book, onBack }: Props) {
                 if (rawFile && rawFile.size > 0) {
                     try {
                         const parsed = book.format === "txt"
-                            ? parseTxtContent(decodeTxtArrayBuffer(await rawFile.arrayBuffer()).text, book.title)
+                            ? parseTxtContent(decodeTxtArrayBuffer(await rawFile.arrayBuffer(), loadReadingInteractionConfig().txtEncoding).text, book.title)
                             : await parseEpubFile(await rawFile.arrayBuffer(), book.title);
                         const rebuiltChapters: BookChapter[] = parsed.chapters.map((chapter, index) => ({
                             id: `${book.id}_ch${index}`,
