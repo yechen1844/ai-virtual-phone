@@ -6,6 +6,8 @@ import {
     determineBaseUrl,
     isNativeAnthropicApi,
     isNativeGoogleApi,
+    isOpenCodeGateway,
+    openCodeUsesAnthropicProtocol,
 } from "./api-helpers";
 
 export type LlmProviderKind = "openai-compatible" | "anthropic" | "gemini";
@@ -37,6 +39,8 @@ export type LlmRequestPayload = {
     body: Record<string, unknown>;
     providerKind: LlmProviderKind;
     messagesForLog: { role: string; content: string | LLMContentPart[]; marker?: string }[];
+    /** 需要经本站 /api/llm-proxy 服务端转发（OpenCode 网关未开放浏览器 CORS 时置 true） */
+    serverProxy?: boolean;
 };
 
 export type LlmParsedResponse = {
@@ -80,6 +84,7 @@ export type LlmDebugMessage = {
 
 export function nativeToolProtocolForConfig(config: ApiConfig): NativeToolProtocol | null {
     if (config.enableNativeTools === false) return null;
+    if (openCodeUsesAnthropicProtocol(config)) return "anthropic";
     if (isNativeAnthropicApi(config)) return "anthropic";
     if (isNativeGoogleApi(config)) return "gemini";
     return "openai-compatible";
@@ -87,6 +92,7 @@ export function nativeToolProtocolForConfig(config: ApiConfig): NativeToolProtoc
 
 export function providerKindForConfig(config: ApiConfig, options?: { nativeToolProtocol?: NativeToolProtocol | null }): LlmProviderKind {
     if (options?.nativeToolProtocol) return options.nativeToolProtocol;
+    if (openCodeUsesAnthropicProtocol(config)) return "anthropic";
     if (isNativeAnthropicApi(config)) return "anthropic";
     if (isNativeGoogleApi(config)) return "gemini";
     return "openai-compatible";
@@ -254,13 +260,17 @@ export function buildProviderRequest(
     const guardedMessages = config.enableImageRecognition === true ? messages : stripVisionParts(messages);
     const providerMessages = ensureProviderHasUserMessage(normalizeNativeToolMessageAdjacency(guardedMessages));
 
+    let request: LlmRequestPayload;
     if (providerKind === "anthropic") {
-        return buildAnthropicRequest(config, preset, baseUrl, providerMessages, options);
+        request = buildAnthropicRequest(config, preset, baseUrl, providerMessages, options);
+    } else if (providerKind === "gemini") {
+        request = buildGeminiRequest(config, preset, baseUrl, providerMessages, options);
+    } else {
+        request = buildOpenAICompatibleRequest(config, preset, baseUrl, providerMessages, options);
     }
-    if (providerKind === "gemini") {
-        return buildGeminiRequest(config, preset, baseUrl, providerMessages, options);
-    }
-    return buildOpenAICompatibleRequest(config, preset, baseUrl, providerMessages, options);
+    // OpenCode 网关未开放浏览器 CORS，所有调用必须经 /api/llm-proxy 服务端转发
+    request.serverProxy = isOpenCodeGateway(config);
+    return request;
 }
 
 export function stripHallucinatedTimestamps(text: string): string {

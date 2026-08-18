@@ -25,9 +25,35 @@ export function determineBaseUrl(config: { provider: string; baseUrl?: string })
         case "Zhipu":       return "https://open.bigmodel.cn/api/paas/v4";
         case "SiliconFlow": return "https://api.siliconflow.cn/v1";
         case "TogetherAI":  return "https://api.together.xyz/v1";
+        // OpenCode Zen/Go 网关：OpenAI 兼容端点追加 /chat/completions，
+        // Anthropic 兼容端点追加 /messages（见 openCodeUsesAnthropicProtocol）。
+        case "OpenCode":    return "https://opencode.ai/zen/go/v1";
         case "Custom":      return ""; // must be set via baseUrl
         default:            return "";
     }
+}
+
+/**
+ * 是否 OpenCode Zen/Go 官方网关。该网关对浏览器没有开放 CORS，浏览器直连必然失败，
+ * 所有走它的请求都必须经 /api/llm-proxy 服务端转发（buildProviderRequest 会在 payload 上
+ * 打 serverProxy 标记，simpleLLMCall 与 fetchLlmPayload 据此走代理）。
+ */
+export function isOpenCodeGateway(config: { provider: string }): boolean {
+    return config.provider === "OpenCode";
+}
+
+/**
+ * OpenCode 网关同时提供两种既有协议：
+ *   - OpenAI 兼容：https://opencode.ai/zen/go/v1/chat/completions
+ *   - Anthropic 兼容：https://opencode.ai/zen/go/v1/messages（qwen3xx / minimax / claude 系）
+ * 这里按模型名前缀判断该走哪套协议，聊天主链路与 simpleLLMCall 共用。
+ */
+const OPENCODE_ANTHROPIC_PROTOCOL_MODEL_PREFIXES = ["claude", "qwen3", "minimax"];
+
+export function openCodeUsesAnthropicProtocol(config: { provider: string; defaultModel?: string }): boolean {
+    if (!isOpenCodeGateway(config)) return false;
+    const model = (config.defaultModel || "").toLowerCase().trim();
+    return OPENCODE_ANTHROPIC_PROTOCOL_MODEL_PREFIXES.some(prefix => model.startsWith(prefix));
 }
 
 /**
@@ -113,8 +139,8 @@ export async function simpleLLMCall(
         let fetchUrl: string;
         let body: string;
 
-        if (isNativeAnthropicApi(config)) {
-            // Anthropic Messages API
+        if (isNativeAnthropicApi(config) || openCodeUsesAnthropicProtocol(config)) {
+            // Anthropic Messages API（OpenCode 网关的 qwen3/minimax/claude 系模型也走此协议）
             fetchUrl = `${baseUrl.replace(/\/$/, "")}/messages`;
             const anthropicMessages = messages
                 .filter(m => m.role !== "system")
@@ -160,7 +186,15 @@ export async function simpleLLMCall(
         const bodyTokenEstimate = Math.ceil(bodySize / 3);
         console.log("[simpleLLMCall] Request:", { url: fetchUrl.slice(0, 80), bodySize, bodyTokenEstimate, model: config.defaultModel });
 
-        const res = await fetch(fetchUrl, { method: "POST", headers, body, signal: options?.signal });
+        // OpenCode 网关未开放浏览器 CORS，统一经本站 /api/llm-proxy 服务端转发
+        const res = isOpenCodeGateway(config)
+            ? await fetch("/api/llm-proxy", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ url: fetchUrl, headers, body }),
+                signal: options?.signal,
+            })
+            : await fetch(fetchUrl, { method: "POST", headers, body, signal: options?.signal });
 
         if (!res.ok) {
             const errText = await res.text().catch(() => "");

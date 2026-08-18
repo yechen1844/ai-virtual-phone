@@ -9,7 +9,7 @@ import { generateEmbedding, isEmbeddingModelName } from "@/lib/memory-embedding"
 import { ConfirmDialog } from "@/components/ui/modal";
 import { Toggle, Input } from "@/components/ui/form";
 import { Alert } from "@/components/ui/feedback";
-import { determineBaseUrl, simpleLLMCall } from "@/lib/api-helpers";
+import { determineBaseUrl, isOpenCodeGateway, openCodeUsesAnthropicProtocol, simpleLLMCall } from "@/lib/api-helpers";
 
 const DEFAULT_CONFIGS: ApiConfig[] = [
     {
@@ -26,6 +26,7 @@ const DEFAULT_CONFIGS: ApiConfig[] = [
 ];
 
 function getNativeToolProtocolLabel(config: ApiConfig): string {
+    if (openCodeUsesAnthropicProtocol(config)) return "Anthropic (来自 OpenCode 网关)";
     if (config.provider === "Anthropic" && !config.baseUrl) return "Anthropic";
     if (config.provider === "Google") return "Gemini";
     return "OpenAI-compatible";
@@ -134,7 +135,15 @@ export function ApiSettings() {
             const headers: Record<string, string> = { "Content-Type": "application/json" };
             if (!isGoogleNative) headers["Authorization"] = `Bearer ${config.apiKey}`;
 
-            const response = await fetch(url, { method: "GET", headers });
+            // OpenCode 网关未开放浏览器 CORS，走本站 /api/llm-proxy 服务端转发
+            const proxied = isOpenCodeGateway(config);
+            const response = proxied
+                ? await fetch("/api/llm-proxy", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ url, method: "GET", headers }),
+                })
+                : await fetch(url, { method: "GET", headers });
 
             if (!response.ok) {
                 const errorData = await response.json().catch(() => ({}));
@@ -322,6 +331,7 @@ export function ApiSettings() {
                                                 <option value="Zhipu">Zhipu (GLM)</option>
                                                 <option value="SiliconFlow">SiliconFlow</option>
                                                 <option value="TogetherAI">Together AI</option>
+                                                <option value="OpenCode">OpenCode Go/Zen</option>
                                                 <option value="Custom">自定义 (Custom)</option>
                                             </select>
                                         </div>
