@@ -16,9 +16,6 @@ import {
     removeChatContact,
     normalizeVisionImagePromptLimit,
     MAX_VISION_IMAGE_PROMPT_LIMIT,
-    isChatStreamingEnabled,
-    loadChatAppSettings,
-    saveChatAppSettings,
     type ChatMessage,
 } from "@/lib/chat-storage";
 import {
@@ -392,8 +389,9 @@ export function ChatSettingsPanel({
     const [bilingualTranslationEnabled, setBilingualTranslationEnabled] = useState(session.bilingualTranslationEnabled !== false);
     const [collapseBilingualTranslation, setCollapseBilingualTranslation] = useState(session.collapseBilingualTranslation !== false);
     const [discardInvalidStickers, setDiscardInvalidStickers] = useState(session.discardInvalidStickers === true);
-    // 流式生成：全局开关（存 ChatAppSettings），开 = 线上/线下、单聊/群聊回复边生成边显示
-    const [streamChatGeneration, setStreamChatGeneration] = useState(() => isChatStreamingEnabled());
+    // 流式生成：按会话区分（线上/线下），存 ChatSession 字段，默认关
+    const [streamOnline, setStreamOnline] = useState(session.streamOnline === true);
+    const [streamOffline, setStreamOffline] = useState(session.streamOffline === true);
     const defaultBilingualPrompt = session.isGroup ? DEFAULT_GROUP_CHAT_BILINGUAL_PROMPT : DEFAULT_CHAT_BILINGUAL_PROMPT;
     const defaultOfflineBilingualPrompt = session.isGroup ? DEFAULT_GROUP_OFFLINE_CHAT_BILINGUAL_PROMPT : DEFAULT_OFFLINE_CHAT_BILINGUAL_PROMPT;
     const [bilingualTranslationPrompt, setBilingualTranslationPrompt] = useState(session.bilingualTranslationPrompt || defaultBilingualPrompt);
@@ -1085,15 +1083,31 @@ export function ChatSettingsPanel({
                         <div className="menu-item">
                             <ChatInfoIcon icon={Sparkles} color={BINDING_ACCENTS.api} />
                             <div className="menu-label-group">
-                                <span className="menu-label">流式生成</span>
-                                <span className="menu-desc">AI 回复边生成边显示，长文不用干等；关闭则恢复整段返回</span>
+                                <span className="menu-label">线上流式生成</span>
+                                <span className="menu-desc">仅当前会话：线上 AI 回复边生成边显示；关闭则整段返回</span>
                             </div>
                             <div className="menu-right">
                                 <Toggle
-                                    checked={streamChatGeneration}
+                                    checked={streamOnline}
                                     onChange={c => {
-                                        setStreamChatGeneration(c);
-                                        saveChatAppSettings({ ...loadChatAppSettings(), streamChatGeneration: c });
+                                        setStreamOnline(c);
+                                        updateSession({ streamOnline: c });
+                                    }}
+                                />
+                            </div>
+                        </div>
+                        <div className="menu-item">
+                            <ChatInfoIcon icon={Sparkles} color={BINDING_ACCENTS.preset} />
+                            <div className="menu-label-group">
+                                <span className="menu-label">线下流式生成</span>
+                                <span className="menu-desc">仅当前会话：线下 AI 回复边生成边显示；关闭则整段返回</span>
+                            </div>
+                            <div className="menu-right">
+                                <Toggle
+                                    checked={streamOffline}
+                                    onChange={c => {
+                                        setStreamOffline(c);
+                                        updateSession({ streamOffline: c });
                                     }}
                                 />
                             </div>

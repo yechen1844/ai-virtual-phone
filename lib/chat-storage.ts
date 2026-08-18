@@ -57,6 +57,10 @@ export type ChatSession = {
     offlineBilingualTranslationPrompt?: string;
     nativeExpandedToolSourceIds?: string[];
     visionImagePromptLimit?: number;
+    /** 流式生成（线上）：开启后该会话的线上 AI 回复边生成边显示（默认关，保持原整段请求行为） */
+    streamOnline?: boolean;
+    /** 流式生成（线下）：开启后该会话的线下 AI 回复边生成边显示（默认关，保持原整段请求行为） */
+    streamOffline?: boolean;
     // Group chat fields
     isGroup?: boolean;
     groupName?: string;
@@ -256,8 +260,6 @@ export type ChatAppSettings = {
     quickActionEnabled?: boolean; // When true, show the floating quick action entry
     browserNotificationsEnabled?: boolean; // When true, send browser Notification API alerts when page is hidden
     enterToSendEnabled?: boolean; // When true, Enter sends chat input and Shift+Enter inserts a newline
-    /** 流式生成：开启后线上/线下、单聊/群聊的 AI 回复边生成边显示（默认关，保持原整段请求行为） */
-    streamChatGeneration?: boolean;
     callVibrationEnabled?: boolean; // 语音/视频来电等待接听时循环振动（默认开；iOS 网页不支持振动则无效果）
     maxToolRounds?: number; // 单条消息的工具循环轮数上限（默认 5；每轮=一次模型请求，轮内调用条数不限）
 };
@@ -269,9 +271,10 @@ export function getMaxToolRounds(): number {
     return Math.max(1, Math.min(20, Math.round(raw)));
 }
 
-/** 是否开启聊天流式生成（默认关；开启后线上/线下、单聊/群聊走流式 API，边生成边显示） */
-export function isChatStreamingEnabled(): boolean {
-    return loadChatAppSettings().streamChatGeneration === true;
+/** 会话是否开启线上流式生成（默认关；按会话独立控制，单聊/群聊都生效） */
+export function isSessionStreamingEnabled(session: Pick<ChatSession, "streamOnline" | "streamOffline"> | null | undefined, online: boolean): boolean {
+    if (!session) return false;
+    return online ? session.streamOnline === true : session.streamOffline === true;
 }
 
 export const CHAT_APP_SETTINGS_UPDATED_EVENT = "chat-app-settings-updated";

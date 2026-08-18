@@ -964,8 +964,47 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                                 className="ui-input"
                                                             />
                                                             <div className="ui-slider-hint">
-                                                                从线下模式原始 XML 中提取思考过程（思维链）的字段名，会在消息上方显示思维链入口。默认读取 {"<thinking>"}，兼容 {"<thought>"}。
+                                                                从线下模式原始 XML 中提取思考过程（思维链）的字段名。仅当下方「线下思维链解析」开启时生效；关闭时走模型原生思维链。
                                                             </div>
+                                                        </div>
+                                                        <div className="flex flex-col gap-2 col-span-full">
+                                                            <label className="ui-slider-label">线上模式思维链字段</label>
+                                                            <input
+                                                                type="text"
+                                                                value={preset.online_thinking_tag || "thinking"}
+                                                                onChange={(e) => updatePreset(preset.id, { online_thinking_tag: e.target.value })}
+                                                                placeholder="thinking"
+                                                                className="ui-input"
+                                                            />
+                                                            <div className="ui-slider-hint">
+                                                                从线上模式 AI 输出中提取思考过程（思维链）的标签字段名。仅当下方「线上思维链解析」开启时生效；关闭时走模型原生思维链。
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex items-center justify-between gap-3 col-span-full">
+                                                            <div className="flex flex-col gap-1">
+                                                                <label className="ui-slider-label">线上思维链解析</label>
+                                                                <span className="ui-slider-hint">开启后按上方标签字段解析线上思维链；关闭走模型原生思维链（官方默认）</span>
+                                                            </div>
+                                                            <label className="ui-mini-toggle" onClick={(e) => e.stopPropagation()}>
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={preset.online_thinking_enabled === true}
+                                                                    onChange={(e) => updatePreset(preset.id, { online_thinking_enabled: e.target.checked })}
+                                                                />
+                                                            </label>
+                                                        </div>
+                                                        <div className="flex items-center justify-between gap-3 col-span-full">
+                                                            <div className="flex flex-col gap-1">
+                                                                <label className="ui-slider-label">线下思维链解析</label>
+                                                                <span className="ui-slider-hint">开启后按「剧情/线下模式思维链字段」解析线下思维链；关闭走模型原生思维链（官方默认）</span>
+                                                            </div>
+                                                            <label className="ui-mini-toggle" onClick={(e) => e.stopPropagation()}>
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={preset.offline_thinking_enabled === true}
+                                                                    onChange={(e) => updatePreset(preset.id, { offline_thinking_enabled: e.target.checked })}
+                                                                />
+                                                            </label>
                                                         </div>
                                                     </div>
                                                 </div>

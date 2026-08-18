@@ -19,7 +19,7 @@ import {
     normalizeVisionImagePromptLimit,
     createResponseBatchId,
     createToolExecutionId,
-    isChatStreamingEnabled,
+    isSessionStreamingEnabled,
 } from "./chat-storage";
 import { extractTextToolDirectiveText, stripTextToolDirectives } from "./text-tool-protocol";
 import type { ApiConfig, PresetConfig, Prompt, PromptOrderEntry, RegexConfig } from "./settings-types";
@@ -86,7 +86,7 @@ import {
     DEFAULT_OFFLINE_CHAT_BILINGUAL_PROMPT,
     resolveBilingualPrompt,
 } from "./bilingual-prompt-defaults";
-import { parseOfflineResponse, type ParsedOfflineResponse } from "./chat-offline-storage";
+import { parseOfflineResponse, extractThinkingTag, type ParsedOfflineResponse } from "./chat-offline-storage";
 import { throwIfAborted } from "./abort-utils";
 
 
@@ -396,6 +396,14 @@ function mergeAppTags(base: string[] | undefined, extra: string[] | undefined, f
         if (trimmed) tags.add(trimmed);
     }
     return Array.from(tags);
+}
+
+/** 从输出正文中剥离思维链标签块（仅标签解析开启时用于清洗展示文本）。 */
+export function stripOnlineThinkingTag(rawOutput: string, tag: string): string {
+    if (!tag.trim()) return rawOutput;
+    return rawOutput
+        .replace(new RegExp(`<${tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}>[\\s\\S]*?</${tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}>`, "gi"), "")
+        .trim();
 }
 
 function getPromptFilterTags(prompt: Prompt): string[] | null {
@@ -1950,6 +1958,7 @@ export async function generateOfflineChatCompletion(
     );
     const summaryTag = preset?.story_summary_tag?.trim() || "summary";
     const thinkingTag = preset?.thinking_tag?.trim() || "thinking";
+    const offlineTagEnabled = preset?.offline_thinking_enabled === true;
     let reasoning = "";
     const meta = { characterName: character.name, userName: userIdentity?.name };
     const requestOptions = {
@@ -1959,7 +1968,7 @@ export async function generateOfflineChatCompletion(
         onReasoning: (t: string) => { reasoning = t; },
     };
     let rawOutput: string;
-    if (isChatStreamingEnabled() && options?.onStreamDelta) {
+    if (isSessionStreamingEnabled(session, false) && options?.onStreamDelta) {
         // 线下流式：正文边生成边通过 onStreamDelta 交给 UI 做实时预览；
         // 摘要补提仍走整段请求（输出短，无需流式）。
         const streamResult = await sendLLMStreamRequest(config, preset, llmMessages, regexes, meta, {
@@ -1974,7 +1983,12 @@ export async function generateOfflineChatCompletion(
     } else {
         rawOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, requestOptions);
     }
-    let parsed = parseOfflineResponse(rawOutput, summaryTag, thinkingTag);
+    let parsed = parseOfflineResponse(rawOutput, summaryTag);
+    // 思维链：预设开启「线下标签解析」时从正文提取 <thinking> 标签；关闭时走模型原生 reasoning（官方默认行为）
+    if (offlineTagEnabled) {
+        const tagThinking = extractThinkingTag(rawOutput, thinkingTag);
+        if (tagThinking) reasoning = tagThinking;
+    }
 
     // 摘要缺失时自动补提：拿上次完整输出做上下文，只要求模型补一段摘要，
     // 避免「静默结束」导致该轮线下记录没有摘要、进不了短期记忆事件流。
@@ -2002,6 +2016,11 @@ export async function generateOfflineChatCompletion(
 
     return {
         ...parsed,
+        // 标签解析开启时补 thinking/thinkingTag（供离线记录展示）；关闭时保持 undefined，思维链走 reasoning（模型原生）
+        ...(offlineTagEnabled ? {
+            thinking: extractThinkingTag(rawOutput, thinkingTag) || undefined,
+            thinkingTag,
+        } : {}),
         model: config.defaultModel,
         presetName: preset?.name || "默认预设",
         reasoning: reasoning || undefined,
@@ -2041,10 +2060,12 @@ async function generateNativeChatCompletion(
     const expandableSourceKeys = new Set(enabledTools.filter(tool => !isNativeSingleTool(tool)).map(nativeToolSourceKey));
 
     const maxToolRounds = getMaxToolRounds();
+    const onlineThinkingEnabled = preset?.online_thinking_enabled === true;
+    const onlineThinkingTag = preset?.online_thinking_tag?.trim() || "thinking";
     for (let round = 0; round < maxToolRounds; round += 1) {
         let result: LLMToolRequestResult;
         try {
-            if (isChatStreamingEnabled()) {
+            if (isSessionStreamingEnabled(session, true)) {
                 let streamReasoning = "";
                 result = await sendLLMToolStreamRequest(
                     config,
@@ -2063,8 +2084,9 @@ async function generateNativeChatCompletion(
                     {
                         onDelta: (text) => callbacks?.onStreamDelta?.(text),
                         // 流式下 onReasoningDelta 收到的是单段增量：本地累积后再喂 onReasoning，
-                        // 保证下游拿到的是完整思维链（与整段请求的 onReasoning 语义一致）
-                        onReasoningDelta: (text) => { streamReasoning += text; callbacks?.onReasoning?.(streamReasoning); },
+                        // 保证下游拿到的是完整思维链（与整段请求的 onReasoning 语义一致）。
+                        // 预设开启「线上标签解析」时不透传原生思维链（改由下方标签提取）
+                        onReasoningDelta: onlineThinkingEnabled ? undefined : (text) => { streamReasoning += text; callbacks?.onReasoning?.(streamReasoning); },
                     },
                 );
             } else {
@@ -2096,17 +2118,26 @@ async function generateNativeChatCompletion(
         }
         throwIfAborted(options?.signal);
 
-        const { cleanText: afterActionStrip, actions } = parseActionTags(result.content);
+        // 线上思维链标签解析：开启时从正文提取 <tag> 思维链（覆盖原生），并剥离标签后再做后续解析
+        let displayContent = result.content;
+        if (onlineThinkingEnabled) {
+            const tagThinking = extractThinkingTag(displayContent, onlineThinkingTag);
+            if (tagThinking) callbacks?.onReasoning?.(tagThinking);
+            displayContent = stripOnlineThinkingTag(displayContent, onlineThinkingTag);
+        }
+
+        const { cleanText: afterActionStrip, actions } = parseActionTags(displayContent);
         if (actions.length > 0) {
             throwIfAborted(options?.signal);
             dispatchActions(actions, actionContext).catch(err => console.warn("[ChatEngine] Action dispatch failed:", err));
         }
-        const assistantForToolContext = stripStateAndInnerForPrompt(result.content);
+        const assistantForToolContext = stripStateAndInnerForPrompt(displayContent);
 
         if (result.toolCalls.length === 0) {
             throwIfAborted(options?.signal);
             // 无工具调用的最终轮：把解析到的思维链先交给回调（先于 onTextPart，与非原生路径一致）
-            if (result.reasoning) callbacks?.onReasoning?.(result.reasoning);
+            // 标签解析开启时已在上方用标签思维链覆盖，此处不再重复喂原生
+            if (result.reasoning && !onlineThinkingEnabled) callbacks?.onReasoning?.(result.reasoning);
             await callbacks?.onTextPart?.(afterActionStrip);
             parts.push({ text: afterActionStrip });
             break;
@@ -2115,9 +2146,9 @@ async function generateNativeChatCompletion(
         throwIfAborted(options?.signal);
         await callbacks?.onNativeToolAssistantTurn?.({
             content: afterActionStrip,
-            rawContent: result.content,
-            reasoning: result.reasoning,
-            openRouterReasoningDetails: result.openRouterReasoningDetails,
+            rawContent: displayContent,
+            reasoning: onlineThinkingEnabled ? (extractThinkingTag(result.content, onlineThinkingTag) || undefined) : result.reasoning,
+            openRouterReasoningDetails: onlineThinkingEnabled ? undefined : result.openRouterReasoningDetails,
             toolCalls: result.toolCalls,
         });
         if (afterActionStrip) {
@@ -2310,10 +2341,15 @@ export async function generateChatCompletion(
     const actionContext = { characterId: session.contactId, sessionId: session.id, sourceEngine: "chat" as const, signal: options?.signal };
 
     const maxToolRounds = getMaxToolRounds();
+    const onlineThinking = {
+        enabled: preset?.online_thinking_enabled === true,
+        tag: preset?.online_thinking_tag?.trim() || "thinking",
+        reasoning: undefined as string | undefined,
+    };
     for (let round = 0; round < maxToolRounds; round++) {
         let filteredOutput: string;
         try {
-            if (isChatStreamingEnabled()) {
+            if (isSessionStreamingEnabled(session, true)) {
                 // 流式分支：与 sendLLMRequest 走同一套请求构造/日志/正则，仅把「整段等待」换成
                 // SSE 增量，并通过 onStreamDelta 把原文增量实时交给 UI 层做预览显示。
                 let streamReasoning = "";
@@ -2325,7 +2361,8 @@ export async function generateChatCompletion(
                 }, {
                     onDelta: (text) => callbacks?.onStreamDelta?.(text),
                     // 流式下 onReasoningDelta 是单段增量：累积后再喂 onReasoning（保持整段请求语义）
-                    onReasoningDelta: (text) => { streamReasoning += text; callbacks?.onReasoning?.(streamReasoning); },
+                    // 预设开启「线上标签解析」时不透传原生思维链（改由下方标签提取）
+                    onReasoningDelta: onlineThinking.enabled ? undefined : (text) => { streamReasoning += text; callbacks?.onReasoning?.(streamReasoning); },
                 });
                 filteredOutput = streamResult.content;
             } else {
@@ -2335,7 +2372,8 @@ export async function generateChatCompletion(
                     followUpCount: options?.followUpCount,
                     debugSessionId: session.id,
                     signal: options?.signal,
-                    onReasoning: callbacks?.onReasoning,
+                    // 预设开启「线上标签解析」时不透传原生思维链（改由下方标签提取）
+                    onReasoning: onlineThinking.enabled ? undefined : callbacks?.onReasoning,
                 });
             }
         } catch (err) {
@@ -2349,6 +2387,16 @@ export async function generateChatCompletion(
             throw err;
         }
         throwIfAborted(options?.signal);
+
+        // 线上思维链标签解析：开启时每轮从正文提取 <tag> 思维链（覆盖原生），并剥离标签后再做后续解析
+        if (onlineThinking.enabled) {
+            const tagThinking = extractThinkingTag(filteredOutput, onlineThinking.tag);
+            if (tagThinking) {
+                onlineThinking.reasoning = tagThinking;
+                callbacks?.onReasoning?.(tagThinking);
+            }
+            filteredOutput = stripOnlineThinkingTag(filteredOutput, onlineThinking.tag);
+        }
 
         // Parse actions (朋友圈 etc) — strip from display text but keep tool tags
         const { cleanText: afterActionStrip, actions } = parseActionTags(filteredOutput);
@@ -2496,7 +2544,7 @@ export async function generateChatCompletion(
             if (round === maxToolRounds - 1) {
                 try {
                     let finalOutput: string;
-                    if (isChatStreamingEnabled()) {
+                    if (isSessionStreamingEnabled(session, true)) {
                         let streamReasoning = "";
                         const streamFinal = await sendLLMStreamRequest(config, preset, llmMessages, regexes, meta, {
                             appId: options?.appId ?? "chat",
@@ -2505,8 +2553,9 @@ export async function generateChatCompletion(
                             signal: options?.signal,
                         }, {
                             onDelta: (text) => callbacks?.onStreamDelta?.(text),
-                            // 流式下 onReasoningDelta 是单段增量：累积后再喂 onReasoning（保持整段请求语义）
-                            onReasoningDelta: (text) => { streamReasoning += text; callbacks?.onReasoning?.(streamReasoning); },
+                            // 流式下 onReasoningDelta 是单段增量：累积后再喂 onReasoning（保持整段请求语义）。
+                            // 预设开启「线上标签解析」时不透传原生思维链（改由下方标签提取）
+                            onReasoningDelta: onlineThinking.enabled ? undefined : (text) => { streamReasoning += text; callbacks?.onReasoning?.(streamReasoning); },
                         });
                         finalOutput = streamFinal.content;
                     } else {
@@ -2516,10 +2565,16 @@ export async function generateChatCompletion(
                             followUpCount: options?.followUpCount,
                             debugSessionId: session.id,
                             signal: options?.signal,
-                            onReasoning: callbacks?.onReasoning,
+                            onReasoning: onlineThinking.enabled ? undefined : callbacks?.onReasoning,
                         });
                     }
                     throwIfAborted(options?.signal);
+                    // 线上思维链标签解析：开启时从正文提取 <tag> 思维链并剥离标签
+                    if (onlineThinking.enabled) {
+                        const tagThinking = extractThinkingTag(finalOutput, onlineThinking.tag);
+                        if (tagThinking) callbacks?.onReasoning?.(tagThinking);
+                        finalOutput = stripOnlineThinkingTag(finalOutput, onlineThinking.tag);
+                    }
                     await callbacks?.onTextPart?.(finalOutput);
                     parts.push({ text: finalOutput });
                 } catch (err) {

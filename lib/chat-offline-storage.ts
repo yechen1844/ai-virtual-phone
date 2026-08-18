@@ -217,29 +217,27 @@ function stripXmlField(rawText: string, tag: string): string {
     return rawText.replace(new RegExp(`<${escaped}>[\\s\\S]*?</${escaped}>`, "gi"), "").trim();
 }
 
-export function parseOfflineResponse(rawText: string, summaryTag: string, thinkingTag?: string): ParsedOfflineResponse {
+/** 从原始输出中提取指定标签包裹的思维链（仅当预设开启标签解析时调用）。
+ *  默认标签 thinking 时兼容 thought。 */
+export function extractThinkingTag(rawText: string, tag?: string): string {
+    const effective = (tag || "thinking").trim() || "thinking";
+    const tags = effective === "thinking" ? ["thinking", "thought"] : [effective];
+    return extractXmlField(rawText.trim(), tags).trim();
+}
+
+export function parseOfflineResponse(rawText: string, summaryTag: string): ParsedOfflineResponse {
     const trimmed = rawText.trim();
     const effectiveSummaryTag = summaryTag.trim() || "summary";
-    const effectiveThinkingTag = (thinkingTag || "thinking").trim() || "thinking";
     const summary = extractXmlField(trimmed, [effectiveSummaryTag, "summary"]);
-    // 预设格式里的思维链：优先用预设配置的标签名（preset.thinking_tag），默认 <thinking>（兼容 <thought>），
-    // 与模型 API 原生 reasoning 是两回事。
-    const thinkingTags = effectiveThinkingTag === "thinking"
-        ? ["thinking", "thought"]
-        : [effectiveThinkingTag];
-    const thinking = extractXmlField(trimmed, thinkingTags);
     let content = extractXmlField(trimmed, ["content"]);
     if (!content) {
-        // 无 <content> 标签时回退到剥掉摘要/思维链标签后的全文
+        // 无 <content> 标签时回退到剥掉摘要标签后的全文
         content = stripXmlField(stripXmlField(trimmed, effectiveSummaryTag), "summary");
-        content = stripXmlField(stripXmlField(content, effectiveThinkingTag), effectiveThinkingTag === "thinking" ? "thought" : "");
     }
     return {
         rawText: trimmed,
         content: content.trim(),
         summary: summary.trim(),
         summaryTag: effectiveSummaryTag,
-        thinking: thinking.trim() || undefined,
-        thinkingTag: effectiveThinkingTag,
     };
 }

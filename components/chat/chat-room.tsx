@@ -43,7 +43,7 @@ import { ConfirmDialog } from "@/components/ui/modal";
 import { deleteWeixinCloudMessagesFromCloud } from "@/lib/weixin-cloud-sync";
 import { loadBindingConfig, loadRegexes, resolveBinding, resolveUserIdentity } from "@/lib/settings-storage";
 import { generateGroupChatCompletion, generateGroupOfflineChatCompletion, parseGroupChatResponse, buildEditableGroupRoundText } from "@/lib/group-chat-engine";
-import { appendChatOfflineTurn, deleteChatOfflineTurn, deleteChatOfflineTurnsFrom, loadChatOfflineTurns, parseOfflineResponse, saveChatOfflineTurns, updateChatOfflineTurn, type ChatOfflineTurn } from "@/lib/chat-offline-storage";
+import { appendChatOfflineTurn, deleteChatOfflineTurn, deleteChatOfflineTurnsFrom, extractThinkingTag, loadChatOfflineTurns, parseOfflineResponse, saveChatOfflineTurns, updateChatOfflineTurn, type ChatOfflineTurn } from "@/lib/chat-offline-storage";
 import { applyDisplayRegex, applyEditRegex } from "@/lib/llm-prompt-assembler";
 import { scheduleFollowUp, cancelFollowUp } from "@/lib/follow-up-service";
 import { useKeyboardDismissAutoSend } from "@/components/chat/use-keyboard-dismiss-auto-send";
@@ -3979,7 +3979,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
         const rawSource = formatOfflineTurnXml(turn);
         const rawDisplay = renderDisplayText(rawSource, 2, true);
         const parsed = rawDisplay !== rawSource
-            ? parseOfflineResponse(rawDisplay, turn.summaryTag || "summary", turn.thinkingTag)
+            ? parseOfflineResponse(rawDisplay, turn.summaryTag || "summary")
             : null;
         const hasParsedDisplay = Boolean(parsed?.content.trim() || parsed?.summary.trim());
         return {
@@ -4190,20 +4190,25 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
         }
 
         const nextContent = applyEditTextRegex(content, 2, true);
-        const parsed = parseOfflineResponse(nextContent, turn.summaryTag || "summary", turn.thinkingTag);
+        const parsed = parseOfflineResponse(nextContent, turn.summaryTag || "summary");
         const assistantContent = parsed.content.trim() || parsed.rawText.trim();
         if (!assistantContent) {
             showChatToast("没有解析到线下正文");
             return;
         }
         if (!parsed.summary.trim()) showChatToast(`未提取到 <${parsed.summaryTag}> 摘要`);
+        // 思维链：parseOfflineResponse 已回归官方两参数（不再提取 thinking）。
+        // 若该条原本带标签思维链（预设开启线下标签解析），按原标签从编辑后的正文重新提取，否则保持无。
+        const editedThinking = turn.thinkingText !== undefined
+            ? (extractThinkingTag(nextContent, turn.thinkingTag) || undefined)
+            : undefined;
         const updated = updateChatOfflineTurn(session.id, turn.id, {
             assistantContent,
             summary: parsed.summary.trim(),
             summaryTag: parsed.summaryTag,
             rawText: parsed.rawText,
-            thinkingText: parsed.thinking,
-            thinkingTag: parsed.thinkingTag,
+            thinkingText: editedThinking,
+            thinkingTag: editedThinking !== undefined ? turn.thinkingTag : undefined,
         });
         if (updated) setOfflineTurns(prev => prev.map(item => item.id === updated.id ? updated : item));
         setEditingOfflineTarget(null);
