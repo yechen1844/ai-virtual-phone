@@ -1097,6 +1097,10 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
     const [offlineStreamPreview, setOfflineStreamPreview] = useState<null | { content: string; summary: string }>(null);
     const streamAccumRef = useRef("");
     const offlineStreamAccumRef = useRef("");
+    // 群聊/单聊流式预览解析的 rAF 合并帧（限频：一帧最多解析一次全文）
+    const streamParseFrameRef = useRef(0);
+    // 线下模式流式预览解析的 rAF 合并帧（独立于线上，避免互相干扰）
+    const offlineStreamFrameRef = useRef(0);
     const [activeOfflineTarget, setActiveOfflineTarget] = useState<OfflineActionTarget | null>(null);
     const [editingOfflineTarget, setEditingOfflineTarget] = useState<OfflineActionTarget | null>(null);
     const [editingOfflineContent, setEditingOfflineContent] = useState("");
@@ -1994,12 +1998,46 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
         if (el) el.scrollTop = el.scrollHeight;
     }, [offlineMode, offlineTurns.length, isOfflineGenerating, pendingOfflineUserText]);
 
-    // 流式预览增量更新时跟随滚动到底（生成过程中用户盯着底部看）
+    // 流式预览增量更新时跟随滚动到底：仅在用户本来就停在底部附近时跟随，
+    // 用户上翻历史/查看旧消息时绝不拽回底部（否则长回复生成中根本无法阅读）。
+    const isNearBottomRef = useRef(true);
+    useEffect(() => {
+        const el = scrollRef.current;
+        if (!el) return;
+        const onScroll = () => {
+            // 距底部 < 120px 视为"在底部附近"；用户上翻即停用自动跟随
+            isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+        };
+        el.addEventListener("scroll", onScroll, { passive: true });
+        return () => el.removeEventListener("scroll", onScroll);
+    }, []);
+    // 只在接近底部时才跟随，且用 rAF 合并到下一帧，避免每帧 setState 后 layout 抖动
+    const streamFollowRef = useRef(0);
+    const followStreamScroll = useCallback(() => {
+        if (streamFollowRef.current) return;
+        streamFollowRef.current = window.requestAnimationFrame(() => {
+            streamFollowRef.current = 0;
+            if (!isNearBottomRef.current) return;
+            const el = scrollRef.current;
+            if (el) el.scrollTop = el.scrollHeight;
+        });
+    }, []);
     useLayoutEffect(() => {
         if (!streamPreview && !offlineStreamPreview) return;
-        const el = scrollRef.current;
-        if (el) el.scrollTop = el.scrollHeight;
-    }, [streamPreview, offlineStreamPreview, offlineMode]);
+        followStreamScroll();
+    }, [streamPreview, offlineStreamPreview, offlineMode, followStreamScroll]);
+
+    // 卸载时清理挂起的流式预览 rAF 帧，防止切会话后回调残留触发 setState
+    useEffect(() => {
+        return () => {
+            if (streamParseFrameRef.current) cancelAnimationFrame(streamParseFrameRef.current);
+            if (offlineStreamFrameRef.current) cancelAnimationFrame(offlineStreamFrameRef.current);
+            if (streamFollowRef.current) cancelAnimationFrame(streamFollowRef.current);
+            streamParseFrameRef.current = 0;
+            offlineStreamFrameRef.current = 0;
+            streamFollowRef.current = 0;
+        };
+    }, []);
 
     // Sync current session+messages to debug store for DebugPromptPanel
     useEffect(() => {
@@ -3149,18 +3187,28 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                         onStreamDelta: (delta) => {
                             if (!isCurrentGeneration()) return;
                             streamAccumRef.current += delta;
-                            const nameToId = new Map(groupCharacters.map(item => [item.name, item.id]));
-                            const rawParts = parseGroupChatResponse(streamAccumRef.current, nameToId);
-                            const parts = rawParts
-                                .filter(item => item.responseText.trim())
-                                .map(item => ({
-                                    characterId: item.characterId,
-                                    characterName: item.characterName,
-                                    text: cleanStreamText(item.responseText),
-                                }));
-                            setStreamPreview({ parts });
+                            // 群聊全文解析较重：合并到 rAF 下一帧执行，避免一帧多段增量重复解析
+                            if (streamParseFrameRef.current) return;
+                            streamParseFrameRef.current = window.requestAnimationFrame(() => {
+                                streamParseFrameRef.current = 0;
+                                if (!isCurrentGeneration()) return;
+                                const nameToId = new Map(groupCharacters.map(item => [item.name, item.id]));
+                                const rawParts = parseGroupChatResponse(streamAccumRef.current, nameToId);
+                                const parts = rawParts
+                                    .filter(item => item.responseText.trim())
+                                    .map(item => ({
+                                        characterId: item.characterId,
+                                        characterName: item.characterName,
+                                        text: cleanStreamText(item.responseText),
+                                    }));
+                                setStreamPreview({ parts });
+                            });
                         },
                         onTextPart: () => {
+                            if (streamParseFrameRef.current) {
+                                cancelAnimationFrame(streamParseFrameRef.current);
+                                streamParseFrameRef.current = 0;
+                            }
                             streamAccumRef.current = "";
                             setStreamPreview(null);
                         },
@@ -3186,9 +3234,19 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                         onStreamDelta: (delta) => {
                             if (!isCurrentGeneration()) return;
                             streamAccumRef.current += delta;
-                            setStreamPreview({ text: cleanStreamText(streamAccumRef.current) });
+                            // 预览更新合并到 rAF 下一帧：每帧最多一次全文净化+setState，避免高频增量卡顿
+                            if (streamParseFrameRef.current) return;
+                            streamParseFrameRef.current = window.requestAnimationFrame(() => {
+                                streamParseFrameRef.current = 0;
+                                if (!isCurrentGeneration()) return;
+                                setStreamPreview({ text: cleanStreamText(streamAccumRef.current) });
+                            });
                         },
                         onTextPart: () => {
+                            if (streamParseFrameRef.current) {
+                                cancelAnimationFrame(streamParseFrameRef.current);
+                                streamParseFrameRef.current = 0;
+                            }
                             streamAccumRef.current = "";
                             setStreamPreview(null);
                         },
@@ -3476,20 +3534,30 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                     onStreamDelta: (delta) => {
                         if (!isCurrentGeneration()) return;
                         streamAccumRef.current += delta;
-                        const nameToId = new Map(groupCharacters.map(item => [item.name, item.id]));
-                        const rawParts = parseGroupChatResponse(streamAccumRef.current, nameToId);
-                        const parts = rawParts
-                            .filter(item => item.responseText.trim())
-                            .map(item => ({
-                                characterId: item.characterId,
-                                characterName: item.characterName,
-                                text: cleanStreamText(item.responseText),
-                            }));
-                        setStreamPreview({ parts });
+                        // 群聊全文解析较重：合并到 rAF 下一帧执行，避免一帧多段增量重复解析
+                        if (streamParseFrameRef.current) return;
+                        streamParseFrameRef.current = window.requestAnimationFrame(() => {
+                            streamParseFrameRef.current = 0;
+                            if (!isCurrentGeneration()) return;
+                            const nameToId = new Map(groupCharacters.map(item => [item.name, item.id]));
+                            const rawParts = parseGroupChatResponse(streamAccumRef.current, nameToId);
+                            const parts = rawParts
+                                .filter(item => item.responseText.trim())
+                                .map(item => ({
+                                    characterId: item.characterId,
+                                    characterName: item.characterName,
+                                    text: cleanStreamText(item.responseText),
+                                }));
+                            setStreamPreview({ parts });
+                        });
                     },
                     onTextPart: async (text, senderInfo, options) => {
                         if (!isCurrentGeneration()) return;
                         // 本轮群聊内容经 onTextPart 落库后重置，供下一轮（工具轮）重新预览
+                        if (streamParseFrameRef.current) {
+                            cancelAnimationFrame(streamParseFrameRef.current);
+                            streamParseFrameRef.current = 0;
+                        }
                         streamAccumRef.current = "";
                         setStreamPreview(null);
                         if (!text.trim() || !senderInfo) return;
@@ -3642,12 +3710,22 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                     onStreamDelta: (delta) => {
                         if (!isCurrentGeneration()) return;
                         streamAccumRef.current += delta;
-                        setStreamPreview({ text: cleanStreamText(streamAccumRef.current) });
+                        // 预览更新合并到 rAF 下一帧：每帧最多一次全文净化+setState，避免高频增量卡顿
+                        if (streamParseFrameRef.current) return;
+                        streamParseFrameRef.current = window.requestAnimationFrame(() => {
+                            streamParseFrameRef.current = 0;
+                            if (!isCurrentGeneration()) return;
+                            setStreamPreview({ text: cleanStreamText(streamAccumRef.current) });
+                        });
                     },
                     onTextPart: async (text, _senderInfo, options) => {
                         if (!isCurrentGeneration()) return;
                         // 本轮流式已结束且内容经 splitAndSaveAIMessages 落库：清掉预览、重置累积，
                         // 供下一轮（工具轮）重新累积预览
+                        if (streamParseFrameRef.current) {
+                            cancelAnimationFrame(streamParseFrameRef.current);
+                            streamParseFrameRef.current = 0;
+                        }
                         streamAccumRef.current = "";
                         setStreamPreview(null);
                         if (text.trim()) {
@@ -4039,13 +4117,19 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                 const onOfflineDelta = (delta: string) => {
                     if (!isCurrentOfflineRun()) return;
                     offlineStreamAccumRef.current += delta;
-                    const parsed = parseOfflineResponse(offlineStreamAccumRef.current, "summary");
-                    // 流式碎片阶段 XML 标签可能未闭合：content 提取不到时，剥掉开标签残片直接显示原文
-                    const previewContent = parsed.content || offlineStreamAccumRef.current
-                        .replace(/<\/?(?:content|summary|thinking|thought)>/gi, "")
-                        .replace(/<[^>]+>/g, "")
-                        .trim();
-                    setOfflineStreamPreview({ content: previewContent, summary: parsed.summary });
+                    // 线下预览解析合并到 rAF 下一帧：每帧最多一次全文解析+setState
+                    if (offlineStreamFrameRef.current) return;
+                    offlineStreamFrameRef.current = window.requestAnimationFrame(() => {
+                        offlineStreamFrameRef.current = 0;
+                        if (!isCurrentOfflineRun()) return;
+                        const parsed = parseOfflineResponse(offlineStreamAccumRef.current, "summary");
+                        // 流式碎片阶段 XML 标签可能未闭合：content 提取不到时，剥掉开标签残片直接显示原文
+                        const previewContent = parsed.content || offlineStreamAccumRef.current
+                            .replace(/<\/?(?:content|summary|thinking|thought)>/gi, "")
+                            .replace(/<[^>]+>/g, "")
+                            .trim();
+                        setOfflineStreamPreview({ content: previewContent, summary: parsed.summary });
+                    });
                 };
                 const result = session.isGroup
                     ? await generateGroupOfflineChatCompletion(session, history, { signal: offlineRun.controller.signal, onStreamDelta: onOfflineDelta })
@@ -5483,7 +5567,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                                     <span>线下回复生成中</span>
                                     {offlineStreamPreview?.content && (
                                         <div className="chat-offline-stream-preview">
-                                            <BilingualTextBlock text={offlineStreamPreview.content} mode="markdown" defaultExpanded />
+                                            {/* 流式预览用轻量 pre-wrap 渲染：避免每帧跑 markdown/双语解析导致闪烁卡顿 */}
+                                            <div className="chat-stream-text whitespace-pre-wrap break-words">{offlineStreamPreview.content}</div>
                                             <span className="chat-stream-cursor" aria-hidden="true" />
                                         </div>
                                     )}
@@ -5985,7 +6070,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                                         <div className="chat-msg-content-wrap flex flex-col min-w-0 max-w-[70%]">
                                             <span className="chat-group-sender-name">{part.characterName}</span>
                                             <div className="chat-bubble-role-assistant chat-stream-bubble break-words rounded-md px-3 py-2">
-                                                <BilingualTextBlock text={part.text} mode="markdown" defaultExpanded />
+                                                {/* 流式预览用轻量 pre-wrap 渲染：避免每帧跑 markdown/双语解析导致闪烁卡顿 */}
+                                                <div className="chat-stream-text whitespace-pre-wrap break-words">{part.text}</div>
                                                 <span className="chat-stream-cursor" aria-hidden="true" />
                                             </div>
                                         </div>
@@ -6001,7 +6087,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                                 </div>
                                 <div className="chat-msg-content-wrap flex flex-col min-w-0 max-w-[70%]">
                                     <div className="chat-bubble-role-assistant chat-stream-bubble break-words rounded-md px-3 py-2">
-                                        <BilingualTextBlock text={streamPreview.text} mode="markdown" defaultExpanded />
+                                        {/* 流式预览用轻量 pre-wrap 渲染：避免每帧跑 markdown/双语解析导致闪烁卡顿 */}
+                                        <div className="chat-stream-text whitespace-pre-wrap break-words">{streamPreview.text}</div>
                                         <span className="chat-stream-cursor" aria-hidden="true" />
                                     </div>
                                 </div>

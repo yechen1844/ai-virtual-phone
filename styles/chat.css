@@ -7061,6 +7061,15 @@
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 
+/* 流式预览正文：轻量渲染，避免每帧 markdown/双语解析导致闪烁卡顿。
+   保留换行与基础间距观感，与正式气泡（BilingualTextBlock）视觉接近。 */
+.chat-stream-text {
+  font-size: calc(14px * var(--app-text-scale, 1));
+  line-height: 1.7;
+  color: var(--c-text-title, var(--c-text));
+  overflow-wrap: break-word;
+}
+
 .chat-stream-bubble .chat-stream-cursor {
   display: inline-block;
   width: 2px;
