@@ -1343,20 +1343,33 @@ export type RegexContext = {
 };
 
 /**
+ * 编译缓存：同一 findRegex 字符串复用编译结果。
+ * 显示层每条消息每次渲染都会命中相同规则，之前每次都 new RegExp 重新编译，
+ * 匹配替换走慢路径的会话（如含 <思考结束> 残留标签）会明显卡顿。
+ */
+const _regexFromStringCache = new Map<string, RegExp | null>();
+
+/**
  * Parse a regex string like `/pattern/flags` into a RegExp.
  * Returns null if invalid. Does NOT force any flags — uses exactly what the user wrote.
  */
 function regexFromString(input: string): RegExp | null {
+    if (_regexFromStringCache.has(input)) return _regexFromStringCache.get(input)!;
+    let compiled: RegExp | null = null;
     try {
         const m = input.match(/(\/?)(.+)\1([a-z]*)/i);
-        if (!m) return null;
-        if (m[3] && !/^(?!.*?(.).*?\1)[dgimsuyv]+$/.test(m[3])) {
-            return new RegExp(input);
+        if (m) {
+            if (m[3] && !/^(?!.*?(.).*?\1)[dgimsuyv]+$/.test(m[3])) {
+                compiled = new RegExp(input);
+            } else {
+                compiled = new RegExp(m[2], m[3]);
+            }
         }
-        return new RegExp(m[2], m[3]);
     } catch {
-        return null;
+        compiled = null;
     }
+    _regexFromStringCache.set(input, compiled);
+    return compiled;
 }
 
 /** Escape special regex chars in a macro value so it can be embedded in a findRegex pattern. */
