@@ -37,18 +37,6 @@ const VIEW_MODE_OPTIONS: { value: ReadingViewMode; label: string; desc: string }
 const RETRY_MIN = 0;
 const RETRY_MAX = 5;
 
-/** 批注预生成触发时机：读到上一批批注的比例 */
-const PREFETCH_THRESHOLD_OPTIONS: { value: number; label: string; desc: string }[] = [
-    { value: 1 / 2, label: "读到一半", desc: "预留生成时间更充足" },
-    { value: 2 / 3, label: "读到 2/3", desc: "默认推荐" },
-    { value: 3 / 4, label: "读到 3/4", desc: "接近读完才生成" },
-];
-
-/** 浮点档位比较容差 */
-function prefetchThresholdMatches(a: number, b: number): boolean {
-    return Math.abs(a - b) < 0.01;
-}
-
 type Props = {
     onClose: () => void;
 };
@@ -213,22 +201,22 @@ export function ReadingInteractionDialog({ onClose }: Props) {
                     </div>
                     {(config.autoAnnotatePrefetch || config.autoAnnotatePrefetchPdf) && (
                         <>
-                            <p className="reading-settings-inline-note">
-                                <span>读到上一批批注的多少时开始生成下一批：</span>
-                            </p>
-                            <div className="reading-option-grid reading-option-grid--three">
-                                {PREFETCH_THRESHOLD_OPTIONS.map((opt) => (
-                                    <button
-                                        key={opt.value}
-                                        type="button"
-                                        className={`reading-option-card ${prefetchThresholdMatches(config.annotationPrefetchThreshold ?? 2 / 3, opt.value) ? "is-active" : ""}`}
-                                        onClick={() => setConfig((prev) => ({ ...prev, annotationPrefetchThreshold: opt.value }))}
-                                    >
-                                        <span className="reading-option-card-label">{opt.label}</span>
-                                        <span className="reading-option-card-desc">{opt.desc}</span>
-                                    </button>
-                                ))}
+                            <div className="reading-settings-inline-note">
+                                <span>读到当前批的多少时预生成下一批</span>
+                                <span>{Math.round((config.annotationPrefetchThreshold ?? 2 / 3) * 100)}%</span>
                             </div>
+                            <input
+                                type="range"
+                                className="w-full my-1"
+                                min={0.05}
+                                max={0.95}
+                                step={0.05}
+                                value={config.annotationPrefetchThreshold ?? 2 / 3}
+                                onChange={(e) => setConfig((prev) => ({ ...prev, annotationPrefetchThreshold: Number(e.target.value) }))}
+                            />
+                            <p className="reading-settings-inline-note">
+                                <span>百分比越低，越早开始预生成下一批——设得很低（如 5%）时，刚开始读当前批，下一批批注就已经在生成/已生成，阅读不等待。默认 2/3。</span>
+                            </p>
                         </>
                     )}
                     <p className="reading-settings-inline-note">
