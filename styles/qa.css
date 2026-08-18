@@ -1449,6 +1449,11 @@
 /* ── 消息操作菜单（长按 / 右键弹出：复制、编辑）── */
 .qa-msg-wrap {
   position: relative;
+  /* 消息级懒渲染：视口外的消息跳过布局与绘制，显著降低长对话点击输入框/resize 的卡顿。
+     contain-intrinsic-size 给浏览器一个预估高度，避免滚动条剧烈跳动。
+     不支持该属性的浏览器会正常回退到全量渲染。 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 80px;
 }
 
 /* 消息操作（复制 / 编辑）：常驻在气泡下方的小图标，替代原来的长按菜单

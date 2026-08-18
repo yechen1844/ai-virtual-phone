@@ -275,7 +275,7 @@ function QaStreamingText({ text }: { text: string }) {
   );
 }
 
-function QaMessageItem({
+const QaMessageItem = memo(function QaMessageItem({
   msg,
   isStreaming,
   onRetry,
@@ -407,7 +407,7 @@ function QaMessageItem({
       )}
     </div>,
   );
-}
+});
 
 // ── 会话抽屉 ─────────────────────────────────────────
 
