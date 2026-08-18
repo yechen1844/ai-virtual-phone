@@ -766,7 +766,7 @@ function ApiLogViewer({ onBack }: { onBack: () => void }) {
                                                     tabIndex={0}
                                                     onClick={(e) => { e.stopPropagation(); setExpandedId(isOpen ? null : log.id); }}
                                                     onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setExpandedId(isOpen ? null : log.id); } }}
-                                                    title="查看这条记录的真实原始响应（含思维链）"
+                                                    title="查看这条调用的思维链原文"
                                                 >查看原始</span>
                                                 <ChevronRight
                                                     size={16}
@@ -812,14 +812,6 @@ function ApiLogViewer({ onBack }: { onBack: () => void }) {
                                                 <div className="api-log-response whitespace-pre-wrap break-all leading-[1.4]">
                                                     {log.rawResponse}
                                                 </div>
-                                                {log.rawData && (
-                                                    <>
-                                                        <div className="font-bold mt-3 mb-[6px] text-[var(--c-danger)]">真实原始响应（服务端返回，含思维链）</div>
-                                                        <div className="api-log-rawdata whitespace-pre-wrap break-all leading-[1.4]">
-                                                            {log.rawData}
-                                                        </div>
-                                                    </>
-                                                )}
                                             </div>
                                         )}
                                     </div>

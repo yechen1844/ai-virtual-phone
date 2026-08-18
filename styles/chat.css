@@ -6679,17 +6679,6 @@
   background: rgba(255,149,0,0.12);
   border-left: 3px solid var(--c-warning);
 }
-.api-log-rawdata {
-  padding: 8px;
-  border-radius: 6px;
-  white-space: pre-wrap;
-  word-break: break-all;
-  line-height: 1.4;
-  background: rgba(0,0,0,0.45);
-  border-left: 3px solid var(--c-icon-active);
-  max-height: 320px;
-  overflow-y: auto;
-}
 
 /* ── 全屏特效设置弹窗（底部全宽弹层）── */
 .screen-fx-sheet {

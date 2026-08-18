@@ -769,16 +769,17 @@ export async function sendLLMStreamRequest(
             const errorText = await response.text();
             throw new ChatEngineError(`API Stream Error ${response.status}: ${errorText}`);
         }
-        // 流式路径额外收集思维链：readSseStream 只通过 onReasoningDelta 回调透传，
-        // 不收集的话日志里就只有清洗后的回复正文，思维链被吞（用户反馈看不到真实原始）
+        // 流式路径收集思维链原文：readSseStream 只通过 onReasoningDelta 回调透传，
+        // 不额外包一层的话日志里就只有清洗后的回复正文，思维链被吞。
+        // 注意：必须无条件创建回调对象（不能 callbacks 为空就不传），否则思维链收集不到。
         let streamedReasoning = "";
-        const streamLogCallbacks: ChatCompletionStreamCallbacks | undefined = (pluginCallbacks ?? callbacks) ? {
+        const streamLogCallbacks: ChatCompletionStreamCallbacks = {
             ...(pluginCallbacks ?? callbacks),
             onReasoningDelta: async (text: string) => {
                 streamedReasoning += text;
                 await (pluginCallbacks ?? callbacks)?.onReasoningDelta?.(text);
             },
-        } : undefined;
+        };
         const { content: streamedContent, rawResponse } = await readSseStream(response, request.providerKind, streamLogCallbacks);
         if (!streamedContent.trim()) {
             throw new ChatEngineError("流式响应没有解析到文本增量。");
@@ -787,8 +788,7 @@ export async function sendLLMStreamRequest(
         rawOutput = await applyChatPluginLlmResponse(rawOutput, pluginPurpose);
 
         // Store API log entry — mirror sendLLMRequest so streaming calls also show up
-        // in the "底层调用大模型日志" panel. rawResponse 存原始 SSE 事件文本（含思维链增量），
-        // reasoning 单独拆出方便直接展示。
+        // in the "底层调用大模型日志" panel. reasoning 单独存思维链原文，供「查看原始」直接展示。
         const sanitizedMessages = request.messagesForLog.map(m => ({
             ...m,
             content: typeof m.content === "string" ? m.content : "[vision: 含图片的多模态消息]",
@@ -799,7 +799,6 @@ export async function sendLLMStreamRequest(
             messages: sanitizedMessages,
             rawResponse: rawOutput,
             reasoning: streamedReasoning.trim() || undefined,
-            rawData: rawResponse || undefined,
         });
 
         if (!options?.skipOutputRegex) {
@@ -937,10 +936,8 @@ export async function sendLLMRequest(
             messages: sanitizedMessages,
             rawResponse: rawOutput,
             usage: parsed.usage,
-            // 思维链只经 onReasoning 回调透传，之前没进日志；这里单独存一份
+            // 思维链只经 onReasoning 回调透传，之前没进日志；这里单独存一份原文
             reasoning: parsed.reasoning || undefined,
-            // 真实原始 JSON 响应（截断防止撑爆存储），供「查看原始」核对
-            rawData: JSON.stringify(data).slice(0, 65_536) || undefined,
         });
 
         if (options?.skipOutputRegex) {
@@ -1162,7 +1159,6 @@ export async function sendLLMToolStreamRequest(
             messages: sanitizedMessages,
             rawResponse: logEntryRaw,
             reasoning: reasoning || undefined,
-            rawData: rawResponse || undefined,
         });
 
         if (!content && toolCalls.length === 0 && truncatedNames.length === 0) {

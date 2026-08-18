@@ -1382,6 +1382,12 @@ function QaApiLogSheet({ onClose, onNotice }: { onClose: () => void; onNotice?: 
                               <div className="qa-log-entry-content">{m.content}</div>
                             </div>
                           ))}
+                          {log.reasoning && (
+                            <>
+                              <div className="qa-log-label">思维链（Reasoning）</div>
+                              <pre className="qa-log-response">{log.reasoning}</pre>
+                            </>
+                          )}
                           <div className="qa-log-label is-danger">AI 原始回复</div>
                           <pre className="qa-log-response">{log.rawResponse}</pre>
                         </div>
