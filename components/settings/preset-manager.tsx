@@ -1006,6 +1006,21 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                                 />
                                                             </label>
                                                         </div>
+                                                        <div className="flex flex-col gap-2 col-span-full">
+                                                            <label className="ui-slider-label">剔除文本（一行一个）</label>
+                                                            <textarea
+                                                                rows={3}
+                                                                value={(preset.strip_texts || []).join("\n")}
+                                                                onChange={(e) => updatePreset(preset.id, {
+                                                                    strip_texts: e.target.value.split("\n").map(s => s.trim()).filter(Boolean),
+                                                                })}
+                                                                placeholder={"<思考结束>\n</思考结束>"}
+                                                                className="ui-input"
+                                                            />
+                                                            <div className="ui-slider-hint">
+                                                                模型回复中出现这些文本时直接删除，不进入消息、不进入发给模型的记录（如思维链残留标签）。字面量删除，不走正则。
+                                                            </div>
+                                                        </div>
                                                     </div>
                                                 </div>
                                             )}

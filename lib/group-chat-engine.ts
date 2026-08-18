@@ -34,6 +34,7 @@ import {
     appendEmptyGenerateGuardMessage,
     applyCustomPromptProfileToPreset,
     stripOnlineThinkingTag,
+    stripPresetTexts,
     type ChatCompletionCallbacks,
     type NativeChatToolBundle,
 } from "./chat-engine";
@@ -627,6 +628,8 @@ async function runNativeGroupToolLoop(params: {
             if (tagThinking) callbacks?.onReasoning?.(tagThinking);
             displayContent = stripOnlineThinkingTag(displayContent, onlineThinkingTag);
         }
+        // 剔除预设配置的文本片段（<思考结束> 等残留标签）
+        displayContent = stripPresetTexts(displayContent, preset);
         const assistantForToolContext = stripStateAndInnerForPrompt(displayContent);
         if (result.toolCalls.length === 0) {
             throwIfAborted(signal);
@@ -878,6 +881,8 @@ export async function generateGroupChatCompletion(
             if (tagThinking) callbacks?.onReasoning?.(tagThinking);
             filteredOutput = stripOnlineThinkingTag(filteredOutput, onlineThinkingTag);
         }
+        // 剔除预设配置的文本片段（<思考结束> 等残留标签），不进入消息/提示词
+        filteredOutput = stripPresetTexts(filteredOutput, preset);
 
         const toolFetches = parseToolFetches(filteredOutput);
         const { toolCalls } = parseToolCalls(filteredOutput);
@@ -1041,6 +1046,8 @@ export async function generateGroupChatCompletion(
                         if (tagThinking) callbacks?.onReasoning?.(tagThinking);
                         finalRawOutput = stripOnlineThinkingTag(finalRawOutput, onlineThinkingTag);
                     }
+                    // 剔除预设配置的文本片段（<思考结束> 等残留标签）
+                    finalRawOutput = stripPresetTexts(finalRawOutput, preset);
                 } catch {
                     throwIfAborted(options?.signal);
                     /* use last output */
@@ -1162,6 +1169,8 @@ export async function generateGroupOfflineChatCompletion(
     } else {
         rawOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, requestOptions);
     }
+    // 剔除预设配置的文本片段（<思考结束> 等残留标签），不进入记录/提示词
+    rawOutput = stripPresetTexts(rawOutput, preset);
     let parsed = parseOfflineResponse(rawOutput, summaryTag);
     // 思维链：预设开启「线下标签解析」时从正文提取 <thinking> 标签；关闭时走模型原生 reasoning（官方默认行为）
     if (offlineTagEnabled) {
@@ -1185,7 +1194,7 @@ export async function generateGroupOfflineChatCompletion(
         ];
         throwIfAborted(options?.signal);
         // 补提请求不带 onReasoning：避免用补提请求的思维链覆盖主请求已累积的完整思维链
-        const retryRaw = await sendLLMRequest(config, preset, retryMessages, regexes, meta, { ...requestOptions, onReasoning: undefined });
+        const retryRaw = stripPresetTexts(await sendLLMRequest(config, preset, retryMessages, regexes, meta, { ...requestOptions, onReasoning: undefined }), preset);
         const retried = parseOfflineResponse(retryRaw, summaryTag);
         if (retried.summary.trim()) {
             parsed = { ...parsed, summary: retried.summary.trim() };

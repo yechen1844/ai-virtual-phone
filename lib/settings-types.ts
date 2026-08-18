@@ -92,6 +92,9 @@ export type PresetConfig = SettingItemMeta & {
     online_thinking_enabled?: boolean;
     /** 线下模式是否启用思维链标签解析（默认关；关 = 走模型原生 reasoning） */
     offline_thinking_enabled?: boolean;
+    /** 模型回复中直接剔除的文本片段列表（字面量删除，不走正则）：如 <思考结束> 等残留标签，
+     *  生成时即删除，不进入消息、不进入发给模型的记录。 */
+    strip_texts?: string[];
     prompt_order?: PromptOrderEntry[];
     prompts: Prompt[];
 };

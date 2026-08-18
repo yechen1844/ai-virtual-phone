@@ -406,6 +406,17 @@ export function stripOnlineThinkingTag(rawOutput: string, tag: string): string {
         .trim();
 }
 
+/** 剔除预设配置的文本片段（如 <思考结束> 残留标签）。字面量删除，不走正则，避免编译/回溯开销。 */
+export function stripPresetTexts(text: string, preset: PresetConfig | null | undefined): string {
+    const list = preset?.strip_texts;
+    if (!list || list.length === 0 || !text) return text;
+    let result = text;
+    for (const s of list) {
+        if (s) result = result.split(s).join("");
+    }
+    return result;
+}
+
 function getPromptFilterTags(prompt: Prompt): string[] | null {
     if (prompt.tags && prompt.tags.length > 0) return prompt.tags;
     const legacy: string[] = [];
@@ -1983,6 +1994,8 @@ export async function generateOfflineChatCompletion(
     } else {
         rawOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, requestOptions);
     }
+    // 剔除预设配置的文本片段（<思考结束> 等残留标签），不进入记录/提示词
+    rawOutput = stripPresetTexts(rawOutput, preset);
     let parsed = parseOfflineResponse(rawOutput, summaryTag);
     // 思维链：预设开启「线下标签解析」时从正文提取 <thinking> 标签；关闭时走模型原生 reasoning（官方默认行为）
     if (offlineTagEnabled) {
@@ -2006,7 +2019,7 @@ export async function generateOfflineChatCompletion(
         ];
         throwIfAborted(options?.signal);
         // 补提请求不带 onReasoning：避免用补提请求的思维链覆盖主请求已累积的完整思维链
-        const retryRaw = await sendLLMRequest(config, preset, retryMessages, regexes, meta, { ...requestOptions, onReasoning: undefined });
+        const retryRaw = stripPresetTexts(await sendLLMRequest(config, preset, retryMessages, regexes, meta, { ...requestOptions, onReasoning: undefined }), preset);
         const retried = parseOfflineResponse(retryRaw, summaryTag);
         if (retried.summary.trim()) {
             parsed = { ...parsed, summary: retried.summary.trim() };
@@ -2125,6 +2138,8 @@ async function generateNativeChatCompletion(
             if (tagThinking) callbacks?.onReasoning?.(tagThinking);
             displayContent = stripOnlineThinkingTag(displayContent, onlineThinkingTag);
         }
+        // 剔除预设配置的文本片段（<思考结束> 等残留标签）
+        displayContent = stripPresetTexts(displayContent, preset);
 
         const { cleanText: afterActionStrip, actions } = parseActionTags(displayContent);
         if (actions.length > 0) {
@@ -2397,6 +2412,8 @@ export async function generateChatCompletion(
             }
             filteredOutput = stripOnlineThinkingTag(filteredOutput, onlineThinking.tag);
         }
+        // 剔除预设配置的文本片段（<思考结束> 等残留标签），不进入消息/提示词
+        filteredOutput = stripPresetTexts(filteredOutput, preset);
 
         // Parse actions (朋友圈 etc) — strip from display text but keep tool tags
         const { cleanText: afterActionStrip, actions } = parseActionTags(filteredOutput);
@@ -2575,6 +2592,8 @@ export async function generateChatCompletion(
                         if (tagThinking) callbacks?.onReasoning?.(tagThinking);
                         finalOutput = stripOnlineThinkingTag(finalOutput, onlineThinking.tag);
                     }
+                    // 剔除预设配置的文本片段（<思考结束> 等残留标签）
+                    finalOutput = stripPresetTexts(finalOutput, preset);
                     await callbacks?.onTextPart?.(finalOutput);
                     parts.push({ text: finalOutput });
                 } catch (err) {
