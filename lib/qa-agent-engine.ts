@@ -9,6 +9,7 @@ import {
     type LlmToolCall,
 } from "./llm-provider-adapter";
 import { sendLLMToolStreamRequest, type LLMToolRequestResult } from "./chat-engine";
+import { pushApiLog } from "./api-log-store";
 import type { LLMContentPart } from "./llm-prompt-assembler";
 import { loadApiConfigs, loadBindingConfig } from "./settings-storage";
 import type { ApiConfig } from "./settings-types";
@@ -335,10 +336,24 @@ async function requestQaCompletion(
     // 输出护栏：配置了「单次最大输出 token」时每次请求带 max_tokens，
     // 写超被服务端安全截断（agent 循环里会自动续接），而不是拖垮整轮
     const maxTokens = getQaMaxOutputTokens() ?? undefined;
+    // 工坊调用记录：与角色聊天/记忆等底层日志隔离，只进工坊右上角「调用记录」
+    const logQaCall = (entry: { model: string; messages: { role: string; content: string | LLMContentPart[]; marker?: string }[]; rawResponse: string; reasoning?: string }) => {
+        pushApiLog({
+            characterName: "工坊",
+            model: entry.model,
+            messages: entry.messages.map(m => ({
+                role: m.role,
+                content: typeof m.content === "string" ? m.content : "[vision: 含图片的多模态消息]",
+            })),
+            rawResponse: entry.rawResponse,
+            reasoning: entry.reasoning?.trim() || undefined,
+        });
+    };
     try {
         const streamRequest = buildProviderRequest(apiConfig, null, messages, { stream: true, maxTokens });
         const result = await streamQaProviderRequest(streamRequest, { signal: options?.signal }, options?.callbacks);
         if (!result.content.trim()) throw new Error("LLM 返回了空内容");
+        logQaCall({ model: apiConfig.defaultModel, messages: streamRequest.messagesForLog, rawResponse: result.content, reasoning: result.reasoning });
         return result;
     } catch (streamError) {
         if (options?.signal?.aborted) throw streamError;
@@ -356,6 +371,7 @@ async function requestQaCompletion(
         if (!content) throw new Error("LLM 返回了空内容");
         const visible = stripThinkBlocks(content);
         if (visible) await options?.callbacks?.onDelta?.(visible);
+        logQaCall({ model: apiConfig.defaultModel, messages: request.messagesForLog, rawResponse: content, reasoning: parsed.reasoning });
         return { content, reasoning: parsed.reasoning || "" };
     }
 }

@@ -68,12 +68,20 @@ export type ReadingInteractionConfig = {
     readingMode: ReadingViewMode;
     /** 自动批注失败时的静默重试次数（0=不重试） */
     annotationRetryCount: number;
-    /** 上一批自动批注读到该比例时，提前生成下一批批注（避免用户读到下一批时批注还没好）；默认关闭，由用户手动开启 */
+    /** TXT 预批注：读到上一批批注阈值时提前生成下一批（TXT 按段落分批）；默认关闭，由用户手动开启 */
     autoAnnotatePrefetch: boolean;
+    /** PDF 预批注：同上，但针对 PDF（按页分批）；默认关闭，由用户手动开启 */
+    autoAnnotatePrefetchPdf: boolean;
     /** 批注预生成触发时机：读到上一批批注的多少比例时提前生成下一批（0-1，默认 2/3） */
     annotationPrefetchThreshold: number;
     /** 共读讨论悬浮窗展开时是否自动滚动到最新消息（默认开启；用户可随后自由滑动打断） */
     chatAutoScrollOnOpen: boolean;
+    /** PDF 渲染：页面缩放率（1=按容器宽度原样，>1 放大；配合「一屏一页」使用） */
+    pdfZoom: number;
+    /** PDF 渲染：当前页前后各预渲染几页（懒加载粒度；过小会导致滚动到未渲染页反复渲染闪烁） */
+    pdfPreloadRadius: number;
+    /** PDF 预加载：开启后阅读时提前渲染后续页，滚动更平滑 */
+    pdfPreloadEnabled: boolean;
 };
 
 export const DEFAULT_READING_INTERACTION_CONFIG: ReadingInteractionConfig = {
@@ -84,8 +92,12 @@ export const DEFAULT_READING_INTERACTION_CONFIG: ReadingInteractionConfig = {
     readingMode: "page",
     annotationRetryCount: 3,
     autoAnnotatePrefetch: false,
+    autoAnnotatePrefetchPdf: false,
     annotationPrefetchThreshold: 2 / 3,
     chatAutoScrollOnOpen: true,
+    pdfZoom: 1,
+    pdfPreloadRadius: 3,
+    pdfPreloadEnabled: true,
 };
 
 export async function hydrateReadingStorage(): Promise<void> {

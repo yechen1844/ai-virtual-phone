@@ -2,6 +2,7 @@
 
 import { forwardRef, Fragment, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChatSession, ChatMessage, CHAT_APP_SETTINGS_UPDATED_EVENT, CHAT_INITIAL_VISIBLE_MESSAGE_COUNT, CHAT_LOAD_MORE_MESSAGE_COUNT, CHAT_REQUEST_REPLY_EVENT, loadChatAppSettings, loadChatMessages, loadChatContacts, loadChatSessions, saveChatSessions, pushChatMessage, updateChatMessage, deleteChatMessage, deleteChatMessagesFrom, deleteChatMessagesByIds, retractChatMessage, editChatMessage, updateMessageMediaData, replaceResponseBatchWithParts, replaceGroupResponseRound, isReadingDiscussMessage, isSystemInstructionMessage, createResponseBatchId, createResponseRoundId, getLatestStateValues, getLatestCharacterStateValues, compareChatMessages } from "@/lib/chat-storage";
+import { cleanStreamText } from "@/lib/stream-preview";
 import type { StateValue } from "@/lib/chat-storage";
 import { parseStateValues, mergeStateValues } from "@/lib/state-value-parser";
 import { parseAIResponse, type ParsedMessagePart } from "@/lib/rich-message-parser";
@@ -1088,6 +1089,14 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
     const [offlineVisibleCount, setOfflineVisibleCount] = useState(OFFLINE_INITIAL_LOAD);
     const [pendingOfflineUserText, setPendingOfflineUserText] = useState("");
     const [isOfflineGenerating, setIsOfflineGenerating] = useState(false);
+    // 流式生成预览：线上（单聊/群聊）与线下各一份，生成中实时刷新，结束后清空
+    const [streamPreview, setStreamPreview] = useState<null | {
+        text?: string;
+        parts?: { characterId: string; characterName: string; text: string }[];
+    }>(null);
+    const [offlineStreamPreview, setOfflineStreamPreview] = useState<null | { content: string; summary: string }>(null);
+    const streamAccumRef = useRef("");
+    const offlineStreamAccumRef = useRef("");
     const [activeOfflineTarget, setActiveOfflineTarget] = useState<OfflineActionTarget | null>(null);
     const [editingOfflineTarget, setEditingOfflineTarget] = useState<OfflineActionTarget | null>(null);
     const [editingOfflineContent, setEditingOfflineContent] = useState("");
@@ -1984,6 +1993,13 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
         const el = scrollRef.current;
         if (el) el.scrollTop = el.scrollHeight;
     }, [offlineMode, offlineTurns.length, isOfflineGenerating, pendingOfflineUserText]);
+
+    // 流式预览增量更新时跟随滚动到底（生成过程中用户盯着底部看）
+    useLayoutEffect(() => {
+        if (!streamPreview && !offlineStreamPreview) return;
+        const el = scrollRef.current;
+        if (el) el.scrollTop = el.scrollHeight;
+    }, [streamPreview, offlineStreamPreview, offlineMode]);
 
     // Sync current session+messages to debug store for DebugPromptPanel
     useEffect(() => {
@@ -3128,7 +3144,27 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                 const results = await generateGroupChatCompletion(
                     session,
                     history,
-                    { onReasoning: (t) => { roundReasoning = t; } },
+                    {
+                        onReasoning: (t) => { roundReasoning = t; },
+                        onStreamDelta: (delta) => {
+                            if (!isCurrentGeneration()) return;
+                            streamAccumRef.current += delta;
+                            const nameToId = new Map(groupCharacters.map(item => [item.name, item.id]));
+                            const rawParts = parseGroupChatResponse(streamAccumRef.current, nameToId);
+                            const parts = rawParts
+                                .filter(item => item.responseText.trim())
+                                .map(item => ({
+                                    characterId: item.characterId,
+                                    characterName: item.characterName,
+                                    text: cleanStreamText(item.responseText),
+                                }));
+                            setStreamPreview({ parts });
+                        },
+                        onTextPart: () => {
+                            streamAccumRef.current = "";
+                            setStreamPreview(null);
+                        },
+                    },
                     {
                         signal: generationRun.controller.signal,
                         appTags: theaterMode ? ["group_chat"] : undefined,
@@ -3145,7 +3181,18 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                         appTags: theaterMode ? ["chat"] : ["chat", "text"],
                         signal: generationRun.controller.signal,
                     },
-                    { onReasoning: (t) => { capturedReasoning = t; } },
+                    {
+                        onReasoning: (t) => { capturedReasoning = t; },
+                        onStreamDelta: (delta) => {
+                            if (!isCurrentGeneration()) return;
+                            streamAccumRef.current += delta;
+                            setStreamPreview({ text: cleanStreamText(streamAccumRef.current) });
+                        },
+                        onTextPart: () => {
+                            streamAccumRef.current = "";
+                            setStreamPreview(null);
+                        },
+                    },
                 );
                 if (!isCurrentGeneration()) return;
                 const result = await splitAndSaveAIMessages(flattenCompletionResult(cr), { ...generationGuard, reasoningText: capturedReasoning });
@@ -3416,6 +3463,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
         setIsGenerating(true);
         setPendingGenerate(false);
         setGenerationLock(session.id);
+        streamAccumRef.current = "";
+        setStreamPreview(null);
         try {
             const latestMessages = loadChatMessages(session.id);
             if (session.isGroup) {
@@ -3424,8 +3473,25 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                 let pendingGroupReasoning: string | undefined;
                 const results = await generateGroupChatCompletion(session, latestMessages, {
                     onReasoning: (t) => { pendingGroupReasoning = t; },
+                    onStreamDelta: (delta) => {
+                        if (!isCurrentGeneration()) return;
+                        streamAccumRef.current += delta;
+                        const nameToId = new Map(groupCharacters.map(item => [item.name, item.id]));
+                        const rawParts = parseGroupChatResponse(streamAccumRef.current, nameToId);
+                        const parts = rawParts
+                            .filter(item => item.responseText.trim())
+                            .map(item => ({
+                                characterId: item.characterId,
+                                characterName: item.characterName,
+                                text: cleanStreamText(item.responseText),
+                            }));
+                        setStreamPreview({ parts });
+                    },
                     onTextPart: async (text, senderInfo, options) => {
                         if (!isCurrentGeneration()) return;
+                        // 本轮群聊内容经 onTextPart 落库后重置，供下一轮（工具轮）重新预览
+                        streamAccumRef.current = "";
+                        setStreamPreview(null);
                         if (!text.trim() || !senderInfo) return;
                         const cleanedEditableText = cleanEditableAssistantText(text);
                         if (!cleanedEditableText) return;
@@ -3573,8 +3639,17 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                     signal: generationRun.controller.signal,
                 }, {
                     onReasoning: (t) => { pendingReasoning = t; },
+                    onStreamDelta: (delta) => {
+                        if (!isCurrentGeneration()) return;
+                        streamAccumRef.current += delta;
+                        setStreamPreview({ text: cleanStreamText(streamAccumRef.current) });
+                    },
                     onTextPart: async (text, _senderInfo, options) => {
                         if (!isCurrentGeneration()) return;
+                        // 本轮流式已结束且内容经 splitAndSaveAIMessages 落库：清掉预览、重置累积，
+                        // 供下一轮（工具轮）重新累积预览
+                        streamAccumRef.current = "";
+                        setStreamPreview(null);
                         if (text.trim()) {
                             const reasoningText = pendingReasoning;
                             pendingReasoning = undefined;
@@ -3826,7 +3901,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
         const rawSource = formatOfflineTurnXml(turn);
         const rawDisplay = renderDisplayText(rawSource, 2, true);
         const parsed = rawDisplay !== rawSource
-            ? parseOfflineResponse(rawDisplay, turn.summaryTag || "summary")
+            ? parseOfflineResponse(rawDisplay, turn.summaryTag || "summary", turn.thinkingTag)
             : null;
         const hasParsedDisplay = Boolean(parsed?.content.trim() || parsed?.summary.trim());
         return {
@@ -3952,6 +4027,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
         setPendingOfflineUserText(currentText);
         offlineGenerationInputRef.current = currentText;
         setIsOfflineGenerating(true);
+        offlineStreamAccumRef.current = "";
+        setOfflineStreamPreview(null);
         const offlineRun = createOfflineGenerationRun(session.id);
         const offlineRunId = offlineRun.runId;
         const isCurrentOfflineRun = () => isOfflineGenerationRunActive(session.id, offlineRunId);
@@ -3959,9 +4036,20 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
         void (async () => {
             try {
                 const history = buildOfflinePromptHistory(offlineTurns, currentText);
+                const onOfflineDelta = (delta: string) => {
+                    if (!isCurrentOfflineRun()) return;
+                    offlineStreamAccumRef.current += delta;
+                    const parsed = parseOfflineResponse(offlineStreamAccumRef.current, "summary");
+                    // 流式碎片阶段 XML 标签可能未闭合：content 提取不到时，剥掉开标签残片直接显示原文
+                    const previewContent = parsed.content || offlineStreamAccumRef.current
+                        .replace(/<\/?(?:content|summary|thinking|thought)>/gi, "")
+                        .replace(/<[^>]+>/g, "")
+                        .trim();
+                    setOfflineStreamPreview({ content: previewContent, summary: parsed.summary });
+                };
                 const result = session.isGroup
-                    ? await generateGroupOfflineChatCompletion(session, history, { signal: offlineRun.controller.signal })
-                    : await generateOfflineChatCompletion(session, history, { signal: offlineRun.controller.signal });
+                    ? await generateGroupOfflineChatCompletion(session, history, { signal: offlineRun.controller.signal, onStreamDelta: onOfflineDelta })
+                    : await generateOfflineChatCompletion(session, history, { signal: offlineRun.controller.signal, onStreamDelta: onOfflineDelta });
                 if (!isCurrentOfflineRun()) return;
                 const assistantContent = result.content.trim() || result.rawText.trim();
                 if (!assistantContent) throw new Error("AI 没有返回线下正文");
@@ -3974,6 +4062,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                     summaryTag: result.summaryTag,
                     rawText: result.rawText,
                     reasoningText: result.reasoning,
+                    thinkingText: result.thinking,
+                    thinkingTag: result.thinkingTag,
                 });
                 setOfflineTurns(prev => [...prev, saved]);
             } catch (error: any) {
@@ -3985,6 +4075,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                 setPendingOfflineUserText("");
                 offlineGenerationInputRef.current = "";
                 setIsOfflineGenerating(false);
+                offlineStreamAccumRef.current = "";
+                setOfflineStreamPreview(null);
             }
         })();
         return true;
@@ -4014,7 +4106,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
         }
 
         const nextContent = applyEditTextRegex(content, 2, true);
-        const parsed = parseOfflineResponse(nextContent, turn.summaryTag || "summary");
+        const parsed = parseOfflineResponse(nextContent, turn.summaryTag || "summary", turn.thinkingTag);
         const assistantContent = parsed.content.trim() || parsed.rawText.trim();
         if (!assistantContent) {
             showChatToast("没有解析到线下正文");
@@ -4026,6 +4118,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
             summary: parsed.summary.trim(),
             summaryTag: parsed.summaryTag,
             rawText: parsed.rawText,
+            thinkingText: parsed.thinking,
+            thinkingTag: parsed.thinkingTag,
         });
         if (updated) setOfflineTurns(prev => prev.map(item => item.id === updated.id ? updated : item));
         setEditingOfflineTarget(null);
@@ -4068,15 +4162,28 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
         setPendingOfflineUserText(retryInput);
         offlineGenerationInputRef.current = retryInput;
         setIsOfflineGenerating(true);
+        offlineStreamAccumRef.current = "";
+        setOfflineStreamPreview(null);
         const offlineRun = createOfflineGenerationRun(session.id);
         const offlineRunId = offlineRun.runId;
         const isCurrentOfflineRun = () => isOfflineGenerationRunActive(session.id, offlineRunId);
 
         try {
             const history = buildOfflinePromptHistory(baseTurns, retryInput);
+            const onOfflineDelta = (delta: string) => {
+                if (!isCurrentOfflineRun()) return;
+                offlineStreamAccumRef.current += delta;
+                const parsed = parseOfflineResponse(offlineStreamAccumRef.current, "summary");
+                // 流式碎片阶段 XML 标签可能未闭合：content 提取不到时，剥掉开标签残片直接显示原文
+                const previewContent = parsed.content || offlineStreamAccumRef.current
+                    .replace(/<\/?(?:content|summary|thinking|thought)>/gi, "")
+                    .replace(/<[^>]+>/g, "")
+                    .trim();
+                setOfflineStreamPreview({ content: previewContent, summary: parsed.summary });
+            };
             const result = session.isGroup
-                ? await generateGroupOfflineChatCompletion(session, history, { signal: offlineRun.controller.signal })
-                : await generateOfflineChatCompletion(session, history, { signal: offlineRun.controller.signal });
+                ? await generateGroupOfflineChatCompletion(session, history, { signal: offlineRun.controller.signal, onStreamDelta: onOfflineDelta })
+                : await generateOfflineChatCompletion(session, history, { signal: offlineRun.controller.signal, onStreamDelta: onOfflineDelta });
             if (!isCurrentOfflineRun()) return;
             const assistantContent = result.content.trim() || result.rawText.trim();
             if (!assistantContent) throw new Error("AI 没有返回线下正文");
@@ -4089,6 +4196,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                 summaryTag: result.summaryTag,
                 rawText: result.rawText,
                 reasoningText: result.reasoning,
+                thinkingText: result.thinking,
+                thinkingTag: result.thinkingTag,
             });
             setOfflineTurns([...baseTurns, saved]);
         } catch (error: any) {
@@ -4100,6 +4209,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
             setPendingOfflineUserText("");
             offlineGenerationInputRef.current = "";
             setIsOfflineGenerating(false);
+            offlineStreamAccumRef.current = "";
+            setOfflineStreamPreview(null);
         }
     };
 
@@ -5300,16 +5411,16 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                                             </button>
                                         ) : null}
                                     </div>
-                                    {/* 思维链触发条（线下模式，Claude app 风格） */}
-                                    {turn.reasoningText && (
+                                    {/* 思维链触发条（线下模式，Claude app 风格）：优先展示预设格式 <thinking> 解析结果，缺省回退模型 API 原生思考 */}
+                                    {(turn.thinkingText || turn.reasoningText) && (
                                         <button
                                             type="button"
                                             className="chat-reasoning-trigger"
-                                            onClick={(e) => { e.stopPropagation(); setReasoningSheetText(turn.reasoningText || null); }}
+                                            onClick={(e) => { e.stopPropagation(); setReasoningSheetText(turn.thinkingText || turn.reasoningText || null); }}
                                             aria-label="查看思考过程"
                                         >
                                             <Clock size={13} strokeWidth={1.8} className="chat-reasoning-trigger-icon" />
-                                            <span className="chat-reasoning-trigger-text">{reasoningPreviewLine(turn.reasoningText)}</span>
+                                            <span className="chat-reasoning-trigger-text">{reasoningPreviewLine(turn.thinkingText || turn.reasoningText || "")}</span>
                                             <ChevronRight size={14} strokeWidth={1.8} className="chat-reasoning-trigger-icon" />
                                         </button>
                                     )}
@@ -5368,7 +5479,15 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                                         />
                                     </div>
                                 </div>
-                                <div className="chat-offline-generating">线下回复生成中</div>
+                                <div className="chat-offline-generating">
+                                    <span>线下回复生成中</span>
+                                    {offlineStreamPreview?.content && (
+                                        <div className="chat-offline-stream-preview">
+                                            <BilingualTextBlock text={offlineStreamPreview.content} mode="markdown" defaultExpanded />
+                                            <span className="chat-stream-cursor" aria-hidden="true" />
+                                        </div>
+                                    )}
+                                </div>
                             </div>
                         )}
                     </div>
@@ -5850,6 +5969,46 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                         </div>
                     );
                 })}
+                {/* 流式生成预览：生成中实时显示原文增量，结束后由正式消息替换 */}
+                {!offlineMode && streamPreview && (
+                    <div className="chat-stream-preview" data-ui="stream-preview">
+                        {session.isGroup && streamPreview.parts && streamPreview.parts.length > 0 ? (
+                            streamPreview.parts.map((part, i) => {
+                                const senderChar = groupCharMap.get(part.characterId) || character;
+                                return (
+                                    <div key={`stream-${part.characterId}-${i}`} className="chat-msg-wrapper" data-role="assistant">
+                                        <div className="chat-msg-avatar flex flex-col items-center gap-1 shrink-0">
+                                            <div className="w-[40px] h-[40px] rounded-[20px] bg-[var(--c-input)] overflow-hidden">
+                                                {senderChar?.avatar ? <img src={senderChar.avatar} className="w-full h-full object-cover" alt="" /> : <ChatFallbackAvatar />}
+                                            </div>
+                                        </div>
+                                        <div className="chat-msg-content-wrap flex flex-col min-w-0 max-w-[70%]">
+                                            <span className="chat-group-sender-name">{part.characterName}</span>
+                                            <div className="chat-bubble-role-assistant chat-stream-bubble break-words rounded-md px-3 py-2">
+                                                <BilingualTextBlock text={part.text} mode="markdown" defaultExpanded />
+                                                <span className="chat-stream-cursor" aria-hidden="true" />
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })
+                        ) : streamPreview.text ? (
+                            <div className="chat-msg-wrapper" data-role="assistant">
+                                <div className="chat-msg-avatar flex flex-col items-center gap-1 shrink-0">
+                                    <div className="w-[40px] h-[40px] rounded-[20px] bg-[var(--c-input)] overflow-hidden">
+                                        {character?.avatar ? <img src={character.avatar} className="w-full h-full object-cover" alt="" /> : <ChatFallbackAvatar />}
+                                    </div>
+                                </div>
+                                <div className="chat-msg-content-wrap flex flex-col min-w-0 max-w-[70%]">
+                                    <div className="chat-bubble-role-assistant chat-stream-bubble break-words rounded-md px-3 py-2">
+                                        <BilingualTextBlock text={streamPreview.text} mode="markdown" defaultExpanded />
+                                        <span className="chat-stream-cursor" aria-hidden="true" />
+                                    </div>
+                                </div>
+                            </div>
+                        ) : null}
+                    </div>
+                )}
                 {/* Scroll anchor: browser keeps this in view when content above changes height */}
                 <div style={{ overflowAnchor: 'auto', height: 1 }} />
             </div>

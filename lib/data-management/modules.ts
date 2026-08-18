@@ -8,6 +8,9 @@ import type { DataModuleDefinition, DataModuleId } from "./types";
 const RESERVED_LOCAL_STORAGE_KEYS = [
   "ai_phone_idb_migrated_v1",
   "ai_phone_settings_idb_migrated_v1",
+  // 工坊偏好键：归属 workshop 模块精确导出，cache 的 includeAll 不得触碰
+  "ai_phone_qa_page_chars",
+  "ai_phone_qa_max_output_tokens",
 ];
 
 // ⚠️ CONTRACT: this list is the single source of truth for BOTH the data
@@ -31,6 +34,12 @@ export const DATA_MODULES: DataModuleDefinition[] = [
         label: "聊天设置与待处理状态",
         keys: ["ai_phone_chat_settings_v1", "ai_phone_followup_schedules_v1", "ai_phone_timed_wake_schedules_v1"],
         prefixes: ["chat-generating:", "pending_reply_", "ai_phone_chat_offline_turns:", "chat-offline-mode:"],
+      },
+      {
+        type: "kv",
+        label: "聊天插件",
+        keys: ["chat_plugins_v3", "chat_plugin_vars_v2", "chat_plugin_fragments_v2", "chat_plugin_errors_v1"],
+        prefixes: ["chat_plugin_data_v1:"],
       },
       {
         type: "localStorage",
@@ -68,6 +77,7 @@ export const DATA_MODULES: DataModuleDefinition[] = [
           "weixin_bots_v1",
           "weixin_keepalive_v1",
           "weixin_cloud_sync_config_v1",
+          "ai_phone_api_logs_v1",
         ],
       },
       {
@@ -90,6 +100,7 @@ export const DATA_MODULES: DataModuleDefinition[] = [
         keys: [
           "ai_phone_characters_v1",
           "ai_phone_bg_items_v1",
+          "ai_phone_character_versions_v1",
         ],
       },
     ],
@@ -110,11 +121,13 @@ export const DATA_MODULES: DataModuleDefinition[] = [
           "ai_phone_mascot_settings_v1",
           "ai_phone_icon_layout_v1",
           "ai_phone_icon_layout_v2",
+          "ai_phone_dock_layout_v1",
           "ai_phone_desktop_folders_v1",
           "ai_phone_canvas_pan_v2",
           "ai_phone_widgets_v1",
           "ai_phone_diy_templates_v1",
           "ai_phone_theme_profile_v1",
+          "ai_phone_css_assets_v1",
           "css-schemes-v1",
           "chat-app-custom-css",
           "music-custom-css",
@@ -305,7 +318,32 @@ export const DATA_MODULES: DataModuleDefinition[] = [
           "ai_phone_black_market_scene_sessions_v1",
           "ai_phone_black_market_studio_drafts_v1",
         ],
-        prefixes: ["map_world_theme_", "map_adventure_summary_", "ai_phone_black_market_theater_events_"],
+        prefixes: ["map_world_theme_", "map_adventure_summary_", "ai_phone_black_market_theater_events_", "ai_phone_checkphone_events_"],
+      },
+    ],
+  },
+  {
+    id: "workshop",
+    label: "工坊",
+    description: "答疑工坊（小坊）会话记录、GitHub 连接配置与反馈单",
+    variant: "teal",
+    sources: [
+      { type: "indexeddb", dbName: "AiPhoneQaDB", label: "工坊会话记录" },
+      {
+        type: "kv",
+        label: "工坊配置",
+        keys: [
+          "ai_phone_qa_github_v1",
+          "ai_phone_qa_feedback_v1",
+        ],
+      },
+      {
+        type: "localStorage",
+        label: "工坊偏好",
+        keys: [
+          "ai_phone_qa_page_chars",
+          "ai_phone_qa_max_output_tokens",
+        ],
       },
     ],
   },
