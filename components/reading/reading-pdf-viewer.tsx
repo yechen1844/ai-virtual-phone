@@ -482,6 +482,12 @@ export function PdfPageRenderer({
                 const initialPage = Math.min(Math.max(jumpToPage || prevReportedPage || 1, 1), pdf.numPages);
                 await renderPage(initialPage);
                 preloadNeighborhood(initialPage);
+                // 恢复进度：渲染完目标页后把滚动容器滚到目标页，确保打开即停在上次读的页（而非开头）
+                if (jumpToPage) {
+                    const targetEl = pageWrappers.get(jumpToPage);
+                    const sc = canvasContainerRef.current?.closest("[data-ui='body']") as HTMLElement | null;
+                    if (targetEl) scrollElementWithinContainer(sc || wrapperRef.current, targetEl, { block: "start" });
+                }
                 scheduleCurrentPageReport();
 
                 pageRoot?.addEventListener("scroll", scheduleCurrentPageReport, { passive: true });
@@ -542,7 +548,7 @@ export function PdfPageRenderer({
         if (!target) return;
         const scrollParent = canvasContainerRef.current.closest("[data-ui='body']") as HTMLElement | null;
         scrollElementWithinContainer(scrollParent || wrapperRef.current, target, { block: "start", behavior: "smooth" });
-    }, [docVersion, jumpToPage]);
+    }, [docVersion, jumpToPage, renderDone]);
 
     // Pinch-to-zoom
     useEffect(() => {

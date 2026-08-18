@@ -1859,8 +1859,6 @@ export function ReadingViewer({ book, onBack }: Props) {
 
     useEffect(() => {
         if (chapters.length === 0) return;
-        // PDF 未加载完成（总页数未知）时不保存进度，避免用初始/被覆盖的页码覆盖掉已持久化的正确进度
-        if (isPdf && pdfTotalPages <= 0) return;
 
         let scrollPosition: number;
         let progressFraction: number;
