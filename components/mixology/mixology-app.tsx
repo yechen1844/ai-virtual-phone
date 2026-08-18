@@ -47,7 +47,9 @@ import {
     saveMixRecipe,
     type MixProfile,
 } from "@/lib/mixology/storage";
-import { startMixSession } from "@/lib/mixology/engine";
+import { runMixSessionStart, startMixSession } from "@/lib/mixology/engine";
+import { disposeMixSandboxesForMaterial } from "@/lib/mixology/mechanism-runtime";
+import { mixKindRunsActiveCode } from "@/lib/mixology/types";
 import {
     createMixId,
     MIX_KIND_LABELS,
@@ -71,7 +73,9 @@ import { exportMixMaterial, exportMixMaterialPng, parseMixMaterialsFromJson, par
 import { MixMaterialEditor } from "./mixology-editor";
 import { MixologyGame } from "./mixology-game";
 import { CommentThread, MixologyHall } from "./mixology-hall";
-import { AuthorAvatar, KindGlyph, MatCard, MaterialDetail, MixConfirm, SealedNote, formatMixTime } from "./mixology-shared";
+import { AuthorAvatar, KindGlyph, MatCard, MaterialDetail, MixConfirm, MixTagList, SealedNote, formatMixTime } from "./mixology-shared";
+import { MixSlotEditor } from "./slot-editor";
+import { describeMixCondition } from "@/lib/mixology/state";
 
 /** 头像统一压成 192px JPEG dataURL 的小圆图，随发布上云也不占地方 */
 async function readAvatarFile(file: File): Promise<string> {
@@ -136,6 +140,7 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
     } | null>(null);
     const [barSlots, setBarSlots] = useState<Partial<Record<MixMaterialKind, MixSlotEntry[]>>>({});
     const [slotPicker, setSlotPicker] = useState<MixMaterialKind | null>(null);
+    const [slotEditor, setSlotEditor] = useState<MixMaterialKind | null>(null);
     const [nameSheetOpen, setNameSheetOpen] = useState(false);
     const [recipeName, setRecipeName] = useState("");
     const [openingPicker, setOpeningPicker] = useState<MixRecipe | null>(null);
@@ -167,6 +172,19 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
         setSessions(loadMixSessions());
     }, []);
 
+    /**
+     * 从酒材页/大厅点「编辑」进来：那边已经把自己的作品取回本地了，
+     * 这里负责切到酒柜、切到它所在的 TAG，并直接打开编辑页（仍带着云端关联）。
+     */
+    const openLocalEditor = useCallback((materialId: string) => {
+        const material = getMixMaterial(materialId);
+        if (!material) { showToast("没找到这件材料。"); return; }
+        refresh();
+        setTab("cabinet");
+        setCabinetKind(material.kind);
+        setEditor({ kind: material.kind, initial: material });
+    }, [refresh, showToast]);
+
     const cabinetFiltered = useMemo(
         () => cabinet.filter((m) => m.kind === cabinetKind),
         [cabinet, cabinetKind],
@@ -185,6 +203,19 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
         }
         return map;
     }, [barSlots, cabinet]);
+
+    /** 本杯小票里勾了「记住」的项：变量条件的可选项就是这些 */
+    const barVarNames = useMemo(() => {
+        const names: string[] = [];
+        for (const material of slotMaterials.ticket ?? []) {
+            if (material.kind !== "ticket") continue;
+            for (const item of material.vars ?? []) {
+                const name = item.name.trim();
+                if (name && !names.includes(name)) names.push(name);
+            }
+        }
+        return names;
+    }, [slotMaterials]);
 
     const handleWheelScroll = useCallback(() => {
         const el = wheelRef.current;
@@ -249,6 +280,8 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
     const startWithOpening = (recipe: MixRecipe, openingIndex: number) => {
         try {
             const session = startMixSession(recipe, { openingIndex });
+            // 开局钩子在后台补一笔（初始化机括的存储与记住的值），不挡跳转
+            void runMixSessionStart(session.id);
             setOpeningPicker(null);
             refresh();
             setPlaying(session.id);
@@ -259,6 +292,49 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
 
     const [sharing, setSharing] = useState(false);
     const importFileRef = useRef<HTMLInputElement | null>(null);
+    const editorFileRef = useRef<HTMLInputElement | null>(null);
+    // 换 key 强制重挂编辑器：表单各字段只在挂载时按 initial 初始化一次
+    const [editorSeq, setEditorSeq] = useState(0);
+
+    /**
+     * 编辑器里的「上传替换」：用文件内容替掉表单，但身份与云端关联留在原件上——
+     * id 不变，保存后覆盖同一条；已上架的那条也还认得它，点更新仍是覆盖而不是另发。
+     */
+    const handleEditorReplace = async (file: File | undefined) => {
+        if (!file || !editor) return;
+        try {
+            const isPng = file.type === "image/png" || /\.png$/i.test(file.name);
+            const materials = isPng
+                ? parseMixMaterialsFromPng(await file.arrayBuffer())
+                : parseMixMaterialsFromJson(await file.text());
+            // 一件都认不出时解析函数自己会抛错，所以走到这里 materials 一定非空
+            const picked = materials.find((m) => m.kind === editor.kind);
+            if (!picked) {
+                const kinds = [...new Set(materials.map((m) => MIX_KIND_LABELS[m.kind]))];
+                showToast(`这个文件里没有${MIX_KIND_LABELS[editor.kind]}，只有${kinds.join("、")}。`);
+                return;
+            }
+            const keep = editor.initial;
+            setEditor({
+                kind: editor.kind,
+                initial: keep
+                    ? {
+                        ...picked,
+                        id: keep.id,
+                        createdAt: keep.createdAt,
+                        publishedId: keep.publishedId,
+                        publishedAt: keep.publishedAt,
+                        author: keep.author,
+                        authorAvatar: keep.authorAvatar,
+                    } as MixMaterial
+                    : picked,
+            });
+            setEditorSeq((n) => n + 1);
+            showToast(`表单已换成「${picked.name}」的内容，还没保存。`);
+        } catch (error) {
+            showToast(error instanceof Error ? error.message : "读取失败");
+        }
+    };
 
     const handleImportFile = async (file: File | undefined) => {
         if (!file) return;
@@ -312,13 +388,19 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
      * - 旧版"随配方连料入柜"的材料线上没有条目，没法引用（blockers）。
      */
     const planShareRecipe = (recipe: MixRecipe) => {
-        const materials = MIX_SLOT_ORDER
+        // 保留「条目 ↔ 材料」的配对：分享出去时顺序与生效条件都要跟着走
+        const pairs = MIX_SLOT_ORDER
             .flatMap((k) => mixSlotEntries(recipe.slots, k)
-                .map((entry) => getMixBuiltin(entry.materialId) ?? cabinet.find((m) => m.id === entry.materialId) ?? null))
-            .filter((m): m is MixMaterial => Boolean(m));
+                .map((entry) => {
+                    const material = getMixBuiltin(entry.materialId) ?? cabinet.find((m) => m.id === entry.materialId) ?? null;
+                    return material ? { entry, material } : null;
+                }))
+            .filter((pair): pair is { entry: MixSlotEntry; material: MixMaterial } => Boolean(pair));
+        const materials = pairs.map((pair) => pair.material);
         const character = materials.find((m) => m.kind === "character");
         const own = materials.filter((m) => !isMixBuiltinId(m.id) && !m.imported);
         return {
+            pairs,
             materials,
             character: character && character.kind === "character" ? character : null,
             toPublish: own.filter((m) => !m.publishedId),
@@ -355,11 +437,15 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
             }
             // 第二步：拿到最新的 publishedId 映射，拼出引用数组
             const fresh = loadMixCabinet();
-            const parts = plan.materials.map((material) => {
-                if (isMixBuiltinId(material.id)) return { id: material.id, kind: material.kind, name: material.name, builtin: true as const };
-                if (material.imported) return { id: material.id, kind: material.kind, name: material.name };
-                const current = fresh.find((m) => m.id === material.id);
-                return { id: current?.publishedId ?? material.publishedId ?? material.id, kind: material.kind, name: material.name };
+            // 顺序 = pairs 的顺序（按槽位、格内自上而下），生效条件随件带上
+            const parts = plan.pairs.map(({ entry, material }) => {
+                const when = entry.when;
+                const base = isMixBuiltinId(material.id)
+                    ? { id: material.id, kind: material.kind, name: material.name, builtin: true as const }
+                    : material.imported
+                        ? { id: material.id, kind: material.kind, name: material.name }
+                        : { id: fresh.find((m) => m.id === material.id)?.publishedId ?? material.publishedId ?? material.id, kind: material.kind, name: material.name };
+                return when ? { ...base, when } : base;
             });
             const character = plan.character;
             const input = {
@@ -509,11 +595,11 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
 
             <div className="mix-body" data-fill={tab === "bar" && barTab === "create" ? "true" : undefined}>
                 {tab === "menu" ? (
-                    <MixologyHall mode="menu" kind={hallKind} scope={hallScope} onToast={showToast} onImported={refresh} reloadToken={hallReload} onLoadingChange={setHallLoading} />
+                    <MixologyHall mode="menu" kind={hallKind} scope={hallScope} onToast={showToast} onImported={refresh} reloadToken={hallReload} onLoadingChange={setHallLoading} onEditLocal={openLocalEditor} />
                 ) : null}
 
                 {tab === "hall" ? (
-                    <MixologyHall mode="hall" scope={hallScope} onToast={showToast} onImported={refresh} reloadToken={hallReload} onLoadingChange={setHallLoading} />
+                    <MixologyHall mode="hall" scope={hallScope} onToast={showToast} onImported={refresh} reloadToken={hallReload} onLoadingChange={setHallLoading} onEditLocal={openLocalEditor} />
                 ) : null}
 
                 {tab === "bar" ? (
@@ -526,7 +612,7 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
                         </div>
                     {barTab === "create" ? (
                     <div className="mix-bar-stage" data-centered="true">
-                        <div className="mix-bar-hint">左右滑动切换槽位 · 点击槽位选材料</div>
+                        <div className="mix-bar-hint">左右滑动切换槽位 · 点击槽位选材料 · 一格最多叠 3 件</div>
                         <div className="mix-wheel" ref={wheelRef} onScroll={handleWheelScroll}>
                             {MIX_SLOT_ORDER.map((kind) => {
                                 const stack = slotMaterials[kind] ?? [];
@@ -537,7 +623,8 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
                                         className="mix-slot"
                                         data-filled={chosen ? "true" : undefined}
                                         key={kind}
-                                        onClick={() => setSlotPicker(kind)}
+                                        // 空格子直接进选料（少点一下）；已有料的进这一格的编辑，能叠、能排序、能设条件
+                                        onClick={() => (chosen ? setSlotEditor(kind) : setSlotPicker(kind))}
                                     >
                                         <div className="mix-slot-kind">
                                             <b>{MIX_KIND_LABELS[kind]}</b>
@@ -555,7 +642,25 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
                                                         <div className="mix-slot-glyph"><KindGlyph kind={kind} size={34} /></div>
                                                     )}
                                                     <div className="mix-slot-name">{chosen.name}{extra > 0 ? ` +${extra}` : ""}</div>
-                                                    {chosen.hook ? <div className="mix-slot-hook">{chosen.hook}</div> : null}
+                                                    {stack.length > 1 ? (
+                                                        <div className="mix-slot-stack">
+                                                            {mixSlotEntries(barSlots, kind).map((entry, i) => {
+                                                                const mat = stack[i];
+                                                                if (!mat) return null;
+                                                                return (
+                                                                    <span className="mix-slot-stack-item" key={`${entry.materialId}-${i}`}>
+                                                                        {mat.name}
+                                                                        <i>{describeMixCondition(entry.when)}</i>
+                                                                    </span>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    ) : chosen.hook ? (
+                                                        <div className="mix-slot-hook">{chosen.hook}</div>
+                                                    ) : null}
+                                                    {stack.length === 1 && mixSlotEntries(barSlots, kind)[0]?.when ? (
+                                                        <div className="mix-slot-when">{describeMixCondition(mixSlotEntries(barSlots, kind)[0].when)}</div>
+                                                    ) : null}
                                                 </>
                                             ) : (
                                                 <>
@@ -660,6 +765,7 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
                                         kind={material.kind}
                                         name={material.name}
                                         hook={material.hook}
+                                        tags={material.tags}
                                         cover={material.cover}
                                         badge={isMixBuiltinId(material.id)
                                             ? "官方"
@@ -799,7 +905,15 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
                                 与应用市场同规矩；正文封存仅角色卡（isSealedMaterial），但操作限制对所有导入件生效 */}
                             {!detail.imported ? (
                                 <>
-                                    <button type="button" className="mix-icon-btn" onClick={() => exportMixMaterial(detail)} aria-label="导出 JSON" title="导出 JSON"><Download size={16} /></button>
+                                    <button
+                                        type="button"
+                                        className="mix-icon-btn"
+                                        onClick={() => { void exportMixMaterial(detail).catch((err) => showToast(err instanceof Error ? err.message : "导出失败")); }}
+                                        aria-label="导出 JSON"
+                                        title="导出 JSON"
+                                    >
+                                        <Download size={16} />
+                                    </button>
                                     <button
                                         type="button"
                                         className="mix-icon-btn"
@@ -822,8 +936,12 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
                                             confirmText: "更新",
                                             run: () => { const t = detail; setDetail(null); void handleShareMaterial(t); },
                                         } : {
-                                            title: "分享到酒材页？",
-                                            body: <>「{detail.name}」将出现在酒材页上，<b>其他人能看到它的完整内容</b>，也能加进自己的酒柜。<br />不想公开就先别发。</>,
+                                            title: mixKindRunsActiveCode(detail.kind) ? "把这件机括发出去？" : "分享到酒材页？",
+                                            body: mixKindRunsActiveCode(detail.kind) ? (
+                                                <>「{detail.name}」将出现在酒材页上，别人下载后<b>它的代码会在对方的对局里按轮执行</b>——能改写对方发出去的话、改写看到的正文、以对方的身份发言。<br />请确认这份代码是你自己写的、你清楚它做了什么。</>
+                                            ) : (
+                                                <>「{detail.name}」将出现在酒材页上，<b>其他人能看到它的完整内容</b>，也能加进自己的酒柜。<br />不想公开就先别发。</>
+                                            ),
                                             confirmText: "分享",
                                             run: () => { const t = detail; setDetail(null); void handleShareMaterial(t); },
                                         })}
@@ -877,9 +995,10 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
                                 // eslint-disable-next-line @next/next/no-img-element
                                 <img src={detail.cover} alt={detail.name} style={{ width: 96, height: 128, objectFit: "cover", borderRadius: 12, margin: "4px 0 12px" }} />
                             ) : null}
+                            <MixTagList tags={detail.tags} />
                             {/* 与酒材页同一套展示：角色卡点开看门面（画布/一句话介绍），设定正文进「编辑」看 */}
                             {detail.kind === "character" ? (
-                                <SealedNote hook={detail.hook} canvas={(detail as MixCharacterCard).canvas} />
+                                <SealedNote hook={detail.hook} canvas={(detail as MixCharacterCard).canvas} charName={(detail as MixCharacterCard).charName} />
                             ) : (
                                 <MaterialDetail material={detail} />
                             )}
@@ -969,10 +1088,29 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
                     <div className="mix-sheet" style={{ maxHeight: "92%" }}>
                         <div className="mix-sheet-head">
                             <div className="mix-sheet-title">{editor.initial ? "编辑" : "自建"}{MIX_KIND_LABELS[editor.kind]}</div>
+                            {/* 上传替换：改现成的件时先问一声，表单里已经有内容了 */}
+                            <button
+                                type="button"
+                                className="mix-icon-btn"
+                                onClick={() => {
+                                    if (!editor.initial) { editorFileRef.current?.click(); return; }
+                                    setConfirm({
+                                        title: "用文件替换表单内容？",
+                                        body: <>会把「{editor.initial.name}」现在填的内容整份换成文件里的那一份（JSON 或 PNG 卡都行）。<br />换完还没保存，看一眼不对可以直接关掉不存。<br />已上架的关联不会丢，保存后点更新仍是覆盖同一条。</>,
+                                        confirmText: "选择文件",
+                                        run: () => editorFileRef.current?.click(),
+                                    });
+                                }}
+                                aria-label="上传替换"
+                                title="上传文件替换表单内容（JSON / PNG 卡）"
+                            >
+                                <Upload size={17} />
+                            </button>
                             <button type="button" className="mix-icon-btn" onClick={() => setEditor(null)} aria-label="关闭"><X size={18} /></button>
                         </div>
                         <div className="mix-sheet-body">
                             <MixMaterialEditor
+                                key={`${editor.kind}-${editorSeq}`}
                                 kind={editor.kind}
                                 initial={editor.initial}
                                 onSave={(material) => {
@@ -981,6 +1119,8 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
                                     saveMixMaterial(editor.initial?.publishedId
                                         ? { ...material, publishedId: editor.initial.publishedId, publishedAt: editor.initial.publishedAt }
                                         : material);
+                                    // 机括改完，正在跑的沙盒里还是老代码——收掉，下次调用重建
+                                    if (material.kind === "mechanism") disposeMixSandboxesForMaterial(material.id);
                                     setEditor(null);
                                     refresh();
                                     showToast(`「${material.name}」已入柜。`);
@@ -993,6 +1133,23 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
             ) : null}
 
             {/* 吧台选材 */}
+            {slotEditor ? (
+                <MixSlotEditor
+                    kind={slotEditor}
+                    entries={mixSlotEntries(barSlots, slotEditor)}
+                    resolve={(id) => getMixBuiltin(id) ?? cabinet.find((m) => m.id === id) ?? null}
+                    varNames={barVarNames}
+                    onChange={(next) => setBarSlots((prev) => {
+                        const merged = { ...prev };
+                        if (next.length) merged[slotEditor] = next;
+                        else delete merged[slotEditor];
+                        return merged;
+                    })}
+                    onPickMore={() => setSlotPicker(slotEditor)}
+                    onClose={() => setSlotEditor(null)}
+                />
+            ) : null}
+
             {slotPicker ? (
                 <div className="mix-sheet-mask" onClick={() => setSlotPicker(null)}>
                     <div className="mix-sheet" onClick={(e) => e.stopPropagation()}>
@@ -1032,6 +1189,7 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
                                             kind={material.kind}
                                             name={material.name}
                                             hook={material.hook}
+                                            tags={material.tags}
                                             cover={material.cover}
                                             badge={isMixBuiltinId(material.id) ? "官方" : undefined}
                                             onClick={() => {
@@ -1235,6 +1393,15 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
                 accept="application/json,.json,image/png,.png"
                 style={{ display: "none" }}
                 onChange={(e) => { void handleImportFile(e.target.files?.[0]); e.target.value = ""; }}
+            />
+
+            {/* 编辑器里的上传替换用的是另一个 input：它不入柜，只替表单 */}
+            <input
+                ref={editorFileRef}
+                type="file"
+                accept="application/json,.json,image/png,.png"
+                style={{ display: "none" }}
+                onChange={(e) => { void handleEditorReplace(e.target.files?.[0]); e.target.value = ""; }}
             />
 
             {confirm ? (

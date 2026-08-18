@@ -1450,38 +1450,41 @@
 .qa-msg-wrap {
   position: relative;
 }
-/* 长按菜单的关闭遮罩：全屏透明，点任意处即关（菜单本身无关闭按钮） */
-.qa-msg-menu-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 59;
-  background: transparent;
-}
 
-.qa-msg-menu {
-  position: fixed;
-  z-index: 60;
+/* 消息操作（复制 / 编辑）：常驻在气泡下方的小图标，替代原来的长按菜单
+   ——长按要跟系统选词、取词、划词搜索抢同一个手势，移动端几乎必然打架。
+   平时压到低透明度，不跟正文抢视线；按下才提亮。 */
+.qa-msg-actions {
   display: flex;
-  gap: 6px;
-  padding: 4px;
-  border-radius: 12px;
-  background: var(--qa-bg-overlay);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  animation: qa-fade-in 0.12s ease;
+  gap: 2px;
+  margin-top: 2px;
 }
-.qa-msg-menu button {
-  padding: 6px 12px;
+.qa-msg-actions[data-role="user"] {
+  justify-content: flex-end;
+}
+.qa-msg-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
   border: none;
   border-radius: 7px;
   background: transparent;
-  color: var(--qa-text-primary);
-  font-size: 13px;
+  color: var(--qa-text-tertiary);
   cursor: pointer;
-  white-space: nowrap;
+  opacity: 0.55;
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
 }
-.qa-msg-menu button:active {
-  background: rgba(255, 255, 255, 0.1);
+.qa-msg-action:hover {
+  opacity: 1;
+  color: var(--qa-text-secondary);
+}
+.qa-msg-action:active {
+  opacity: 1;
+  color: var(--qa-text-primary);
+  background: color-mix(in srgb, var(--qa-text-primary) 8%, transparent);
 }
 
 /* ── 编辑消息弹窗（展示未渲染原始内容）── */

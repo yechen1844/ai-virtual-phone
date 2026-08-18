@@ -17,15 +17,26 @@ import { kvGet, kvSet, registerKvMigration } from "./kv-db";
 
 export type StatusRegionMode = "native" | "off" | "custom";
 
+/** 解析变体：单聊与群聊的 native 原文不同，自定义挡群聊还要补"每人各出一份"的规则 */
+export type StatusRegionVariant = "single" | "group";
+
 export type StatusRegionConfig = {
     mode: StatusRegionMode;
     /** 输出契约：告诉 AI [状态栏] 壳内输出什么（custom 模式生效） */
     contract: string;
     /** 输出渲染：完整 HTML（可含 JS），沙盒 iframe 执行，接管折叠区绘制 */
     renderHtml: string;
+    /** 预览用示例数据（[状态栏] 壳内原文的样例）。只用于编辑弹窗里的实时预览，
+     *  不参与提示词，也不影响渲染。小卷写入契约时一并给出，否则预览会拿默认样例
+     *  去套新契约的字段，显示成空白或错乱。缺省为空表示用内置样例。 */
+    previewRaw?: string;
 };
 
 const STORAGE_KEY = "ai_phone_chat_status_region_v1";
+
+/** 配置被外部改写（小卷工具）后广播，已打开的聊天信息页据此刷新，
+ *  否则面板的状态只在挂载时初始化一次，会停在旧值——写了但前台看不见。 */
+export const STATUS_REGION_UPDATED_EVENT = "chat-status-region-updated";
 registerKvMigration(STORAGE_KEY);
 
 /** 状态栏方案库在 css-scheme-storage 里的 target 键（负载=契约+渲染+示例数据 JSON） */
@@ -49,6 +60,23 @@ export const NATIVE_STATUS_REGION_SECTION = [
     "【格式】[内心]在此处填写内心的潜台词[/内心]",
 ].join("\n");
 
+/** 群聊「### 状态值与内心」章节原文——群聊 native 挡的解析值，必须与历史版本逐字一致。
+ *  与单聊那份不同：群聊要求每个发言角色在自己的 [角色名]: 块内各输出一份，且互不混用。 */
+export const NATIVE_STATUS_REGION_SECTION_GROUP = [
+    "### 状态值与内心",
+    "【格式】",
+    "每个本轮发言角色都必须先输出自己的状态值和内心想法，且必须放在该角色的同一个 [角色名]: 块内。",
+    "同一个角色块只写一次 [角色名]: 前缀；不要把状态值/内心单独拆成一个角色块，也不要在正文前重复 [角色名]:。",
+    "[角色名]: [好感度:X][占有欲:X][焦虑值:X]",
+    "[内心]该角色此刻没有说出口的真实想法[/内心]",
+    "消息正文",
+    "【规则】",
+    "- 状态值继承该角色 <member> 内的 current_state，并根据本轮群聊互动更新。",
+    "- 不同角色的状态值互不混用；谁发言，就只输出谁自己的状态值和内心。",
+    "- 不发言的角色不要输出状态值或内心。",
+    "- 同一个角色在同一轮里只需要输出一次状态值和一次内心，后续多条消息用空行拆分即可。",
+].join("\n");
+
 /** 主动消息类条目里的静默输出格式原文（静默行+状态值行+内心行整块归宏） */
 export const NATIVE_STATUS_REGION_EXAMPLE_LINE = [
     "如果决定静默，按照以下格式输出：",
@@ -70,6 +98,7 @@ export const DEFAULT_STATUS_REGION_CONFIG: StatusRegionConfig = {
     mode: "native",
     contract: "",
     renderHtml: "",
+    previewRaw: "",
 };
 
 function loadAll(): Record<string, StatusRegionConfig> {
@@ -92,6 +121,7 @@ export function getStatusRegionConfig(sessionId: string): StatusRegionConfig {
         mode,
         contract: typeof raw.contract === "string" ? raw.contract : "",
         renderHtml: typeof raw.renderHtml === "string" ? raw.renderHtml : "",
+        previewRaw: typeof raw.previewRaw === "string" ? raw.previewRaw : "",
     };
 }
 
@@ -111,14 +141,28 @@ export function isCustomStatusRegionActive(config: StatusRegionConfig): boolean 
     return config.mode === "custom" && !!config.contract.trim() && !!config.renderHtml.trim();
 }
 
-/** {{statusRegionSection}} 的解析值 */
-export function resolveStatusRegionSection(config: StatusRegionConfig): string {
+/** {{statusRegionSection}} 的解析值。
+ *  variant=group 时用群聊那份 native 原文；custom 挡额外补一条"每个发言角色各出一份"的群规则，
+ *  否则模型会只在整轮输出里给一个状态栏。 */
+export function resolveStatusRegionSection(
+    config: StatusRegionConfig,
+    variant: StatusRegionVariant = "single",
+): string {
     if (config.mode === "off") return "";
     if (isCustomStatusRegionActive(config)) {
         // 契约即「## 状态栏」章节的整个正文（含【逻辑】【格式】与 [状态栏] 包裹要求），不再套固定信封
-        return "## 状态栏\n" + config.contract.trim();
+        const body = "## 状态栏\n" + config.contract.trim();
+        if (variant !== "group") return body;
+        return [
+            body,
+            "",
+            "【群聊补充】每个本轮发言的角色都要在自己的 [角色名]: 块内、正文之前，按上面的契约各输出一份",
+            "[状态栏]...[/状态栏]；不同角色的数据互不混用，不发言的角色不输出。",
+            "下方若有【完整示例】，其中每个角色的 [好感度:X][占有欲:X][焦虑值:X] 与 [内心]...[/内心] 两行",
+            "一律以本契约的 [状态栏]...[/状态栏] 取代。",
+        ].join("\n");
     }
-    return NATIVE_STATUS_REGION_SECTION;
+    return variant === "group" ? NATIVE_STATUS_REGION_SECTION_GROUP : NATIVE_STATUS_REGION_SECTION;
 }
 
 /** {{statusRegionExampleLine}} 的解析值（主动消息类条目的静默输出格式块） */

@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { CornerDownRight, Heart, Inbox, Loader2, Trash2, Wine, X } from "lucide-react";
+import { CornerDownRight, Heart, Inbox, Loader2, Pencil, Trash2, Wine, X } from "lucide-react";
 import { fetchCurrentAccount } from "@/lib/account-client";
 import {
     deleteHallComment,
@@ -25,7 +25,17 @@ import {
     type MixHallRecipePart,
     type MixHallType,
 } from "@/lib/mixology/hall-client";
-import { clearMixPublishedByCloudId, listMixBuiltins, saveMixMaterial, saveMixRecipe } from "@/lib/mixology/storage";
+import {
+    clearMixPublishedByCloudId,
+    findMixMaterialByPublishedId,
+    findMixRecipeByPublishedId,
+    getMixMaterial,
+    listMixBuiltins,
+    markMixMaterialSynced,
+    markMixRecipeSynced,
+    saveMixMaterial,
+    saveMixRecipe,
+} from "@/lib/mixology/storage";
 import {
     MIX_KIND_LABELS,
     mixKindHasCover,
@@ -34,10 +44,11 @@ import {
     type MixMaterialKind,
     type MixRecipe,
     MIX_SLOT_MAX,
+    mixKindRunsActiveCode,
     type MixCondition,
     type MixSlotEntry,
 } from "@/lib/mixology/types";
-import { AuthorAvatar, MatCard, MaterialDetail, MixConfirm, SealedNote } from "./mixology-shared";
+import { AuthorAvatar, MatCard, MaterialDetail, MixConfirm, MixTagList, SealedNote } from "./mixology-shared";
 
 type HallMode = "menu" | "hall";
 
@@ -192,6 +203,7 @@ export function MixologyHall({
     onImported,
     reloadToken = 0,
     onLoadingChange,
+    onEditLocal,
 }: {
     mode: HallMode;
     /** 酒材页当前 TAG：由壳层的固定 TAG 行控制（menu 模式用） */
@@ -204,6 +216,8 @@ export function MixologyHall({
     reloadToken?: number;
     /** 拉取状态回报给父层（驱动头部刷新图标旋转） */
     onLoadingChange?: (loading: boolean) => void;
+    /** 自己发布的作品点「编辑」：已拉回本地，请壳层跳到酒柜并打开这件的编辑页 */
+    onEditLocal?: (materialId: string) => void;
 }) {
     const [materials, setMaterials] = useState<MixHallMaterial[]>([]);
     const [recipes, setRecipes] = useState<MixHallRecipe[]>([]);
@@ -345,8 +359,40 @@ export function MixologyHall({
         }
     };
 
+    /**
+     * 把自己发布的材料拉回本地。
+     * 关键在于「拉回来的是自己的作品，不是别人的复制品」：不打 imported、
+     * 重新接上 publishedId，于是编辑/导出/更新上架这套按钮全部照常可用，
+     * 改完点更新会覆盖回同一条云端条目，而不是另发一条。
+     * 返回本地件 id，供调用方接着打开编辑器。
+     */
+    const pullBackMaterial = (entry: MixHallMaterial): string | null => {
+        const payload = entry.payload as MixMaterial | null | undefined;
+        if (!payload) return null;
+        // 柜里已经有关联着这条云端条目的原件：用那一件，别拉出第二份同名材料
+        const linked = findMixMaterialByPublishedId(entry.id);
+        if (linked) return linked.id;
+        // 否则按云端条目 id 落地。用条目 id 而不是新的本地 id，是为了让这一步可重复：
+        // 早先被当成「别人的作品」入柜的那份（imported，id 即条目 id）会被就地修正，
+        // 引用了这个 id 的配方也不会因此断链。
+        const { publishedId: _p, publishedAt: _a, author: _au, authorAvatar: _av, imported: _i, ...rest } = payload;
+        saveMixMaterial({ ...rest, id: entry.id } as MixMaterial);
+        // saveMixMaterial 会重打 updatedAt，这里再把 publishedAt 对齐，
+        // 否则刚拉回来就显示「有未上架修改」
+        markMixMaterialSynced(entry.id, entry.id);
+        return entry.id;
+    };
+
     const importMaterial = async (entry: MixHallMaterial) => {
         if (!entry.payload || busy) return;
+        // 自己发布的：走拉回，不走入柜——入柜会把它变成别人的作品，从此不能编辑
+        if (myId && entry.authorId === myId) {
+            const localId = pullBackMaterial(entry);
+            if (!localId) return;
+            onImported();
+            onToast(`「${entry.name}」已回到酒柜，可以直接编辑。`);
+            return;
+        }
         setBusy(true);
         try {
             const { saveCount } = await markHallSaved("material", entry.id);
@@ -363,6 +409,25 @@ export function MixologyHall({
         }
     };
 
+    /** 「编辑」：先把自己的作品拉回本地，再让壳层跳到酒柜的编辑页 */
+    const editOwnMaterial = async (entry: MixHallMaterial) => {
+        if (busy) return;
+        setBusy(true);
+        try {
+            // 列表项没有 payload，详情才有；点进来的是详情，但补一道保险
+            const full = entry.payload ? entry : await fetchHallMaterial(entry.id);
+            const localId = pullBackMaterial(full);
+            if (!localId) { onToast("这件材料的内容没能取回来。"); return; }
+            onImported();
+            setDetailMaterial(null);
+            onEditLocal?.(localId);
+        } catch (error) {
+            onToast(error instanceof Error ? error.message : "取回失败");
+        } finally {
+            setBusy(false);
+        }
+    };
+
     /** 连料入柜：云端件按酒材条目 id 存柜（与酒材页入柜同一身份），官方件直接用本地出厂版，下架件跳过 */
     const importRecipe = async (entry: MixHallRecipe) => {
         if (!entry.parts?.length || busy) return;
@@ -371,9 +436,11 @@ export function MixologyHall({
             onToast("角色卡已从酒材页下架，这杯配方没法入柜。");
             return;
         }
+        // 自己发布的配方拉回来，同样要还原成「自己的作品」，否则删了本地就再也改不了
+        const mine = Boolean(myId) && entry.authorId === myId;
         setBusy(true);
         try {
-            const { saveCount } = await markHallSaved("recipe", entry.id);
+            const { saveCount } = mine ? { saveCount: entry.saveCount } : await markHallSaved("recipe", entry.id);
             const slots: Partial<Record<MixMaterialKind, MixSlotEntry[]>> = {};
             // 一格可能叠了多件，按线上顺序依次落格；作者设的生效条件跟着一起带过来
             const pushSlot = (kind: MixMaterialKind, materialId: string, when?: MixCondition) => {
@@ -394,28 +461,39 @@ export function MixologyHall({
                     missing += 1;
                     continue;
                 }
+                // 这一味在柜里已经是「我自己的作品」（本人发布后拉回来的，或本来就是我写的）：
+                // 保留原件，不要用一份 imported 的副本盖掉——那等于把自己的材料变成别人的
+                const localSame = findMixMaterialByPublishedId(part.id) ?? getMixMaterial(part.id);
+                if (localSame && !localSame.imported) {
+                    pushSlot(part.kind, localSame.id, part.when);
+                    continue;
+                }
                 const { publishedId: _p, publishedAt: _a, ...clean } = part.material;
                 saveMixMaterial({ ...clean, id: part.id, kind: part.kind, author: part.authorName || entry.authorName, authorAvatar: part.authorAvatar || undefined, imported: true } as MixMaterial);
                 pushSlot(part.kind, part.id, part.when);
                 // 给这味酒材也记一次入柜（材料作者拿到数据）；失败不打断整杯导入
                 void markHallSaved("material", part.id).catch(() => { /* 尽力而为 */ });
             }
+            // 柜里已经有关联着这条云端条目的原件时就覆盖它，别拉出第二杯同名配方
+            const linked = mine ? findMixRecipeByPublishedId(entry.id) : null;
             const recipe: MixRecipe = {
-                id: entry.id,
+                id: linked?.id ?? entry.id,
                 name: entry.name,
                 slots,
-                author: entry.authorName,
-                authorAvatar: entry.authorAvatar || undefined,
-                imported: true,
-                createdAt: Date.now(),
+                createdAt: linked?.createdAt ?? Date.now(),
                 updatedAt: Date.now(),
+                ...(mine ? {} : { author: entry.authorName, authorAvatar: entry.authorAvatar || undefined, imported: true }),
             };
             saveMixRecipe(recipe);
-            patchEntry("recipe", entry.id, { savedByMe: true, saveCount });
+            // 自己的配方：接回云端关联，改完能直接更新同一条，而不是另发一条
+            if (mine) markMixRecipeSynced(recipe.id, entry.id);
+            patchEntry("recipe", entry.id, mine ? {} : { savedByMe: true, saveCount });
             onImported();
             onToast(missing > 0
-                ? `「${entry.name}」已入柜，但 ${missing} 味材料已下架，这杯会缺味。`
-                : `「${entry.name}」已连料入柜，去吧台看看。`);
+                ? `「${entry.name}」已${mine ? "回到吧台" : "入柜"}，但 ${missing} 味材料已下架，这杯会缺味。`
+                : mine
+                    ? `「${entry.name}」已回到吧台，可以直接改。`
+                    : `「${entry.name}」已连料入柜，去吧台看看。`);
         } catch (error) {
             onToast(error instanceof Error ? error.message : "导入失败");
         } finally {
@@ -482,6 +560,7 @@ export function MixologyHall({
                 kind={m.kind}
                 name={m.name}
                 hook={m.hook}
+                tags={m.tags}
                 cover={m.cover}
                 badge="官方"
                 onClick={() => setOfficialDetail(m)}
@@ -522,6 +601,7 @@ export function MixologyHall({
                             kind={entry.kind}
                             name={entry.name}
                             hook={entry.hook}
+                            tags={entry.tags}
                             cover={entry.cover}
                             author={entry.authorName}
                             stats={statsLine(entry)}
@@ -583,6 +663,7 @@ export function MixologyHall({
                                 {MIX_KIND_LABELS[officialDetail.kind]} · 官方出厂件 · 吧台槽位里直接可选，无需入柜
                             </div>
                             <div style={{ marginTop: 8 }}>
+                                <MixTagList tags={officialDetail.tags} />
                                 <MaterialDetail material={officialDetail} />
                             </div>
                         </div>
@@ -600,6 +681,19 @@ export function MixologyHall({
                         <div className="mix-sheet-head">
                             <div className="mix-sheet-title">{detailMaterial.name}</div>
                             {likeButton("material", detailMaterial)}
+                            {/* 自己发布的：随时能改。本地那份删了也不要紧，点这里会先取回来再进编辑页 */}
+                            {detailMaterial.authorId === myId ? (
+                                <button
+                                    type="button"
+                                    className="mix-icon-btn"
+                                    onClick={() => { void editOwnMaterial(detailMaterial); }}
+                                    disabled={busy}
+                                    aria-label="编辑"
+                                    title="取回本地并编辑"
+                                >
+                                    <Pencil size={16} />
+                                </button>
+                            ) : null}
                             {detailMaterial.authorId === myId ? (
                                 <button
                                     type="button"
@@ -631,16 +725,40 @@ export function MixologyHall({
                             {detailMaterial.payload ? (
                                 <>
                                     <div style={{ marginTop: 8 }}>
+                                        <MixTagList tags={detailMaterial.tags} />
                                         {detailMaterial.kind === "character"
                                             ? <SealedNote
                                                 hook={detailMaterial.hook}
                                                 canvas={(detailMaterial.payload as MixCharacterCard).canvas}
+                                                charName={(detailMaterial.payload as MixCharacterCard).charName}
                                             />
                                             : <MaterialDetail material={detailMaterial.payload} />}
                                     </div>
-                                    <button type="button" className="mix-brew-btn" onClick={() => void importMaterial(detailMaterial)} disabled={busy}>
+                                    <button
+                                        type="button"
+                                        className="mix-brew-btn"
+                                        onClick={() => {
+                                            // 自己写的机括不用再警告自己一遍
+                                            if (!mixKindRunsActiveCode(detailMaterial.kind) || detailMaterial.authorId === myId) {
+                                                void importMaterial(detailMaterial);
+                                                return;
+                                            }
+                                            // 机括会在你的对局里按轮执行——入柜前得让人知道自己在装什么
+                                            setConfirm({
+                                                title: "这件机括会执行代码",
+                                                body: <>「{detailMaterial.name}」带的是<b>会在你的对局里按轮执行的代码</b>：它能改写你发出去的话、改写你看到的正文、以你的身份发言。<br />代码跑在没有网络、碰不到应用本体的沙盒里，但对话内容它看得到。<br />只在你信任作者时入柜。</>,
+                                                confirmText: "我知道，入柜",
+                                                run: () => void importMaterial(detailMaterial),
+                                            });
+                                        }}
+                                        disabled={busy}
+                                    >
                                         {busy ? <Loader2 size={16} className="mix-spin" /> : <CornerDownRight size={16} />}
-                                        {busy ? "处理中…" : detailMaterial.savedByMe ? "再次入柜" : "加入酒柜"}
+                                        {busy
+                                            ? "处理中…"
+                                            : detailMaterial.authorId === myId
+                                                ? "取回酒柜"
+                                                : detailMaterial.savedByMe ? "再次入柜" : "加入酒柜"}
                                     </button>
                                 </>
                             ) : (
@@ -697,6 +815,8 @@ export function MixologyHall({
                                 const characterPart = parts.find((p) => p.kind === "character");
                                 const characterOk = Boolean(characterPart && !characterPart.gone && (characterPart.builtin || characterPart.material));
                                 const importable = parts.length - goneCount;
+                                // 配方里夹了几件机括：入柜确认要单独说清楚
+                                const mechanismCount = parts.filter((p) => !p.gone && mixKindRunsActiveCode(p.kind)).length;
                                 return (
                                     <>
                                         <div className="mix-detail-label" style={{ marginTop: 12 }}>这杯里有</div>
@@ -713,8 +833,11 @@ export function MixologyHall({
                                                 body: <>
                                                     会把「{detailRecipe.name}」以及里面的 <b>{importable} 味材料</b>一并放进你的酒柜（官方件直接用本地出厂版），之后在吧台就能开局。
                                                     {goneCount > 0 ? <><br />{goneCount} 味材料已从酒材页下架，这杯会缺味。</> : null}
+                                                    {mechanismCount > 0 ? (
+                                                        <><br /><br />其中 <b>{mechanismCount} 件是机括</b>：会在你的对局里按轮执行代码，能改写你发出去的话、你看到的正文，也能以你的身份发言。只在你信任作者时入柜。</>
+                                                    ) : null}
                                                 </>,
-                                                confirmText: "入柜",
+                                                confirmText: mechanismCount > 0 ? "我知道，入柜" : "入柜",
                                                 run: () => void importRecipe(detailRecipe),
                                             })}
                                             disabled={busy || !characterOk}

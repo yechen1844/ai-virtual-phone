@@ -94,14 +94,16 @@ export function getPwaHostedSafeArea(surface: PwaHostedSurface, embedded = false
   const nonImmersive = isNonImmersiveLayoutActive();
   const px = (value: number | null | undefined, fallback: number) =>
     `${value != null && value > 0 ? Math.round(value) : fallback}px`;
-  // 兜底估算与两个浮层的 CSS 定位保持一致（app-market.css 胶囊 / game.css 悬浮返回钮）
+  // 兜底估算与两个浮层的 CSS 定位保持一致（app-market.css 胶囊 / game.css 悬浮返回钮）：
+  // top = 浮层 top + 浮层高 + 4px 间隙。浮层的 top 偏移与这段间隙都已从 8px 收到 4px，
+  // 兜底值同步跟着减，免得实测拿不到时又冒出一条比实际更宽的留白。
   const isGame = surface === "game";
   return {
-    top: px(measured?.topPx, nonImmersive ? (isGame ? 60 : 48) : 88),
+    top: px(measured?.topPx, nonImmersive ? (isGame ? 52 : 40) : (isGame ? 84 : 80)),
     right: "16px",
     bottom: "24px",
     left: "16px",
-    barTop: px(measured?.barTopPx, isGame ? 38 : (nonImmersive ? 8 : 56)),
+    barTop: px(measured?.barTopPx, isGame ? 38 : (nonImmersive ? 4 : 52)),
     barHeight: px(measured?.barHeightPx, isGame ? 44 : 30),
     barClearLeft: px(measured?.barClearLeftPx, isGame ? 66 : 0),
     barClearRight: px(measured?.barClearRightPx, isGame ? 0 : 96),

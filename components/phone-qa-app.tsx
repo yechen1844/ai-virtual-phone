@@ -1,10 +1,10 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type TouchEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
-import { AppWindow, ArrowUp, BrushCleaning, Check, ChevronLeft, ChevronRight, Copy, Drama, Gamepad2, Github, Loader2, Menu, Play, Plus, Square, Trash2, Wrench, X } from "lucide-react";
+import { AppWindow, ArrowUp, BrushCleaning, Check, ChevronLeft, ChevronRight, Copy, Drama, Gamepad2, Github, Loader2, Menu, Pencil, Play, Plus, Square, Trash2, Wrench, X } from "lucide-react";
 import { QaFileCard } from "@/components/qa-file-card";
 import { parseQaFileMarker } from "@/lib/qa-computer-tools";
 import { mdiHammerWrench } from "@mdi/js";
@@ -290,90 +290,21 @@ function QaMessageItem({
   onEdit: (msg: QaMsg) => void;
 }) {
   const thinkingOnly = isStreaming && !msg.content && (!msg.tools || msg.tools.length === 0);
-  // 长按 / 右键弹出消息操作菜单：复制（复制原始内容）、编辑（编辑框展示未渲染的原始内容，
-  // 因为前端渲染会吞掉一些特殊标签，沟通时看不到原始内容）。
-  // 菜单出现在「手指长按的位置」，而不是固定在气泡右上角，方便单手操作。
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
-  const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const cancelPress = useCallback(() => {
-    if (pressTimer.current) {
-      clearTimeout(pressTimer.current);
-      pressTimer.current = null;
-    }
-  }, []);
-  const startPress = useCallback((e: TouchEvent) => {
-    cancelPress();
-    const touch = e.touches?.[0];
-    if (!touch) return;
-    const x = touch.clientX;
-    const y = touch.clientY;
-    pressTimer.current = setTimeout(() => setMenu({ x, y }), 500);
-  }, [cancelPress]);
-  // 菜单打开期间：Esc 关闭，页面滚动也关闭（否则菜单会停在原坐标与气泡脱节）
-  useEffect(() => {
-    if (!menu) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setMenu(null); };
-    const onScroll = () => setMenu(null);
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("scroll", onScroll, true);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("scroll", onScroll, true);
-    };
-  }, [menu]);
-  // 菜单尺寸（用于边缘防溢出翻转）
-  const MENU_W = 150;
-  const MENU_H = 56;
-  const menuStyle = menu
-    ? {
-        left: menu.x + MENU_W > window.innerWidth ? Math.max(8, menu.x - MENU_W) : menu.x,
-        top: menu.y + MENU_H > window.innerHeight ? Math.max(8, menu.y - MENU_H) : menu.y,
-      }
-    : undefined;
+  // 消息操作（复制原始内容 / 编辑原始内容——前端渲染会吞掉一些特殊标签，
+  // 沟通时看不到原文）常驻在气泡下方，不用长按触发：长按要跟系统的选词、
+  // 取词、划词搜索抢同一个手势，在移动端几乎必然打架。
+  // 生成中不显示（内容还不完整，复制/编辑都没有意义）。
+  const showActions = !isStreaming && !thinkingOnly;
   const msgWrap = (node: ReactNode) => (
-    <div
-      className="qa-msg-wrap"
-      onContextMenu={(e) => {
-        e.preventDefault();
-        setMenu({ x: e.clientX, y: e.clientY });
-      }}
-      onTouchStart={startPress}
-      onTouchEnd={cancelPress}
-      onTouchMove={() => {
-        cancelPress();
-        setMenu(null);
-      }}
-      onTouchCancel={cancelPress}
-    >
+    <div className="qa-msg-wrap">
       {node}
-      {menu && (
-        // 点任意处关闭：菜单本身没有关闭按钮，必须有这层透明遮罩兜底，
-        // 否则弹出后（尤其桌面端右键）除了「复制/编辑」无路可退
-        <div
-          className="qa-msg-menu-backdrop"
-          onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); setMenu(null); }}
-          onContextMenu={(e) => { e.preventDefault(); setMenu(null); }}
-        />
-      )}
-      {menu && (
-        <div className="qa-msg-menu" role="menu" style={menuStyle} onPointerDown={(e) => e.stopPropagation()}>
-          <button
-            type="button"
-            onClick={() => {
-              onCopy(msg.content);
-              setMenu(null);
-            }}
-          >
-            复制
+      {showActions && (
+        <div className="qa-msg-actions" data-role={msg.role}>
+          <button type="button" className="qa-msg-action" aria-label="复制原始内容" title="复制" onClick={() => onCopy(msg.content)}>
+            <Copy size={14} strokeWidth={2} />
           </button>
-          <button
-            type="button"
-            onClick={() => {
-              onEdit(msg);
-              setMenu(null);
-            }}
-          >
-            编辑
+          <button type="button" className="qa-msg-action" aria-label="编辑原始内容" title="编辑" onClick={() => onEdit(msg)}>
+            <Pencil size={14} strokeWidth={2} />
           </button>
         </div>
       )}

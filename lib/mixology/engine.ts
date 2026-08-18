@@ -8,7 +8,7 @@ import { ChatEngineError, sendLLMRequest } from "../chat-engine";
 import type { LLMMessage } from "../llm-prompt-assembler";
 import { loadApiConfigs, loadBindingConfig } from "../settings-storage";
 import type { ApiConfig } from "../settings-types";
-import { applyMixMacros, assembleMixPrompt, MIX_ENCORE_CLOSE, MIX_ENCORE_OPEN, MIX_TICKET_CLOSE, MIX_TICKET_OPEN, type MixAssembledPrompt } from "./assembler";
+import { applyMixMacros, assembleMixPrompt, MIX_DEFAULT_USER_NAME, MIX_ENCORE_CLOSE, MIX_ENCORE_OPEN, MIX_TICKET_CLOSE, MIX_TICKET_OPEN, type MixAssembledPrompt } from "./assembler";
 import { applyMixFilterRules, extractMixBlocks } from "./prose";
 import {
     getMixMaterial,
@@ -24,6 +24,8 @@ import {
     mixSlotFirstId,
     type MixCharacterCard,
     type MixMaterial,
+    type MixMechanismMaterial,
+    type MixState,
     type MixMaterialKind,
     type MixRecipe,
     type MixSession,
@@ -37,6 +39,8 @@ import {
     pickActiveMixMaterials,
     rollbackMixState,
 } from "./state";
+import { mergeHookState, type MixHook, type MixHookPayload } from "./mechanism-protocol";
+import { disposeMixSandboxes, runMixHook } from "./mechanism-runtime";
 
 export const MIX_PROMPT_APP_ID = "mixology";
 const MIX_PROMPT_TAGS = ["mixology"];
@@ -170,6 +174,48 @@ export function startMixSession(
     return session;
 }
 
+/**
+ * 开局钩子：建局之后单独跑一次，让机括初始化自己的存储与记住的值。
+ * 刻意不塞进 startMixSession——那是同步函数，界面靠它立刻拿到对局跳转；
+ * 钩子是异步的，让它在后台补一笔，跑完再落库。跑失败也不影响开局。
+ */
+export async function runMixSessionStart(sessionId: string): Promise<void> {
+    const session = getMixSession(sessionId);
+    if (!session) return;
+    const result = await runMechanismHooks(session, "sessionStart", {});
+    const latest = getMixSession(sessionId);
+    if (!latest) return;
+    const nextState = mergeHookState(latest.state ?? {}, result.state);
+    const changed = JSON.stringify(nextState) !== JSON.stringify(latest.state ?? {})
+        || JSON.stringify(result.store) !== JSON.stringify(latest.mechanismStore ?? {});
+    if (!changed) return;
+    saveMixSession({ ...latest, state: nextState, mechanismStore: result.store });
+}
+
+/**
+ * 收摊钩子：退出对局时跑一次，顺手把这一局的沙盒全收掉。
+ * 收摊的返回值只认存储与记住的值——这时候改正文已经没有意义了。
+ */
+export async function runMixSessionEnd(sessionId: string): Promise<void> {
+    const session = getMixSession(sessionId);
+    if (session) {
+        try {
+            const result = await runMechanismHooks(session, "sessionEnd", {});
+            const latest = getMixSession(sessionId);
+            if (latest) {
+                saveMixSession({
+                    ...latest,
+                    state: mergeHookState(latest.state ?? {}, result.state),
+                    mechanismStore: result.store,
+                });
+            }
+        } catch {
+            // 收摊失败无所谓，沙盒该收还是要收
+        }
+    }
+    disposeMixSandboxes(sessionId);
+}
+
 export type MixReplyResult = {
     session: MixSession;
     turn: MixTurn;
@@ -228,23 +274,86 @@ async function repairMixTicket(
     return undefined;
 }
 
+/**
+ * 跑一轮机括钩子。机括这一格是累加型——条件命中的几件按顺序依次跑，
+ * 前一件改过的文本会交给后一件继续加工（跟风味叠加是同一个心智）。
+ * 单件出错、超时、返回垃圾都只是这一件不生效，不影响别的机括，也不影响这一轮生成。
+ */
+async function runMechanismHooks(
+    session: MixSession,
+    hook: MixHook,
+    input: { text?: string; ticketRaw?: string; encoreRaw?: string },
+): Promise<{ text?: string; notes: string[]; state: MixState; store: Record<string, Record<string, string>> }> {
+    const { entries } = resolveMixRecipeMaterials(session.recipe);
+    const active = pickActiveMixMaterials(entries, buildMixConditionContext(session));
+    const mechanisms = (active.mechanism ?? []).filter((m): m is MixMechanismMaterial => m.kind === "mechanism");
+    const store = { ...(session.mechanismStore ?? {}) };
+    const out = { text: input.text, notes: [] as string[], state: {} as MixState, store };
+    if (!mechanisms.length) return out;
+    for (const material of mechanisms) {
+        const script = material.script?.trim();
+        if (!script) continue;
+        const payload: MixHookPayload = {
+            hook,
+            turnCount: session.turns.length,
+            // 状态给的是当前值叠上前面几件机括刚写的——同一轮里后一件看得见前一件
+            state: { ...(session.state ?? {}), ...out.state },
+            store: store[material.id] ?? {},
+            charName: session.charName,
+            userName: session.userName || MIX_DEFAULT_USER_NAME,
+            text: out.text,
+            ticketRaw: input.ticketRaw,
+            encoreRaw: input.encoreRaw,
+        };
+        const result = await runMixHook(session.id, material.id, script, hook, payload);
+        if (typeof result.text === "string") out.text = result.text;
+        if (result.note) out.notes.push(result.note);
+        if (result.state) out.state = mergeHookState(out.state, result.state);
+        if (result.store) store[material.id] = result.store;
+    }
+    return out;
+}
+
+/** 落杯前：给机括一次改写玩家发言、追加临时提示的机会 */
+async function runBeforeSendHooks(session: MixSession, text?: string): Promise<{ session: MixSession; text?: string; note?: string }> {
+    const result = await runMechanismHooks(session, "beforeSend", { text });
+    const next: MixSession = {
+        ...session,
+        state: mergeHookState(session.state ?? {}, result.state),
+        mechanismStore: result.store,
+    };
+    return { session: next, text: result.text, note: result.notes.join("\n") || undefined };
+}
+
 async function runMixGeneration(
     session: MixSession,
     nudge: string | undefined,
     signal?: AbortSignal,
+    skipBeforeSend = false,
 ): Promise<MixReplyResult> {
     const apiConfig = resolveMixApiConfig();
     if (!apiConfig) {
         throw new ChatEngineError("还没有配置 API 接口，请先到设置里添加。");
     }
-    const { prompt: assembled, ticket, active } = assembleFromSession(session);
-    const messages = buildMixMessages(session, assembled, nudge);
+    // 落杯前：这里覆盖继续/重说/编辑后重生成三条路径（玩家发言那条在 generateMixReply 里，
+    // 因为改写要发生在发言落库之前）；这些路径没有新发言，机括只能追加临时提示
+    let working = session;
+    let extraNote: string | undefined;
+    if (!skipBeforeSend) {
+        const before = await runBeforeSendHooks(session);
+        working = before.session;
+        extraNote = before.note;
+        if (working !== session) saveMixSession(working);
+    }
+    const combinedNudge = [nudge, extraNote].filter(Boolean).join("\n\n") || undefined;
+    const { prompt: assembled, ticket, active } = assembleFromSession(working);
+    const messages = buildMixMessages(working, assembled, combinedNudge);
     const raw = await sendLLMRequest(
         apiConfig,
         null,
         messages,
         [],
-        { characterName: session.charName, userName: session.userName || "你" },
+        { characterName: working.charName, userName: working.userName || "你" },
         { appId: MIX_PROMPT_APP_ID, appTags: MIX_PROMPT_TAGS, skipOutputRegex: true, signal },
     );
     const extracted = extractMixBlocks(raw);
@@ -259,21 +368,35 @@ async function runMixGeneration(
         throw new ChatEngineError("模型没有给出内容，请再试一次。");
     }
     if (assembled.hasTicket && !ticketRaw && ticket && text) {
-        ticketRaw = await repairMixTicket(apiConfig, session, ticket, text, signal);
+        ticketRaw = await repairMixTicket(apiConfig, working, ticket, text, signal);
     }
     // 记住的值：用这一轮的小票原文更新，抽不到的保留上一轮；顺带把结果快照在这一轮上，
     // 回溯/重说/编辑时直接取剩下最后一轮的快照还原。
-    const nextState = advanceMixState(session.state, ticket, ticketRaw);
+    const stateFromTicket = advanceMixState(working.state, ticket, ticketRaw);
+    // 出杯后：机括能改正文、能写记住的值。放在小票抽值之后——机括是最后一道，
+    // 它写的值压得过小票抽出来的
+    const afterHook = await runMechanismHooks(
+        { ...working, state: stateFromTicket },
+        "afterReply",
+        { text, ticketRaw, encoreRaw },
+    );
+    const finalText = typeof afterHook.text === "string" ? afterHook.text : text;
+    const nextState = mergeHookState(stateFromTicket, afterHook.state);
     const turn: MixTurn = {
         id: createMixId("mixturn"),
         role: "assistant",
-        text,
+        text: finalText,
         ticketRaw: assembled.hasTicket ? ticketRaw : undefined,
         encoreRaw: assembled.hasEncore ? encoreRaw : undefined,
         state: nextState,
         createdAt: Date.now(),
     };
-    const updated: MixSession = { ...session, turns: [...session.turns, turn], state: nextState };
+    const updated: MixSession = {
+        ...working,
+        turns: [...working.turns, turn],
+        state: nextState,
+        mechanismStore: afterHook.store,
+    };
     saveMixSession(updated);
     return { session: updated, turn };
 }
@@ -288,15 +411,20 @@ export async function generateMixReply(
     if (!current) throw new ChatEngineError("对局不存在。");
     const trimmed = userText.trim();
     if (!trimmed) throw new ChatEngineError("先说点什么吧。");
+    // 落杯前钩子放在发言落库之前跑：机括改写的是玩家这一句本身
+    //（比如把「/掷骰」换成一段带随机数的指令），落库的就是改写后的版本
+    const before = await runBeforeSendHooks(current, trimmed);
+    const spoken = (before.text ?? trimmed).trim() || trimmed;
     const userTurn: MixTurn = {
         id: createMixId("mixturn"),
         role: "user",
-        text: trimmed,
+        text: spoken,
         createdAt: Date.now(),
     };
-    const withUser: MixSession = { ...current, turns: [...current.turns, userTurn] };
+    const withUser: MixSession = { ...before.session, turns: [...before.session.turns, userTurn] };
     saveMixSession(withUser);
-    return runMixGeneration(withUser, undefined, signal);
+    // 这条路径的落杯前已经跑过了，别在 runMixGeneration 里重复触发
+    return runMixGeneration(withUser, before.note, signal, true);
 }
 
 /** 本局小票材料（记住的值的声明来源）；一格叠了多张时以第一张为准 */
@@ -338,6 +466,37 @@ export async function continueMix(sessionId: string, signal?: AbortSignal): Prom
     const current = getMixSession(sessionId);
     if (!current) throw new ChatEngineError("对局不存在。");
     return runMixGeneration(current, "（请接着上文继续推进剧情，直接续写，不要重复已写过的内容。）", signal);
+}
+
+/**
+ * 还没开口的对局：进来时用当前角色卡重取开场白。
+ *
+ * 开场白是建局那一刻写进 turns[0] 的一条消息，不是对材料的引用——所以作者改完卡
+ * 回到对局，看到的还是旧的那句。这里只在「这一局玩家一个字都还没说」时重取：
+ * 已经聊过的对局绝不动，那是真实历史，改了界面就和发给模型的上下文对不上。
+ *
+ * 返回是否真的换了，调用方据此决定要不要提示一句。
+ */
+export function refreshMixOpening(sessionId: string): { session: MixSession; changed: boolean } | null {
+    const current = getMixSession(sessionId);
+    if (!current) return null;
+    const onlyOpening = current.turns.length === 1 && current.turns[0].role === "assistant";
+    if (!onlyOpening) return { session: current, changed: false };
+    let fresh: string;
+    try {
+        fresh = assembleFromSession(current).prompt.opening;
+    } catch {
+        // 卡被删了之类：留着原来那句，别把开场白弄没
+        return { session: current, changed: false };
+    }
+    if (!fresh.trim() || fresh === current.turns[0].text) return { session: current, changed: false };
+    const updated: MixSession = {
+        ...current,
+        turns: [{ ...current.turns[0], text: fresh }],
+        updatedAt: Date.now(),
+    };
+    saveMixSession(updated);
+    return { session: updated, changed: true };
 }
 
 /** 回溯到某条消息：保留它，删除其后的全部内容 */

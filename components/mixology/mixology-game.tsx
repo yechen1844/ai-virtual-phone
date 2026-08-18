@@ -4,17 +4,26 @@
 // 玩家右侧气泡、小票全宽卡；全程无任何标签徽章，保沉浸。
 // 装饰材料的 CSS 以 <style> 注入本画面容器（认 .mix-* 官方语义类）。
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronLeft, Copy, CornerDownRight, History, Pencil, Plus, RotateCcw, Send, SlidersHorizontal, X } from "lucide-react";
-import { continueMix, editMixTurn, generateMixReply, mixTurnRawText, regenerateMixTail, rerollMixReply, truncateMixAfterTurn } from "@/lib/mixology/engine";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { ChevronLeft, Copy, History, MoreHorizontal, Pencil, Plus, RotateCcw, Send, WandSparkles, X } from "lucide-react";
+import { continueMix, editMixTurn, generateMixReply, mixTurnRawText, refreshMixOpening, regenerateMixTail, rerollMixReply, runMixSessionEnd, truncateMixAfterTurn } from "@/lib/mixology/engine";
 import { getMixMaterial, getMixSession, listMixPickables, resolveMixRecipeMaterials, saveMixSession } from "@/lib/mixology/storage";
+import { applyMixMacros, MIX_DEFAULT_USER_NAME } from "@/lib/mixology/assembler";
 import { buildMixConditionContext, pickActiveMixMaterials } from "@/lib/mixology/state";
-import { MIX_KIND_LABELS, MIX_SLOT_ORDER, mixEncoreRenderHtml, mixSlotEntries, type MixCharacterCard, type MixFilterRule, type MixMaterialKind, type MixSession, type MixSlotEntry, type MixTurn } from "@/lib/mixology/types";
+import { scopeMixCss } from "@/lib/mixology/css-scope";
+import { MIX_KIND_LABELS, MIX_SLOT_ORDER, mixEncoreRenderHtml, mixSlotEntries, type MixCharacterCard, type MixFilterRule, type MixMaterialKind, type MixMechanismMaterial, type MixSession, type MixSlotEntry, type MixState, type MixTurn } from "@/lib/mixology/types";
 import { applyMixFilterRules } from "@/lib/mixology/prose";
 import { MixProseView } from "./prose-view";
 import { MixRichText } from "./rich-text";
 import { KindGlyph, MixConfirm } from "./mixology-shared";
 import { MixTicketFrame } from "./ticket-frame";
+import { MixMechanismPanel } from "./mechanism-panel";
+
+/** 当前真正挂着的对局：严格模式的重复挂载靠它区分「真退出」与「假卸载」 */
+/** 同时活动的常驻界面上限：每件一个 iframe，手机上多开吃内存，屏幕也摆不下 */
+const MIX_PANEL_MAX = 3;
+
+const liveMixGames = new Set<string>();
 
 type GameProps = {
     sessionId: string;
@@ -22,7 +31,7 @@ type GameProps = {
     onToast: (message: string) => void;
 };
 
-function AssistantTurn({ turn, ticketHtml, encoreHtml, filterRules }: { turn: MixTurn; ticketHtml?: string; encoreHtml?: string; filterRules?: MixFilterRule[] }) {
+function AssistantTurn({ turn, ticketHtml, encoreHtml, filterRules, state }: { turn: MixTurn; ticketHtml?: string; encoreHtml?: string; filterRules?: MixFilterRule[]; state?: MixState }) {
     // 展示顺序：状态栏在正文前、小剧场在正文后（与模型的输出顺序一致，无需重排）
     // 滤网「仅显示」模式在这里生效：存储不动，渲染前替换，历史消息也即时生效
     const shownText = applyMixFilterRules(turn.text, filterRules, "display");
@@ -30,13 +39,13 @@ function AssistantTurn({ turn, ticketHtml, encoreHtml, filterRules }: { turn: Mi
         <>
             {ticketHtml && turn.ticketRaw ? (
                 <div className="mix-ticket-wrap">
-                    <MixTicketFrame html={ticketHtml} raw={turn.ticketRaw} />
+                    <MixTicketFrame html={ticketHtml} raw={turn.ticketRaw} state={state} />
                 </div>
             ) : null}
             {shownText ? <MixProseView text={shownText} /> : null}
             {encoreHtml && turn.encoreRaw ? (
                 <div className="mix-encore-turn">
-                    <MixTicketFrame html={encoreHtml} raw={turn.encoreRaw} />
+                    <MixTicketFrame html={encoreHtml} raw={turn.encoreRaw} state={state} />
                 </div>
             ) : null}
         </>
@@ -70,10 +79,44 @@ function TurnActions({
     );
 }
 
+/**
+ * 记住的值：顶栏下的一条横条，点开看全部。
+ * 没有任何值时整条不存在——没配小票的对局界面不变。
+ */
+function StateBar({ state }: { state: MixState }) {
+    const [open, setOpen] = useState(false);
+    const items = Object.entries(state);
+    if (!items.length) return null;
+    return (
+        <div className="mix-state-bar" data-open={open ? "true" : undefined}>
+            <button type="button" className="mix-state-strip" onClick={() => setOpen((v) => !v)}>
+                {items.slice(0, 3).map(([name, value]) => (
+                    <span className="mix-state-chip" key={name}>
+                        <i>{name}</i>
+                        <b>{String(value)}</b>
+                    </span>
+                ))}
+                {items.length > 3 ? <span className="mix-state-more">+{items.length - 3}</span> : null}
+            </button>
+            {open ? (
+                <div className="mix-state-panel">
+                    {items.map(([name, value]) => (
+                        <div className="mix-state-row" key={name}>
+                            <span>{name}</span>
+                            <b>{String(value)}</b>
+                        </div>
+                    ))}
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
 export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
     const [session, setSession] = useState<MixSession | null>(() => getMixSession(sessionId));
     const [input, setInput] = useState("");
     const [busy, setBusy] = useState(false);
+    const busyRef = useRef(false);
     const [editing, setEditing] = useState<{ id: string; draft: string } | null>(null);
     const [confirm, setConfirm] = useState<{ type: "rewind" | "edit"; turnId: string } | null>(null);
     const [recipeOpen, setRecipeOpen] = useState(false);
@@ -82,6 +125,11 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
     const scrollRef = useRef<HTMLDivElement | null>(null);
     const abortRef = useRef<AbortController | null>(null);
     const wheelRef = useRef<HTMLDivElement | null>(null);
+    /**
+     * 滚动落点：还没开口的局停在扉页顶上（开场画布要从头看），聊过的局停在最新一条上。
+     * free = 用户自己翻过了，别再拽他。
+     */
+    const stickRef = useRef<"top" | "bottom" | "free">("bottom");
 
     const handleWheelScroll = useCallback(() => {
         const el = wheelRef.current;
@@ -125,16 +173,121 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
             encoreTurnHtml: encoreHasContract && encoreRender ? encoreRender : undefined,
             encoreStaticHtml: !encoreHasContract ? encoreRender : "",
             // 开场画布：对局里作为故事扉页躺在滚动区最顶上，往上翻可见
-            canvasHtml: character?.kind === "character" ? (character as MixCharacterCard).canvas?.trim() ?? "" : "",
+            // 开场画布：作者会在里面写 {{user}} / {{char}}，而画布是原样进 iframe 的，
+            // 不经过提示词装配，所以在这里替换掉，否则玩家看到的是字面的「{{user}}」
+            canvasHtml: character?.kind === "character"
+                ? applyMixMacros(
+                    (character as MixCharacterCard).canvas?.trim() ?? "",
+                    session.charName,
+                    session.userName || MIX_DEFAULT_USER_NAME,
+                    session.state,
+                    { escapeHtml: true },
+                )
+                : "",
         };
     }, [session]);
 
-    useEffect(() => {
+    /**
+     * 条件命中、且配了停靠位的机括：这些是要常驻在画面边上的界面。
+     * 上限 3 件——每件一个 iframe，手机上多开吃内存，屏幕也摆不下。
+     */
+    const panels = useMemo(() => {
+        if (!session) return [] as MixMechanismMaterial[];
+        const { entries } = resolveMixRecipeMaterials(session.recipe);
+        const active = pickActiveMixMaterials(entries, buildMixConditionContext(session));
+        return (active.mechanism ?? [])
+            .filter((m): m is MixMechanismMaterial => m.kind === "mechanism" && Boolean(m.dock) && Boolean(m.panelHtml?.trim()))
+            .slice(0, MIX_PANEL_MAX);
+    }, [session]);
+
+    /** 界面写自己的存储 */
+    const handlePanelStore = useCallback((materialId: string, store: Record<string, string>) => {
+        const current = getMixSession(sessionId);
+        if (!current) return;
+        saveMixSession({ ...current, mechanismStore: { ...(current.mechanismStore ?? {}), [materialId]: store } });
+        setSession(getMixSession(sessionId));
+    }, [sessionId]);
+
+    /** 界面写记住的值 */
+    const handlePanelState = useCallback((patch: Record<string, string | number>) => {
+        const current = getMixSession(sessionId);
+        if (!current) return;
+        saveMixSession({ ...current, state: { ...(current.state ?? {}), ...patch } });
+        setSession(getMixSession(sessionId));
+    }, [sessionId]);
+
+    /**
+     * 把记住的值挂成对局根节点上的 CSS 变量，装饰里可以直接用：
+     *   .mix-game { background: hsl(calc(var(--mix-state-好感度) * 2) 40% 12%); }
+     * 变量名里的空白和引号会被换成下划线，避免拼出非法的自定义属性名。
+     */
+    const stateCssVars = useMemo(() => {
+        const vars: Record<string, string> = {};
+        for (const [name, value] of Object.entries(session?.state ?? {})) {
+            const safe = name.trim().replace(/[\s"'\\;:{}()]/g, "_");
+            if (safe) vars[`--mix-state-${safe}`] = String(value);
+        }
+        return vars as CSSProperties;
+    }, [session?.state]);
+
+    /** 按当前落点滚一次 */
+    const applyStick = useCallback(() => {
         const el = scrollRef.current;
-        if (el) el.scrollTop = el.scrollHeight;
-    }, [session?.turns.length, busy]);
+        if (!el || stickRef.current === "free") return;
+        el.scrollTop = stickRef.current === "top" ? 0 : el.scrollHeight;
+    }, []);
+
+    /** 这一局有没有人开过口——只有开场白的局算「还没开始」 */
+    const chatted = useMemo(() => (session?.turns ?? []).some((turn) => turn.role === "user"), [session?.turns]);
+
+    useEffect(() => {
+        stickRef.current = chatted ? "bottom" : "top";
+        applyStick();
+    }, [sessionId, chatted, session?.turns.length, busy, applyStick]);
+
+    /**
+     * 开场画布是沙盒 iframe，高度由画布自己异步报上来：挂载那一刻它还只有几十像素，
+     * 等它撑到几千像素，下面的内容整体被推下去。Chrome 有 scroll anchoring 会自己补偿，
+     * iOS Safari 没有这个特性，滚动位置原地不动，于是就停在画布中间——既不贴顶也不贴底。
+     * 所以画布报完高度要再落一次。
+     */
+    const handleCanvasHeight = useCallback(() => { applyStick(); }, [applyStick]);
+
+    /** 用户自己翻页了就撒手，别在画布撑高时把他拽回去 */
+    const handleScroll = useCallback(() => {
+        const el = scrollRef.current;
+        if (!el || stickRef.current === "free") return;
+        const gapTop = el.scrollTop;
+        const gapBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+        const stuck = stickRef.current === "top" ? gapTop <= 8 : gapBottom <= 8;
+        if (!stuck) stickRef.current = "free";
+    }, []);
 
     useEffect(() => () => abortRef.current?.abort(), []);
+
+    // 进对局：还没开口的局用当前角色卡重取开场白。
+    // 开场白是建局时写死进 turns[0] 的一条消息，作者改完卡回来本来看不到新的那句；
+    // 已经聊过的局不动（refreshMixOpening 自己判），那是真实历史。
+    useEffect(() => {
+        const res = refreshMixOpening(sessionId);
+        if (res?.changed) {
+            setSession(res.session);
+            onToast("开场白已更新为角色卡最新的一版。");
+        }
+    }, [sessionId, onToast]);
+
+    // 退出对局：跑一次收摊钩子并收掉这一局的全部沙盒，别让它们挂在页面上。
+    // 延后一拍再判：开发期的严格模式会「挂载 → 立刻卸载 → 再挂载」，
+    // 直接在清理函数里收摊会在刚进对局时就把这一局收掉。
+    useEffect(() => {
+        liveMixGames.add(sessionId);
+        return () => {
+            liveMixGames.delete(sessionId);
+            window.setTimeout(() => {
+                if (!liveMixGames.has(sessionId)) void runMixSessionEnd(sessionId);
+            }, 0);
+        };
+    }, [sessionId]);
 
     if (!session) {
         return (
@@ -153,6 +306,7 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
         const controller = new AbortController();
         abortRef.current = controller;
         setBusy(true);
+        busyRef.current = true;
         try {
             const pending = action(controller.signal);
             // 引擎的同步部分已经落库（重说删掉旧轮 / 发送写入用户消息），
@@ -165,6 +319,7 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
             const message = error instanceof Error ? error.message : "生成失败，请重试。";
             if (!controller.signal.aborted) onToast(message);
         } finally {
+            busyRef.current = false;
             setBusy(false);
         }
     };
@@ -175,6 +330,12 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
         setInput("");
         void run((signal) => generateMixReply(sessionId, text, signal));
     };
+
+    /** 界面以玩家身份发一句话：走的是和输入框一模一样的路径，不是特权通道 */
+    const handlePanelSay = useCallback((text: string) => {
+        if (busyRef.current) return;
+        void run((signal) => generateMixReply(sessionId, text, signal));
+    }, [sessionId]);
 
     const copyTurn = (turn: MixTurn) => {
         const done = () => onToast("已复制");
@@ -240,20 +401,22 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
     const canReroll = !busy && lastTurn?.role === "assistant" && session.turns.length > 1;
 
     return (
-        <div className="mix-game">
-            {assets.garnishCss ? <style>{assets.garnishCss}</style> : null}
+        <div className="mix-game mix-garnish-scope" style={stateCssVars}>
+            {/* 装饰是可分享材料里唯一直接进主文档的代码，注入前先收口到本画面 */}
+            {assets.garnishCss ? <style>{scopeMixCss(assets.garnishCss)}</style> : null}
             <div className="mix-game-bg" style={assets.cover ? { backgroundImage: `url(${assets.cover})` } : undefined} />
             <div className="mix-game-header">
                 <button type="button" className="mix-icon-btn" onClick={onBack} aria-label="返回"><ChevronLeft size={20} /></button>
                 <div className="mix-game-title">{session.charName}</div>
                 <button type="button" className="mix-icon-btn" onClick={() => setRecipeOpen(true)} disabled={busy} aria-label="修改方案" title="修改方案">
-                    <SlidersHorizontal size={17} />
+                    <MoreHorizontal size={20} />
                 </button>
             </div>
-            <div className="mix-game-scroll" ref={scrollRef}>
+            <StateBar state={session.state ?? {}} />
+            <div className="mix-game-scroll" ref={scrollRef} onScroll={handleScroll}>
                 {assets.canvasHtml ? (
                     <div className="mix-game-canvas">
-                        <MixRichText text={assets.canvasHtml} />
+                        <MixRichText text={assets.canvasHtml} onHeight={handleCanvasHeight} />
                     </div>
                 ) : null}
                 {session.turns.map((turn, idx) => {
@@ -276,7 +439,7 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
                         </div>
                     ) : (
                         <div className="mix-assistant-turn" key={turn.id}>
-                            <AssistantTurn turn={turn} ticketHtml={assets.ticketHtml} encoreHtml={assets.encoreTurnHtml} filterRules={assets.filterRules} />
+                            <AssistantTurn turn={turn} ticketHtml={assets.ticketHtml} encoreHtml={assets.encoreTurnHtml} filterRules={assets.filterRules} state={turn.state} />
                             {actions}
                         </div>
                     );
@@ -292,6 +455,24 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
                     </div>
                 ) : null}
             </div>
+            {panels.length ? (
+                <div className="mix-panel-layer">
+                    {panels.map((material) => (
+                        <MixMechanismPanel
+                            key={material.id}
+                            materialId={material.id}
+                            name={material.name}
+                            dock={material.dock!}
+                            html={material.panelHtml ?? ""}
+                            state={session.state ?? {}}
+                            store={session.mechanismStore?.[material.id] ?? {}}
+                            onStore={handlePanelStore}
+                            onState={handlePanelState}
+                            onSay={handlePanelSay}
+                        />
+                    ))}
+                </div>
+            ) : null}
             <div className="mix-game-inputbar">
                 <button
                     type="button"
@@ -325,7 +506,7 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
                     aria-label="继续生成"
                     title="继续生成"
                 >
-                    <CornerDownRight size={18} />
+                    <WandSparkles size={18} />
                 </button>
                 <button type="button" className="mix-send-btn" onClick={handleSend} disabled={busy || !input.trim()} aria-label="发送">
                     <Send size={16} />

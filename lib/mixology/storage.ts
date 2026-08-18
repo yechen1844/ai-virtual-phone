@@ -140,6 +140,15 @@ export function markMixMaterialSynced(id: string, publishedId: string): void {
     writeJson(CABINET_KEY, list);
 }
 
+/**
+ * 按云端条目 id 反查本地件。
+ * 用在「把自己发布的作品拉回本地」：柜里已经有关联着这条云端条目的原件时，
+ * 直接用那一件，不要再拉一份出来变成两件同名材料。
+ */
+export function findMixMaterialByPublishedId(cloudId: string): MixMaterial | null {
+    return loadMixCabinet().find((m) => m.publishedId === cloudId) ?? null;
+}
+
 /** 云端条目已下架/丢失时清掉本地的发布关联，回到"未上架"态 */
 export function clearMixMaterialPublished(id: string): void {
     const list = loadMixCabinet();
@@ -199,6 +208,11 @@ export function markMixRecipeSynced(id: string, publishedId: string): void {
     if (idx < 0) return;
     list[idx] = { ...list[idx], publishedId, publishedAt: list[idx].updatedAt };
     writeJson(RECIPES_KEY, list);
+}
+
+/** 同 findMixMaterialByPublishedId：按云端条目 id 反查本地配方 */
+export function findMixRecipeByPublishedId(cloudId: string): MixRecipe | null {
+    return loadMixRecipes().find((r) => r.publishedId === cloudId) ?? null;
 }
 
 /** 云端配方条目已下架/丢失时清掉本地发布关联 */

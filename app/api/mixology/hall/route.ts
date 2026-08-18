@@ -1,15 +1,17 @@
 import { NextResponse } from "next/server";
 
 import { getCurrentAccount } from "@/lib/server/account-auth";
+import { normalizeRecipeParts as normalizeParts, validateMechanismPayload, type RecipePartRef } from "@/lib/mixology/hall-parts";
 
 // 独家特调 · 酒材/配方 API：材料（mixology_items）与配方（mixology_recipes）共用一套路由，
 // type=material|recipe 区分。全部经 service key 直连 Supabase REST，anon 无直读。
 //
-// 配方条目的 materials 列只存"槽位引用"数组 [{id,kind,name,builtin?}]：
-// builtin 指官方出厂件（客户端本地解析）；其余 id 指向 mixology_items 条目。
+// 配方条目的 materials 列只存"槽位引用"数组 [{id,kind,name,builtin?,when?}]：
+// builtin 指官方出厂件（客户端本地解析）；其余 id 指向 mixology_items 条目；
+// when 是这一件的生效条件。同一 kind 可以出现多条（一格叠多件），数组顺序即叠放顺序。
 // 详情接口现场联表把引用换成完整材料内容；已下架的标 gone。
 
-const MATERIAL_KINDS = ["character", "persona", "base", "flavor", "glass", "strength", "ticket", "garnish", "encore", "filter"] as const;
+const MATERIAL_KINDS = ["character", "persona", "base", "flavor", "glass", "strength", "ticket", "garnish", "encore", "filter", "mechanism"] as const;
 
 const ITEM_SUMMARY_COLUMNS = "id,kind,name,hook,cover,tags,author_id,author_name,author_avatar,like_count,save_count,view_count,comment_count,created_at,updated_at";
 const ITEM_COLUMNS = `${ITEM_SUMMARY_COLUMNS},payload`;
@@ -135,35 +137,15 @@ function parseType(value: unknown): HallType | null {
   return value === "material" || value === "recipe" ? value : null;
 }
 
-type RecipePartRef = { id: string; kind: string; name: string; builtin?: boolean };
-
-/** 校验并清洗配方槽位引用；不合法返回 null（连带错误信息） */
+/** 校验配方槽位引用（实现在 lib/mixology/hall-parts.ts，那边可脱离路由单测） */
 function normalizeRecipeParts(value: unknown): { parts: RecipePartRef[] } | { error: string } {
-  if (!Array.isArray(value) || value.length === 0) return { error: "missing_parts" };
-  if (value.length > 12) return { error: "too_many_parts" };
-  const parts: RecipePartRef[] = [];
-  const seenKinds = new Set<string>();
-  for (const item of value) {
-    if (!item || typeof item !== "object") return { error: "invalid_part" };
-    const record = item as Record<string, unknown>;
-    const id = cleanText(record.id, 160);
-    const kind = cleanText(record.kind, 20);
-    const name = cleanText(record.name, 80);
-    const builtin = record.builtin === true;
-    if (!id || !name || !(MATERIAL_KINDS as readonly string[]).includes(kind)) return { error: "invalid_part" };
-    if (builtin && !id.startsWith("mix_builtin_")) return { error: "invalid_builtin_part" };
-    if (seenKinds.has(kind)) return { error: "duplicate_part_kind" };
-    seenKinds.add(kind);
-    parts.push(builtin ? { id, kind, name, builtin: true } : { id, kind, name });
-  }
-  if (!seenKinds.has("character")) return { error: "配方缺角色卡，没法分享。" };
-  if (JSON.stringify(parts).length > MAX_RECIPE_PARTS_PAYLOAD) return { error: "配方引用数据过大。" };
-  return { parts };
+  return normalizeParts(value, { materialKinds: MATERIAL_KINDS, maxPayload: MAX_RECIPE_PARTS_PAYLOAD });
 }
 
 /** 分享/更新配方前确认云端引用的酒材条目都还在架上 */
 async function verifyPartsOnShelf(parts: RecipePartRef[]): Promise<string | null> {
-  const cloudIds = parts.filter(p => !p.builtin).map(p => p.id);
+  // 一格叠多件时同一个 id 可能出现多次，去重免得白拉长查询串
+  const cloudIds = [...new Set(parts.filter(p => !p.builtin).map(p => p.id))];
   if (cloudIds.length === 0) return null;
   const result = await supabaseFetch<Array<{ id?: string }>>(
     `mixology_items?id=in.(${cloudIds.map(encodeFilter).join(",")})&deleted_at=is.null&select=id`,
@@ -228,7 +210,7 @@ function normalizeEntry(type: HallType, value: unknown, options: { withPayload?:
 /** 配方详情联表：把云端引用换成酒材条目的完整内容，下架的标 gone */
 async function hydrateRecipeParts(entry: Record<string, unknown>): Promise<void> {
   const parts = Array.isArray(entry.parts) ? entry.parts as Array<Record<string, unknown>> : [];
-  const cloudIds = parts.filter(p => p.builtin !== true).map(p => String(p.id));
+  const cloudIds = [...new Set(parts.filter(p => p.builtin !== true).map(p => String(p.id)))];
   if (cloudIds.length === 0) return;
   const result = await supabaseFetch<unknown[]>(
     `mixology_items?id=in.(${cloudIds.map(encodeFilter).join(",")})&deleted_at=is.null&select=${ITEM_COLUMNS}`,
@@ -361,6 +343,10 @@ export async function POST(request: Request) {
       if (JSON.stringify(payload).length > MAX_MATERIAL_PAYLOAD) {
         return NextResponse.json({ ok: false, error: "材料太大了（封面图请压小一点）。" }, { status: 413 });
       }
+      if (kind === "mechanism") {
+        const invalid = validateMechanismPayload(payload);
+        if (invalid) return NextResponse.json({ ok: false, error: invalid }, { status: 400 });
+      }
       const insert = await supabaseFetch<unknown[]>(
         `mixology_items?select=${ITEM_COLUMNS}`,
         {
@@ -445,6 +431,10 @@ export async function PUT(request: Request) {
       }
       if (JSON.stringify(materialPayload).length > MAX_MATERIAL_PAYLOAD) {
         return NextResponse.json({ ok: false, error: "材料太大了（封面图请压小一点）。" }, { status: 413 });
+      }
+      if (kind === "mechanism") {
+        const invalid = validateMechanismPayload(materialPayload);
+        if (invalid) return NextResponse.json({ ok: false, error: invalid }, { status: 400 });
       }
       payload = {
         kind,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
     CHAT_INITIAL_VISIBLE_MESSAGE_COUNT,
     CHAT_LOAD_MORE_MESSAGE_COUNT,
@@ -38,7 +38,7 @@ import { loadCharacters } from "@/lib/character-storage";
 import { isAgentComputerConfigured } from "@/lib/agent-computer";
 import { CharacterComputerPage } from "./character-computer-page";
 import { resolveUserIdentity, loadBindingConfig, loadPresets, resolveBinding } from "@/lib/settings-storage";
-import { getStatusRegionConfig, saveStatusRegionConfig, presetSupportsStatusRegion, isCustomStatusRegionActive, STATUS_REGION_SCHEME_TARGET, type StatusRegionConfig } from "@/lib/chat-status-region";
+import { getStatusRegionConfig, saveStatusRegionConfig, presetSupportsStatusRegion, isCustomStatusRegionActive, STATUS_REGION_SCHEME_TARGET, STATUS_REGION_UPDATED_EVENT, type StatusRegionConfig } from "@/lib/chat-status-region";
 import { downloadFile } from "@/lib/download-utils";
 import { getSchemes, saveScheme, deleteScheme, type CSSScheme } from "@/lib/css-scheme-storage";
 import { CustomStatusFrame } from "@/components/chat/custom-status-frame";
@@ -52,8 +52,11 @@ import { Toggle, Input } from "@/components/ui/form";
 import { PageShell } from "@/components/ui/page-shell";
 
 // 自定义状态栏预填模板：微博主页（契约=「状态栏」章节整段正文，含【逻辑】【格式】与包裹要求）
+// 预览用的默认示例数据：契约没有自带示例时兜底，字段与下面的微博模板对应
+const STATUS_REGION_STARTER_PREVIEW = "名字=林晚\n认证=美食探店博主 · 深夜觅食团成员\n简介=白天写方案，晚上寻宵夜｜私信不回工作请走邮箱\n关注=132\n粉丝=8.7万\n帖子=23分钟前|谁懂啊，加班到十点，楼下面馆居然还给我留了最后一碗牛肉面🥹 #深夜食堂# 老板说看我常来……突然就不想跳槽了|🍜🌃✨|56|203|1.2万\n评论=小奶糖|这就是深夜的意义吧|赞 231\n评论=风住了|老板收留我当洗碗工吧，只求管饭|赞 89\n评论=momo不吃香菜|蹲一个面馆定位！|赞 156";
+
 const STATUS_REGION_STARTER_CONTRACT = [
-    "【逻辑】你在维护{{char}}的微博主页。每行一个字段，用=分隔，除格式列出的字段外不要输出其他内容；帖子与评论要符合当前剧情与{{char}}的心境，网友评论可玩梗。按生成的内容整块用 [状态栏]...[/状态栏] 包裹输出。",
+    "【逻辑】你在维护自己的微博主页。每行一个字段，用=分隔，除格式列出的字段外不要输出其他内容；帖子与评论要符合当前剧情与你的心境，网友评论可玩梗。按生成的内容整块用 [状态栏]...[/状态栏] 包裹输出。",
     "【格式】",
     "[状态栏]",
     "名字=<微博昵称>",
@@ -297,7 +300,7 @@ export function ChatSettingsPanel({
     const [showStatusRegionDialog, setShowStatusRegionDialog] = useState(false);
     const [draftContract, setDraftContract] = useState("");
     const [draftRender, setDraftRender] = useState("");
-    const [statusPreviewRaw, setStatusPreviewRaw] = useState("名字=林晚\n认证=美食探店博主 · 深夜觅食团成员\n简介=白天写方案，晚上寻宵夜｜私信不回工作请走邮箱\n关注=132\n粉丝=8.7万\n帖子=23分钟前|谁懂啊，加班到十点，楼下面馆居然还给我留了最后一碗牛肉面🥹 #深夜食堂# 老板说看我常来……突然就不想跳槽了|🍜🌃✨|56|203|1.2万\n评论=小奶糖|这就是深夜的意义吧|赞 231\n评论=风住了|老板收留我当洗碗工吧，只求管饭|赞 89\n评论=momo不吃香菜|蹲一个面馆定位！|赞 156");
+    const [statusPreviewRaw, setStatusPreviewRaw] = useState(STATUS_REGION_STARTER_PREVIEW);
     const [previewHtml, setPreviewHtml] = useState("");
     const statusImportInputRef = useRef<HTMLInputElement | null>(null);
     // 状态栏方案库：复用 CSS 方案存储，负载为 JSON（契约+渲染+示例数据），全局跨会话
@@ -355,9 +358,30 @@ export function ChatSettingsPanel({
         setStatusRegion(next);
         saveStatusRegionConfig(session.id, next);
     };
+    // 小卷的状态栏工具写入后广播，这里同步刷新——否则本页状态只在挂载时初始化一次，
+    // 面板开着的时候被写入就会停在旧值，表现为「后台写了、前台看不到」。
+    // 弹窗正开着时连草稿一起换掉，用户看到的就是小卷刚写的那份，可继续手改。
+    useEffect(() => {
+        const onExternalWrite = (event: Event) => {
+            const detail = (event as CustomEvent<{ sessionId?: string }>).detail;
+            if (detail?.sessionId && detail.sessionId !== session.id) return;
+            const next = getStatusRegionConfig(session.id);
+            setStatusRegion(next);
+            if (showStatusRegionDialog) {
+                setDraftContract(next.contract || STATUS_REGION_STARTER_CONTRACT);
+                setDraftRender(next.renderHtml || STATUS_REGION_STARTER_RENDER);
+                setStatusPreviewRaw(next.previewRaw || STATUS_REGION_STARTER_PREVIEW);
+                setPreviewHtml("");
+            }
+        };
+        window.addEventListener(STATUS_REGION_UPDATED_EVENT, onExternalWrite);
+        return () => window.removeEventListener(STATUS_REGION_UPDATED_EVENT, onExternalWrite);
+    }, [session.id, showStatusRegionDialog]);
     const openStatusRegionDialog = () => {
         setDraftContract(statusRegion.contract || STATUS_REGION_STARTER_CONTRACT);
         setDraftRender(statusRegion.renderHtml || STATUS_REGION_STARTER_RENDER);
+        // 示例数据跟着契约走：小卷写入时会一并给出，否则内置样例的字段对不上新契约
+        setStatusPreviewRaw(statusRegion.previewRaw || STATUS_REGION_STARTER_PREVIEW);
         setPreviewHtml("");
         setShowStatusRegionDialog(true);
     };
@@ -892,8 +916,10 @@ export function ChatSettingsPanel({
                     </div>
                 )}
 
-                {/* 状态栏（状态区）：原生开关 + 自定义契约/渲染 */}
-                {!session.isGroup && (
+                {/* 状态栏（状态区）：原生开关 + 自定义契约/渲染。
+                    群聊同样支持：群回复按 [角色名]: 切段后每段各自解析，
+                    一份契约 + 一份渲染，群里每个角色各出一条状态栏。 */}
+                {(
                     <div className="menu-group">
                         <div className="menu-item">
                             <ChatInfoIcon icon={Code} color={BINDING_ACCENTS.preset} />
@@ -1633,7 +1659,7 @@ export function ChatSettingsPanel({
                                 onClick={() => {
                                     const contract = draftContract.trim();
                                     const renderHtml = draftRender.trim();
-                                    saveStatusRegion({ mode: contract && renderHtml ? "custom" : "off", contract, renderHtml });
+                                    saveStatusRegion({ mode: contract && renderHtml ? "custom" : "off", contract, renderHtml, previewRaw: statusPreviewRaw });
                                     setShowStatusRegionDialog(false);
                                 }}
                             >

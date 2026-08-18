@@ -1981,6 +1981,12 @@ export function assembleGroupPromptPayload(input: GroupAssemblerInput): LLMMessa
         groupEngine.groupRoster = input.groupRoster ?? "";
         groupEngine.customAppRichMediaDirectives = input.customAppRichMediaDirectives ?? "";
         groupEngine.chatBilingualInstruction = input.chatBilingualInstruction ?? "";
+        // 状态区四宏：群聊的输出格式条目是全群共享的，之前只给了 <member> 块内的引擎，
+        // 共享条目里的 {{statusRegionSection}} 会解析成空串——群聊的状态值/内心章节整段消失。
+        groupEngine.statusRegionSection = input.statusRegionSection ?? "";
+        groupEngine.statusRegionExampleLine = input.statusRegionExampleLine ?? "";
+        groupEngine.statusRegionComposition = input.statusRegionComposition ?? "";
+        groupEngine.statusRegionFullExample = input.statusRegionFullExample ?? "";
         groupEngine.offlineBilingualInstruction = input.offlineBilingualInstruction ?? "";
         groupEngine.offlineSummaryTag = input.offlineSummaryTag ?? "summary";
 

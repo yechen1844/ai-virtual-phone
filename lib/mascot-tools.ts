@@ -680,6 +680,88 @@ const IMAGE_ASSET_USAGE_GUIDE = [
 
 // ── 套件定义 ────────────────────────────────────────────
 
+// ── 线上聊天状态栏（自定义状态栏）──────────────────────
+const STATUS_BAR_SESSION_DESC = "会话名：单聊填角色名/备注名，群聊填群名。不传则用当前页面正在打开的会话；没打开时工具会返回可选会话列表。";
+
+const READ_STATUS_BAR_SCHEMA = {
+    type: "object",
+    properties: {
+        sessionName: { type: "string", description: STATUS_BAR_SESSION_DESC },
+    },
+    required: [],
+    additionalProperties: false,
+};
+
+const WRITE_STATUS_BAR_SCHEMA = {
+    type: "object",
+    properties: {
+        sessionName: { type: "string", description: STATUS_BAR_SESSION_DESC },
+        contract: { type: "string", description: "输出契约：提示词「状态栏」章节的整段正文。必须含【逻辑】【格式】，且明确要求把内容整块用 [状态栏]...[/状态栏] 包裹。禁止使用 {{char}} 宏。" },
+        renderHtml: { type: "string", description: "输出渲染：完整 HTML（可含 <style>/<script>），沙盒 iframe 执行。数据从 window.STATUS_RAW 取（原文字符串），或用 {{RAW}} 直插（已 HTML 转义）。" },
+        previewRaw: { type: "string", description: "示例数据：按契约格式编造的一份样例，供编辑弹窗预览。不给的话用户打开弹窗会看到与契约对不上的默认样例。" },
+    },
+    required: ["contract", "renderHtml", "previewRaw"],
+    additionalProperties: false,
+};
+
+const PREVIEW_STATUS_BAR_SCHEMA = {
+    type: "object",
+    properties: {
+        sessionName: { type: "string", description: STATUS_BAR_SESSION_DESC },
+    },
+    required: [],
+    additionalProperties: false,
+};
+
+const STATUS_BAR_PROMPT = `线上聊天状态栏 = 让 AI 每轮在 [状态栏]...[/状态栏] 里吐一小段数据，
+再由一段固定的 HTML 把它画成卡片（微博主页、心情面板、随身物品……随意）。
+数据每轮变、画法不变，所以比"让 AI 每轮直接吐 HTML"省很多 token，长相也稳定。
+
+===== 适用范围（务必先确认）=====
+· 只适用于**线上聊天**：单聊 + 群聊，都支持。
+· **不适用**：线下模式、剧情/漫卷、语音视频通话、朋友圈、查手机、小红书等。
+  这些场景要做状态栏，只能用老办法（让 AI 输出 [状态栏]...[/状态栏]，再配 placement=[2] 的正则渲染）。
+· 用户说"聊天状态栏"通常就是指这个；说"剧情里的状态栏"要走正则那条路，别用本套件。
+
+===== 工作流（3 个工具）=====
+1. 读取线上状态栏 —— 看该会话现在是什么模式、有没有已存在的契约/渲染。**改之前必读**，
+   已有内容要先问用户是覆盖还是在原基础上改。
+2. 写线上状态栏 —— 契约 + 渲染 + 示例数据一次写入，自动置为自定义模式并启用。
+3. 预览线上状态栏 —— 弹窗里用示例数据跑一遍给用户看。写完建议顺手预览。
+
+===== 契约怎么写（硬规则，违反会被工具拒绝）=====
+· **必须出现成对的 [状态栏] 与 [/状态栏]**：既要在【格式】里画出成对标签，也要用一句话
+  明确要求"按生成的内容整块用 [状态栏]...[/状态栏] 包裹输出"。
+  漏了这条，AI 会把字段当成普通聊天消息发出来——这是最常见的翻车方式。
+· **禁止使用 {{char}}**：群聊的输出格式条目是全群共享的，{{char}} 在那里会展开成
+  全体成员名字的拼接（如"甲、乙、丙"）。一律用第二人称"你"。
+· **只让 AI 吐数据，不要让它吐 HTML**。一行一个字段、用 = 分隔最稳，例如：
+  心情=有点烦躁
+  位置=公司楼下便利店
+  多值字段用 | 分隔，重复字段（如多条评论）就重复写同一个键。
+· 结构建议：【逻辑】说清这是什么场景、字段怎么取值、要不要跟着剧情变；
+  【格式】给出完整的 [状态栏]...[/状态栏] 样板，字段用 <尖括号说明> 占位。
+· 字段别贪多。群聊里每个发言角色都要各出一份，字段多了输出 token 会翻好几倍。
+
+===== 渲染怎么写 =====
+· 一段完整 HTML，可含 <style> 与 <script>，在沙盒 iframe 里跑（allow-scripts，无 same-origin，
+  访问不到宿主也发不了网络请求，一切自包含）。
+· 取数据两个口子：window.STATUS_RAW（原文字符串，JS 里 split 解析）；{{RAW}}（模板直插，
+  已 HTML 转义，只能当纯文本用）。想按行解析就用前者。
+· **不要用 100vh / 100dvh**：高度由外部自动测量，用视口单位会触发反馈环保护、把高度锁死。
+· 深浅色都要能看：用 prefers-color-scheme 或半透明叠色，别写死一种背景。
+· 解析要容错：字段缺失、顺序变化、数量不定都要不崩（AI 的输出不会每轮都完美）。
+
+===== 示例数据 =====
+· 必填。按自己写的契约格式编一份真实感的样例，字段要和契约完全对得上。
+· 不给的话，用户打开编辑弹窗看到的是内置的默认样例（微博字段），和新契约对不上，
+  预览会一片空白或错乱，用户会以为坏了。
+
+===== 写完要告诉用户的 =====
+· 已写入哪个会话，可在 聊天信息 → 自定义状态栏 里看到并继续手改。
+· **启用后原生的好感度/占有欲/焦虑值会停止更新**（状态区整块被契约取代了）。
+· 如果该会话之前用正则渲染过状态栏，两套会互相竞争，让用户二选一。`;
+
 export const MASCOT_TOOL_PACKAGES: MascotToolPackage[] = [
     {
         id: "css_pack",
@@ -779,6 +861,17 @@ export const MASCOT_TOOL_PACKAGES: MascotToolPackage[] = [
             { name: "更新正则规则", description: "修改某规则的字段（updates 里传部分字段即可）。", parameterSchema: UPDATE_REGEX_RULE_SCHEMA },
         ],
         usageGuide: REGEX_PROMPT,
+    },
+    {
+        id: "status_bar_pack",
+        label: "线上聊天状态栏套件",
+        description: "为**线上聊天**（单聊 + 群聊）配置自定义状态栏：写一份输出契约（AI 每轮吐什么数据）+ 一段输出渲染（怎么把数据画成卡片），直接写入指定会话并启用，用户可在聊天信息页继续手改。不适用于线下模式、剧情、通话、朋友圈——那些场景只能用 [状态栏] + 正则的老办法。",
+        subTools: [
+            { name: "读取线上状态栏", description: "读取某会话当前的状态栏模式、契约、渲染与示例数据。改之前必读。不传会话名时用当前打开的会话。", parameterSchema: READ_STATUS_BAR_SCHEMA },
+            { name: "写线上状态栏", description: "把契约 + 渲染 + 示例数据写入指定会话并启用（自动置为自定义模式）。契约必须含成对的 [状态栏]/[/状态栏] 且不能用 {{char}}，否则工具会拒绝。", parameterSchema: WRITE_STATUS_BAR_SCHEMA },
+            { name: "预览线上状态栏", description: "在对话里弹窗预览该会话已写入的状态栏效果（用示例数据渲染），不离开聊天。", parameterSchema: PREVIEW_STATUS_BAR_SCHEMA },
+        ],
+        usageGuide: STATUS_BAR_PROMPT,
     },
     {
         id: "widget_pack",
@@ -892,6 +985,7 @@ function numberOption(value: unknown, fallback: number): number {
     return fallback;
 }
 
+
 // ── 原生协议下的工具定义 ─────────────────────────────────
 
 const MASCOT_NATIVE_TOOL_NAMES: Record<string, string> = {
@@ -899,6 +993,9 @@ const MASCOT_NATIVE_TOOL_NAMES: Record<string, string> = {
     "读取CSS": "mascot_read_css",
     "覆写CSS": "mascot_write_css",
     "清除CSS": "mascot_clear_css",
+    "读取线上状态栏": "mascot_read_status_bar",
+    "写线上状态栏": "mascot_write_status_bar",
+    "预览线上状态栏": "mascot_preview_status_bar",
     "生成图像素材": "mascot_generate_css_asset",
     "列出用户图片": "mascot_list_user_images",
     "导入用户图片为素材": "mascot_import_user_image_asset",
@@ -956,6 +1053,7 @@ const MASCOT_NATIVE_LOADER_NAMES: Record<string, string> = {
     worldbook_pack: "mascot_load_worldbook_pack",
     preset_pack: "mascot_load_preset_pack",
     regex_pack: "mascot_load_regex_pack",
+    status_bar_pack: "mascot_load_status_bar_pack",
     widget_pack: "mascot_load_widget_pack",
 };
 
@@ -1043,6 +1141,10 @@ export async function executeMascotToolCall(call: ToolCall, ctx: MascotToolConte
             case "读取CSS": return await handleReadCss(call.args, ctx);
             case "覆写CSS": return await handleOverwriteCss(call.args, ctx);
             case "清除CSS": return await handleClearCss(call.args, ctx);
+            // ─── 线上聊天状态栏 ───
+            case "读取线上状态栏": return await handleReadStatusBar(call.args, ctx);
+            case "写线上状态栏": return await handleWriteStatusBar(call.args, ctx);
+            case "预览线上状态栏": return await handlePreviewStatusBar(call.args, ctx);
 
             // ─── 图像处理 ───
             case "生成图像素材": return await handleGenerateCssAsset(call.args);
@@ -1471,6 +1573,96 @@ async function writeCssAt(location: string, css: string, ctx: MascotToolContext,
         return { displayName: resolved.displayName };
     }
     throw new Error(`未知 CSS 位置：${location}`);
+}
+
+
+// ── 线上聊天状态栏 handlers ───────────────────────────
+// 只覆盖「线上聊天」（单聊 + 群聊）。线下模式、剧情、通话、朋友圈都不走这套机制，
+// 那些场景仍然只能用 [状态栏] + 正则的老办法。
+
+async function statusBarSession(
+    sessionName: string | undefined,
+    ctx: MascotToolContext,
+    toolName: string,
+): Promise<{ err: ToolResult; ok?: undefined } | { ok: { sessionId: string; displayName: string }; err?: undefined }> {
+    const resolved = await resolveChatSession(sessionName, ctx);
+    if ("error" in resolved) {
+        const hint = resolved.choices?.length ? `。可选：${resolved.choices.join("、")}` : "";
+        return { err: { name: toolName, success: false, error: resolved.error + hint } as ToolResult };
+    }
+    return { ok: resolved };
+}
+
+async function handleReadStatusBar(args: Record<string, unknown>, ctx: MascotToolContext): Promise<ToolResult> {
+    const NAME = "读取线上状态栏";
+    const r = await statusBarSession(args.sessionName as string | undefined, ctx, NAME);
+    if (r.err) return r.err;
+    const { sessionId, displayName } = r.ok;
+    const { getStatusRegionConfig, isCustomStatusRegionActive } = await import("./chat-status-region");
+    const cfg = getStatusRegionConfig(sessionId);
+    const active = isCustomStatusRegionActive(cfg);
+    const lines = [
+        `会话：${displayName}`,
+        `当前模式：${cfg.mode === "custom" ? (active ? "自定义（已生效）" : "自定义（未生效：契约或渲染为空）") : cfg.mode === "off" ? "已关闭状态区" : "原生状态栏"}`,
+        "",
+        "【当前契约】",
+        cfg.contract.trim() || "（空）",
+        "",
+        "【当前渲染】",
+        cfg.renderHtml.trim() || "（空）",
+        "",
+        "【当前示例数据】",
+        cfg.previewRaw?.trim() || "（空，编辑弹窗会用内置样例）",
+    ];
+    return { name: NAME, success: true, data: lines.join("\n") };
+}
+
+async function handleWriteStatusBar(args: Record<string, unknown>, ctx: MascotToolContext): Promise<ToolResult> {
+    const NAME = "写线上状态栏";
+    const contract = typeof args.contract === "string" ? args.contract.trim() : "";
+    const renderHtml = typeof args.renderHtml === "string" ? args.renderHtml.trim() : "";
+    const previewRaw = typeof args.previewRaw === "string" ? args.previewRaw.trim() : "";
+    if (!contract) return { name: NAME, success: false, error: "contract 不能为空" };
+    if (!renderHtml) return { name: NAME, success: false, error: "renderHtml 不能为空——契约与渲染缺一，自定义状态栏不会生效" };
+    // 最常见也最致命的写法错误：契约没写包裹要求，AI 会把字段当普通消息发出来
+    if (!contract.includes("[状态栏]") || !contract.includes("[/状态栏]")) {
+        return { name: NAME, success: false, error: "契约里必须出现 [状态栏] 与 [/状态栏]：既要在【格式】里给出成对标签，也要用一句话要求 AI 把内容整块包裹输出。缺了这条，AI 会把状态栏字段当成普通聊天消息发出来。" };
+    }
+    if (contract.includes("{{char}}")) {
+        return { name: NAME, success: false, error: "契约里不能用 {{char}}：群聊的共享条目里它会展开成全体成员名字的拼接（如「甲、乙、丙」）。改用第二人称「你」。" };
+    }
+    const r = await statusBarSession(args.sessionName as string | undefined, ctx, NAME);
+    if (r.err) return r.err;
+    const { sessionId, displayName } = r.ok;
+    const { saveStatusRegionConfig, STATUS_REGION_UPDATED_EVENT } = await import("./chat-status-region");
+    saveStatusRegionConfig(sessionId, { mode: "custom", contract, renderHtml, previewRaw });
+    // 广播：聊天信息页开着时同步刷新，用户立刻能在输入框里看到并继续手改
+    if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent(STATUS_REGION_UPDATED_EVENT, { detail: { sessionId } }));
+    }
+    return {
+        name: NAME,
+        success: true,
+        data: `已写入「${displayName}」的线上状态栏并启用（契约 ${contract.length} 字符、渲染 ${renderHtml.length} 字符）。用户可在 聊天信息 → 自定义状态栏 里看到并修改。注意：启用后原生的好感度等状态值会停止更新。`,
+    };
+}
+
+async function handlePreviewStatusBar(args: Record<string, unknown>, ctx: MascotToolContext): Promise<ToolResult> {
+    const NAME = "预览线上状态栏";
+    const r = await statusBarSession(args.sessionName as string | undefined, ctx, NAME);
+    if (r.err) return r.err;
+    const { sessionId, displayName } = r.ok;
+    const { getStatusRegionConfig } = await import("./chat-status-region");
+    const cfg = getStatusRegionConfig(sessionId);
+    if (!cfg.renderHtml.trim()) return { name: NAME, success: false, error: `「${displayName}」还没有渲染代码，先用 写线上状态栏 写入` };
+    const { requestStatusBarPreview } = await import("./mascot-events");
+    const handled = requestStatusBarPreview({
+        displayName,
+        renderHtml: cfg.renderHtml,
+        previewRaw: cfg.previewRaw || "",
+    });
+    if (!handled) return { name: NAME, success: false, error: "预览弹窗当前不可用（桌宠界面未挂载）" };
+    return { name: NAME, success: true, data: `已弹出「${displayName}」的状态栏预览，用户可直接查看效果。` };
 }
 
 async function handleOverwriteCss(args: Record<string, unknown>, ctx: MascotToolContext): Promise<ToolResult> {

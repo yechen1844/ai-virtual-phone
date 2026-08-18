@@ -547,7 +547,8 @@ function GameIframe({
     const frame = iframeRef.current;
     if (!frame) return;
     // 实测悬浮返回钮几何：top 取其下沿（整体让位），bar* 取整行位置和左侧
-    // 水平占位（供想与返回钮同排摆按钮的游戏贴行对齐）；找不到时退回估算值
+    // 水平占位（供想与返回钮同排摆按钮的游戏贴行对齐）；找不到时退回估算值。
+    // 下沿之后只留 4px，与按钮自身的 top 偏移各占一半，两处都留 8px 会叠成一整条。
     let measured;
     const backBtn = document.querySelector(".game-runtime-floating-back");
     if (backBtn) {
@@ -555,7 +556,7 @@ function GameIframe({
       const frameRect = frame.getBoundingClientRect();
       if (backRect.height > 0) {
         measured = {
-          topPx: backRect.bottom - frameRect.top + 8,
+          topPx: backRect.bottom - frameRect.top + 4,
           barTopPx: backRect.top - frameRect.top,
           barHeightPx: backRect.height,
           barClearLeftPx: backRect.right - frameRect.left + 8,

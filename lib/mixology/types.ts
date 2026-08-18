@@ -14,9 +14,10 @@ export type MixMaterialKind =
     | "glass"     // 杯型：输出格式
     | "strength"  // 苦精：尾部强化（离生成最近、权重最高）
     | "ticket"    // 小票：状态数据卡（输出契约 + 渲染代码）
-    | "garnish"   // 装饰：界面美化 CSS
+    | "garnish"   // 外观：界面美化 CSS
     | "encore"    // 尾调：随卡互动 HTML 小品
-    | "filter";   // 滤网：正则清洗正文（不进提示词）
+    | "filter"    // 滤网：正则清洗正文（不进提示词）
+    | "mechanism"; // 机括：沙盒里跑的钩子逻辑 + 常驻界面
 
 export const MIX_KIND_LABELS: Record<MixMaterialKind, string> = {
     character: "角色卡",
@@ -26,17 +27,18 @@ export const MIX_KIND_LABELS: Record<MixMaterialKind, string> = {
     glass: "杯型",
     strength: "苦精",
     ticket: "小票",
-    garnish: "装饰",
+    garnish: "外观",
     encore: "尾调",
     filter: "滤网",
+    mechanism: "机括",
 };
 
 /** 吧台槽位顺序（角色卡永远第一槽） */
 export const MIX_SLOT_ORDER: MixMaterialKind[] = [
-    "character", "persona", "base", "flavor", "glass", "strength", "ticket", "garnish", "encore", "filter",
+    "character", "persona", "base", "flavor", "glass", "strength", "ticket", "garnish", "encore", "filter", "mechanism",
 ];
 
-/** 每类材料在提示词里的正规段名（装饰不进提示词，标它的实际职责） */
+/** TAB 上大字下面那行小字：说明这一类到底干什么（不进提示词的种类标它的实际职责） */
 export const MIX_KIND_SECTION_LABELS: Record<MixMaterialKind, string> = {
     character: "角色资料",
     persona: "用户资料",
@@ -47,7 +49,8 @@ export const MIX_KIND_SECTION_LABELS: Record<MixMaterialKind, string> = {
     ticket: "状态栏",
     garnish: "界面样式",
     encore: "小剧场",
-    filter: "文本清洗",
+    filter: "正则替换",
+    mechanism: "可执行逻辑",
 };
 
 /** 必选槽：没配齐不能开局；其余槽可留空 */
@@ -72,10 +75,23 @@ export const MIX_SLOT_STACK: Record<MixMaterialKind, "concat" | "first"> = {
     garnish: "concat",
     encore: "first",
     filter: "concat",
+    mechanism: "concat",
 };
 
 /** 不给设生效条件的格：这两格没了这一局就不成立 */
 export const MIX_NO_CONDITION_KINDS: MixMaterialKind[] = ["character", "persona"];
+
+/**
+ * 会在下载方设备上「按轮执行、且能改写对话」的材料。
+ * 小票与尾调也带 JS，但它们只在沙盒 iframe 里画自己那一块，动不了对话内容；
+ * 机括不一样——它能改你发出去的话、改你看到的正文、以你的身份发言，
+ * 所以上架与入柜两头都要单独说明白，不能混在普通材料里悄悄过。
+ */
+export const MIX_ACTIVE_CODE_KINDS: MixMaterialKind[] = ["mechanism"];
+
+export function mixKindRunsActiveCode(kind: MixMaterialKind): boolean {
+    return MIX_ACTIVE_CODE_KINDS.includes(kind);
+}
 
 export function mixKindAllowsCondition(kind: MixMaterialKind): boolean {
     return !MIX_NO_CONDITION_KINDS.includes(kind);
@@ -89,6 +105,38 @@ export const MIX_VISUAL_KINDS: MixMaterialKind[] = ["character", "ticket", "garn
 
 export function mixKindHasCover(kind: MixMaterialKind): boolean {
     return MIX_VISUAL_KINDS.includes(kind);
+}
+
+/** 一件材料最多几个标签 / 每个标签最长几个字：与云端 normalizeTags 同口径 */
+export const MIX_TAG_MAX = 8;
+export const MIX_TAG_LEN = 24;
+
+/**
+ * 标签规整：去空白、去重、掐长度、掐个数。
+ * 本地和云端必须同一套口径——否则本地看着有九个标签，发布上去只剩八个，
+ * 作者会以为发布把标签吞了。
+ */
+export function normalizeMixTags(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    const out: string[] = [];
+    for (const item of value) {
+        if (typeof item !== "string") continue;
+        const tag = item.trim().replace(/\s+/g, " ").slice(0, MIX_TAG_LEN);
+        if (!tag || out.includes(tag)) continue;
+        out.push(tag);
+        if (out.length >= MIX_TAG_MAX) break;
+    }
+    return out;
+}
+
+/** 编辑器里一行文本拆成标签：逗号、顿号、竖线、井号、空格都算分隔 */
+export function parseMixTags(text: string): string[] {
+    return normalizeMixTags(text.split(/[,，、|｜#＃\s]+/));
+}
+
+/** 标签回填到编辑器那一行文本 */
+export function formatMixTags(tags: string[] | undefined): string {
+    return (tags ?? []).join("、");
 }
 
 /** 所有材料共有的元信息 */
@@ -186,7 +234,7 @@ export type MixTicketMaterial = MixMaterialMeta & {
     vars?: MixTicketVar[];
 };
 
-/** 装饰：对局界面美化（官方语义类 + 界面定位符的 CSS） */
+/** 外观：对局界面美化（官方语义类 + 界面定位符的 CSS） */
 export type MixGarnishMaterial = MixMaterialMeta & {
     kind: "garnish";
     css: string;
@@ -229,6 +277,33 @@ export type MixFilterMaterial = MixMaterialMeta & {
     rules: MixFilterRule[];
 };
 
+/** 机括的停靠位：界面挂在对局画面的哪一侧，位置由应用排布，创作者只能选 */
+export type MixDock = "left" | "right" | "bottom" | "float";
+
+export const MIX_DOCK_LABELS: Record<MixDock, string> = {
+    left: "左侧栏",
+    right: "右侧栏",
+    bottom: "底部条",
+    float: "悬浮球",
+};
+
+/**
+ * 机括：两个部分，任一半可留空。
+ * - 钩子：在流水线的固定几个口子上被叫起来跑一下，收数据包、还数据包，
+ *   跑在没有网络、碰不到宿主页面的沙盒里，还带超时熔断。
+ * - 常驻界面：选一个停靠位挂一段 HTML，跨轮活着、有自己的存储。
+ * 两半共用同一个存储桶，天然能互相看见。
+ */
+export type MixMechanismMaterial = MixMaterialMeta & {
+    kind: "mechanism";
+    /** 钩子代码：定义 onSessionStart / onBeforeSend / onAfterReply / onSessionEnd */
+    script?: string;
+    /** 常驻界面的停靠位；不填则这件机括没有界面 */
+    dock?: MixDock;
+    /** 常驻界面的 HTML（含 CSS/JS），在沙盒 iframe 里跑 */
+    panelHtml?: string;
+};
+
 export type MixMaterial =
     | MixCharacterCard
     | MixPersonaMaterial
@@ -236,7 +311,8 @@ export type MixMaterial =
     | MixTicketMaterial
     | MixGarnishMaterial
     | MixEncoreMaterial
-    | MixFilterMaterial;
+    | MixFilterMaterial
+    | MixMechanismMaterial;
 
 /** 条件里的比较符 */
 export type MixCompareOp = ">" | ">=" | "<" | "<=" | "=" | "!=";
@@ -343,6 +419,13 @@ export type MixSession = {
     turns: MixTurn[];
     /** 当前记住的值（小票里勾了「记住」的项，每轮更新） */
     state?: MixState;
+    /**
+     * 每件机括自己的存储桶（materialId → 键值表），退出再进来还在。
+     * 刻意不随轮次做快照：存储桶上限给到 100KB，逐轮留档会把对局撑爆。
+     * 回溯之后机括看到的还是回溯前的私有记忆——数据包里带了 turnCount，
+     * 需要的话机括可以自己发现轮数倒退并复位。
+     */
+    mechanismStore?: Record<string, Record<string, string>>;
     createdAt: number;
     updatedAt: number;
 };

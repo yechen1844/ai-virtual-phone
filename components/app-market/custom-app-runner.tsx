@@ -755,6 +755,8 @@ export function CustomAppRunner({
     // 实测胶囊按钮（菜单/关闭）几何：top 取其下沿（整体让位的保守值），
     // bar* 取整行位置和右侧水平占位（供想与胶囊同排摆按钮的应用贴行对齐）。
     // 元素不在（如嵌入模式）时退回 getPwaHostedSafeArea 的估算值。
+    // 下沿之后只留 4px：这段间隙与胶囊自身的 top 偏移是同一处留白的两半，
+    // 各留 8px 会叠成一整条，存量 APP（都吃 safe-top）的顶栏被整体推下去。
     let measured;
     const capsule = frame.parentElement?.querySelector(".custom-app-runner-capsule");
     if (capsule) {
@@ -762,7 +764,7 @@ export function CustomAppRunner({
       const frameRect = frame.getBoundingClientRect();
       if (capsuleRect.height > 0) {
         measured = {
-          topPx: capsuleRect.bottom - frameRect.top + 8,
+          topPx: capsuleRect.bottom - frameRect.top + 4,
           barTopPx: capsuleRect.top - frameRect.top,
           barHeightPx: capsuleRect.height,
           barClearRightPx: frameRect.right - capsuleRect.left + 8,

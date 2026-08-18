@@ -4,17 +4,19 @@
 // Phase ③ 先给够用的表单闭环，创作工坊阶段再上专业编辑体验。
 
 import { useMemo, useRef, useState, type ReactNode } from "react";
-import { FileText, Play, Plus, Trash2 } from "lucide-react";
+import { FileText, Plus, Trash2 } from "lucide-react";
 import type {
     MixCharacterCard,
     MixFilterRule,
     MixMaterial,
     MixMaterialKind,
     MixTextMaterial,
+    MixTicketVar,
 } from "@/lib/mixology/types";
-import { createMixId, MIX_KIND_LABELS, mixKindHasCover } from "@/lib/mixology/types";
+import { createMixId, formatMixTags, MIX_DOCK_LABELS, MIX_KIND_LABELS, MIX_TAG_MAX, mixKindHasCover, parseMixTags } from "@/lib/mixology/types";
+import type { MixDock } from "@/lib/mixology/types";
 import { applyMixFilterRules } from "@/lib/mixology/prose";
-import { MixPreviewSheet, MixStructureSheet, type MixPreviewTarget } from "./mixology-preview";
+import { MixPreviewInline, MixStructureSheet } from "./mixology-preview";
 
 const OPENING_SEPARATOR = "\n---\n";
 
@@ -49,12 +51,16 @@ const KIND_GUIDE: Record<MixMaterialKind, { what: string; where: string }> = {
         where: "契约进入提示词「状态栏」段；渲染代码不进入提示词，仅在界面中执行。",
     },
     garnish: {
-        what: "这里写界面样式：正文配色、对白字体、气泡形态，以 CSS 编写。",
-        where: "不进入提示词，仅改变呈现，不占用上下文。",
+        what: "这里写界面样式：正文配色、对白字体、气泡形态，以 CSS 编写。写 body / html / :root 等同于「整个对局画面」。",
+        where: "不进入提示词，仅改变呈现，不占用上下文。样式只在对局画面内生效，改不到应用的其他页面。",
     },
     encore: {
         what: "这里写小剧场：正文之外的加演，例如旁观视角、朋友圈动态、一段监控录像。输出契约决定 AI 何时写什么，渲染代码决定它长什么样；契约留空则为纯静态小品（手账、排班表）。",
         where: "契约进入提示词「小剧场」段；渲染代码不进提示词，仅在界面中执行。",
+    },
+    mechanism: {
+        what: "这里写机括：一段在沙盒里跑的逻辑，和一块常驻在对局画面边上的界面。两半通常配合着写——它们共用同一份存储，能互相看见（界面上记的东西，钩子发送前能用上）；只写其中一半也可以。逻辑在固定的几个时机被叫起来——开局、发送前、收到回复后、退出对局——每次收到一份数据包，加工完还回去。",
+        where: "不进入提示词。跑在没有网络、碰不到应用本体的沙盒里，超时会被掐断，那一轮当作没有机括。",
     },
     filter: {
         what: "这里写滤网：一组正则替换规则，自动清洗 AI 正文里的怪癖（markdown 残留、口癖词、错标点）。每条规则可选「仅显示」（存原文，只在渲染时替换，改规则全部历史立即生效）或「进上下文」（入库前清洗，发回模型的历史也是洗过的，只对新回复生效）。",
@@ -131,6 +137,7 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
 
     const [name, setName] = useState(initial?.name ?? "");
     const [hook, setHook] = useState(initial?.hook ?? "");
+    const [tagsText, setTagsText] = useState(formatMixTags(initial?.tags));
     const [cover, setCover] = useState(initial?.cover ?? "");
     // 角色卡专属
     const [baseInfo, setBaseInfo] = useState(initialCard?.baseInfo ?? "");
@@ -155,6 +162,26 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
     const [contract, setContract] = useState(initial?.kind === "ticket" ? initial.contract : "");
     const [renderHtml, setRenderHtml] = useState(initial?.kind === "ticket" ? initial.renderHtml : "");
     const [previewRaw, setPreviewRaw] = useState(initial?.kind === "ticket" ? initial.previewRaw ?? "" : "");
+    const [vars, setVars] = useState<MixTicketVar[]>(initial?.kind === "ticket" ? initial.vars ?? [] : []);
+    const [script, setScript] = useState(initial?.kind === "mechanism" ? initial.script ?? "" : "");
+    const [dock, setDock] = useState<MixDock | "">(initial?.kind === "mechanism" ? initial.dock ?? "" : "");
+    const [panelHtml, setPanelHtml] = useState(initial?.kind === "mechanism" ? initial.panelHtml ?? "" : "");
+
+    /**
+     * 从契约正文里认出「字段名：说明」这样的行，做成一排可点的候选。
+     * 创作者写契约时本来就在列每轮报告什么，这里只是把那些名字捡出来让他点一下，
+     * 不用再手打一遍（打错一个字就抽不到值）。
+     */
+    const contractFieldNames = useMemo(() => {
+        const names: string[] = [];
+        for (const line of contract.split(/\r?\n/)) {
+            const matched = /^\s*[-*·]?\s*([^：:=\s][^：:=]{0,11})\s*[：:=]/.exec(line);
+            if (!matched) continue;
+            const name = matched[1].trim();
+            if (name && !names.includes(name)) names.push(name);
+        }
+        return names.slice(0, 12);
+    }, [contract]);
     const [css, setCss] = useState(initial?.kind === "garnish" ? initial.css : "");
     const [html, setHtml] = useState(initial?.kind === "encore" ? (initial.renderHtml ?? initial.html ?? "") : "");
     const [encoreContract, setEncoreContract] = useState(initial?.kind === "encore" ? initial.contract ?? "" : "");
@@ -177,9 +204,15 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
         return { badIndexes, result };
     }, [rules, filterSample]);
     const [error, setError] = useState("");
-    const [preview, setPreview] = useState<MixPreviewTarget | null>(null);
     const [structureOpen, setStructureOpen] = useState(false);
     const fileRef = useRef<HTMLInputElement | null>(null);
+
+    // 标签：输入的时候就按最终口径拆好给作者看，免得存下来才发现被掐了
+    const tags = useMemo(() => parseMixTags(tagsText), [tagsText]);
+    const tagsDropped = useMemo(() => {
+        const all = new Set(tagsText.split(/[,，、|｜#＃\s]+/).map((t) => t.trim()).filter(Boolean));
+        return Math.max(0, all.size - tags.length);
+    }, [tagsText, tags.length]);
 
     const handleCoverFile = async (file: File | undefined) => {
         if (!file) return;
@@ -201,7 +234,7 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
             name: trimmedName,
             hook: hook.trim() || undefined,
             author: initial?.author,
-            tags: initial?.tags,
+            tags: tags.length ? tags : undefined,
             cover: cover || undefined,
             createdAt: initial?.createdAt ?? Date.now(),
             updatedAt: Date.now(),
@@ -241,12 +274,25 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
                 setError("小票需要同时写「输出契约」和「渲染代码」。");
                 return;
             }
-            onSave({ ...meta, kind: "ticket", contract: contract.trim(), renderHtml, previewRaw: previewRaw.trim() || undefined });
+            const cleanVars = vars
+                .map((v) => ({ name: v.name.trim(), initial: v.initial?.trim() || undefined }))
+                .filter((v, i, all) => v.name && all.findIndex((x) => x.name === v.name) === i);
+            onSave({ ...meta, kind: "ticket", contract: contract.trim(), renderHtml, previewRaw: previewRaw.trim() || undefined, vars: cleanVars.length ? cleanVars : undefined });
+            return;
+        }
+        if (kind === "mechanism") {
+            onSave({
+                ...meta,
+                kind: "mechanism",
+                script: script.trim() || undefined,
+                dock: dock || undefined,
+                panelHtml: panelHtml.trim() || undefined,
+            });
             return;
         }
         if (kind === "garnish") {
             if (!css.trim()) {
-                setError("装饰不能是空的，写点 CSS 吧。");
+                setError("外观不能是空的，写点 CSS 吧。");
                 return;
             }
             onSave({ ...meta, kind: "garnish", css });
@@ -313,6 +359,24 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
             </Field>
             <Field label="一句话介绍">
                 <input className="mix-input" value={hook} onChange={(e) => setHook(e.target.value)} placeholder="一句话说清它的特点，会显示在卡片上" />
+            </Field>
+            <Field label="标签" hint={`最多 ${MIX_TAG_MAX} 个`}>
+                <input
+                    className="mix-input"
+                    value={tagsText}
+                    onChange={(e) => setTagsText(e.target.value)}
+                    placeholder="用顿号或逗号隔开，例如：现代都市、暗恋、久别重逢"
+                />
+                {tags.length ? (
+                    <div className="mix-tag-list" style={{ marginTop: 8 }}>
+                        {tags.map((tag) => (
+                            <span className="mix-tag" key={tag}>{tag}</span>
+                        ))}
+                    </div>
+                ) : null}
+                {tagsDropped > 0 ? (
+                    <div className="mix-form-note">超出 {MIX_TAG_MAX} 个的标签不会保存，已多写 {tagsDropped} 个。</div>
+                ) : null}
             </Field>
             {mixKindHasCover(kind) ? (
                 <Field label="封面图" hint={isCharacter ? "对局背景，强烈建议配" : undefined}>
@@ -414,15 +478,11 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
                             placeholder={"这张卡的门面页：大标题、诗句、标签、给读者的说明，版面由你排。\n\n例：\n<div style=\"padding:28px 6px;color:#fff;font:14px/2 serif\">\n  <h1 style=\"font-size:34px;letter-spacing:.3em\">晏迟</h1>\n  <p style=\"opacity:.65\">便利店夜班 · 冷白皮</p>\n  <p style=\"margin-top:22px\">「今天也加班到这个点？」</p>\n</div>"}
                         />
                     </Field>
-                    <button
-                        type="button"
-                        className="mix-pill-btn"
-                        style={{ marginTop: 10 }}
-                        onClick={() => setPreview({ kind: "canvas", html: canvas, cover })}
+                    <MixPreviewInline
+                        label="预览画布"
+                        target={{ kind: "canvas", html: canvas, cover }}
                         disabled={!canvas.trim()}
-                    >
-                        <Play size={13} style={{ verticalAlign: "-2px" }} /> 预览画布
-                    </button>
+                    />
                 </>
             ) : null}
             {kind === "persona" ? (
@@ -482,15 +542,114 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
                             placeholder={"照着上面的契约编一份，例：\n好感度: 62\n心情: 嘴硬\n此刻在想: 想留你再坐一会"}
                         />
                     </Field>
-                    <button
-                        type="button"
-                        className="mix-pill-btn"
-                        style={{ marginTop: 10 }}
-                        onClick={() => setPreview({ kind: "ticket", html: renderHtml, raw: previewRaw })}
+                    <Field label="要记住的项" hint="记住的值会一路留着，可以拿来设材料的「什么时候出现」；抽不到时保留上一轮的值">
+                        {contractFieldNames.length ? (
+                            <div className="mix-var-suggest">
+                                <span>契约里认出这几项：</span>
+                                {contractFieldNames.map((name) => {
+                                    const added = vars.some((v) => v.name.trim() === name);
+                                    return (
+                                        <button
+                                            type="button"
+                                            className="mix-var-chip"
+                                            data-on={added ? "true" : undefined}
+                                            key={name}
+                                            onClick={() => setVars((prev) => (added
+                                                ? prev.filter((v) => v.name.trim() !== name)
+                                                : [...prev, { name }]))}
+                                        >
+                                            {name}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        ) : null}
+                        {vars.length ? (
+                            <div className="mix-var-list">
+                                {vars.map((item, index) => (
+                                    <div className="mix-var-row" key={index}>
+                                        <input
+                                            className="mix-input"
+                                            value={item.name}
+                                            placeholder="项目名（和契约里的写法一致）"
+                                            onChange={(e) => setVars((prev) => prev.map((v, i) => (i === index ? { ...v, name: e.target.value } : v)))}
+                                        />
+                                        <input
+                                            className="mix-input mix-var-initial"
+                                            value={item.initial ?? ""}
+                                            placeholder="开局值"
+                                            onChange={(e) => setVars((prev) => prev.map((v, i) => (i === index ? { ...v, initial: e.target.value } : v)))}
+                                        />
+                                        <button
+                                            type="button"
+                                            className="mix-icon-btn"
+                                            onClick={() => setVars((prev) => prev.filter((_, i) => i !== index))}
+                                            aria-label="删除"
+                                        >
+                                            <Trash2 size={15} />
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="mix-var-empty">还没有要记住的项——上面点一下契约里的字段，或手动添加。</div>
+                        )}
+                        <button type="button" className="mix-stack-add" onClick={() => setVars((prev) => [...prev, { name: "" }])}>
+                            <Plus size={15} /> 手动添加一项
+                        </button>
+                    </Field>
+                    <MixPreviewInline
+                        label="预览小票"
+                        target={{ kind: "ticket", html: renderHtml, raw: previewRaw }}
                         disabled={!renderHtml.trim()}
-                    >
-                        <Play size={13} style={{ verticalAlign: "-2px" }} /> 预览小票
-                    </button>
+                    />
+                </>
+            ) : null}
+            {kind === "mechanism" ? (
+                <>
+                    <Field label="钩子逻辑" hint="可留空。定义下面这几个函数，会在对应时机被调用；ctx.store 与下面的界面是同一份">
+                        <textarea
+                            className="mix-textarea"
+                            data-code="true"
+                            style={{ minHeight: 200 }}
+                            value={script}
+                            onChange={(e) => setScript(e.target.value)}
+                            placeholder={"每个函数收一份 ctx，返回一个对象（不返回就是什么都不改）。\nctx: { turnCount, state, store, charName, userName, text, ticketRaw, encoreRaw }\n可返回: { text, note, state, store }\n\n例：玩家打「/掷骰」时换成一段带结果的指令\nfunction onBeforeSend(ctx) {\n  if (ctx.text !== \"/掷骰\") return;\n  var n = 1 + Math.floor(Math.random() * 20);\n  return { text: \"（我掷出了 \" + n + \" 点）\" };\n}\n\n例：连着三轮好感度上涨就提醒一次\nfunction onAfterReply(ctx) {\n  var up = Number(ctx.store.连涨 || 0);\n  return { store: { 连涨: String(up + 1) } };\n}"}
+                        />
+                    </Field>
+                    <Field label="常驻界面" hint="可留空。选一个停靠位，界面会一直挂在对局画面边上；它写的存储上面的钩子读得到">
+                        <div className="mix-dock-row">
+                            <button type="button" className="mix-dock-chip" data-on={dock === "" ? "true" : undefined} onClick={() => setDock("")}>不要界面</button>
+                            {(Object.keys(MIX_DOCK_LABELS) as MixDock[]).map((value) => (
+                                <button
+                                    type="button"
+                                    className="mix-dock-chip"
+                                    data-on={dock === value ? "true" : undefined}
+                                    key={value}
+                                    onClick={() => setDock(value)}
+                                >
+                                    {MIX_DOCK_LABELS[value]}
+                                </button>
+                            ))}
+                        </div>
+                    </Field>
+                    {dock ? (
+                        <Field label="界面代码" hint="HTML + CSS + JS，在沙盒里跑">
+                            <textarea
+                                className="mix-textarea"
+                                data-code="true"
+                                style={{ minHeight: 160 }}
+                                value={panelHtml}
+                                onChange={(e) => setPanelHtml(e.target.value)}
+                                placeholder={"例：\n<div style=\"padding:10px;color:#d9b06a\">这里是常驻面板</div>"}
+                            />
+                        </Field>
+                    ) : null}
+                    <div className="mix-struct-note" style={{ marginTop: 10 }}>
+                        钩子跑在没有网络、碰不到应用本体的沙盒里，超时会被掐断，那一轮当作没有机括。
+                        存储是这件机括自己的，一个对局一份，退出再进来还在——钩子与界面共用这一份，
+                        所以「界面上记一笔、下一轮发送前带进提示词」这类配合是天然成立的。
+                    </div>
                 </>
             ) : null}
             {kind === "garnish" ? (
@@ -505,15 +664,11 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
                             placeholder={"例：\n.mix-dialogue { color: #ffd479; font-weight: 600 }\n.mix-thought  { color: #8d7bf5 }\n.mix-scene    { letter-spacing: .5em }"}
                         />
                     </Field>
-                    <button
-                        type="button"
-                        className="mix-pill-btn"
-                        style={{ marginTop: 10 }}
-                        onClick={() => setPreview({ kind: "garnish", css })}
+                    <MixPreviewInline
+                        label="试穿看看"
+                        target={{ kind: "garnish", css }}
                         disabled={!css.trim()}
-                    >
-                        <Play size={13} style={{ verticalAlign: "-2px" }} /> 试穿看看
-                    </button>
+                    />
                 </>
             ) : null}
             {kind === "encore" ? (
@@ -540,15 +695,11 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
                     <Field label="预览示例数据" hint="选填，模拟 AI 的小剧场输出来试渲染">
                         <textarea className="mix-textarea" data-code="true" value={encorePreviewRaw} onChange={(e) => setEncorePreviewRaw(e.target.value)} />
                     </Field>
-                    <button
-                        type="button"
-                        className="mix-pill-btn"
-                        style={{ marginTop: 10 }}
-                        onClick={() => setPreview({ kind: "encore", html, raw: encorePreviewRaw })}
+                    <MixPreviewInline
+                        label="跑一下"
+                        target={{ kind: "encore", html, raw: encorePreviewRaw }}
                         disabled={!html.trim()}
-                    >
-                        <Play size={13} style={{ verticalAlign: "-2px" }} /> 跑一下
-                    </button>
+                    />
                 </>
             ) : null}
             {kind === "filter" ? (
@@ -616,7 +767,6 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
                     </Field>
                 </>
             ) : null}
-            {preview ? <MixPreviewSheet target={preview} onClose={() => setPreview(null)} /> : null}
             {structureOpen ? <MixStructureSheet highlight={kind} onClose={() => setStructureOpen(false)} /> : null}
             {error ? <div style={{ color: "#e2a3a3", fontSize: 12, marginTop: 12 }}>{error}</div> : null}
             <div className="mix-form-footer">
