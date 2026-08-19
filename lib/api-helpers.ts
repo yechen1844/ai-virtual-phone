@@ -201,6 +201,7 @@ export async function simpleLLMCall(
             console.warn("[simpleLLMCall] API error:", res.status, errText.slice(0, 300));
             pushApiLog({
                 characterName: options?.label,
+                source: "background",
                 model: config.defaultModel,
                 messages: messages.map(m => ({ role: m.role, content: m.content })),
                 rawResponse: `[API 错误 ${res.status}] ${errText.slice(0, 2000)}`,
@@ -216,6 +217,7 @@ export async function simpleLLMCall(
         const wasTruncated = isTruncationFinishReason(finishReason);
         pushApiLog({
             characterName: options?.label,
+            source: "background",
             model: config.defaultModel,
             messages: messages.map(m => ({ role: m.role, content: m.content })),
             rawResponse: content ?? describeEmptyLLMResponse(data, finishReason, wasTruncated, config),
@@ -232,6 +234,7 @@ export async function simpleLLMCall(
         console.warn("[simpleLLMCall] fetch error:", err);
         pushApiLog({
             characterName: options?.label,
+            source: "background",
             model: config.defaultModel,
             messages: messages.map(m => ({ role: m.role, content: m.content })),
             rawResponse: `[请求失败] ${err instanceof Error ? err.message : String(err)}`,

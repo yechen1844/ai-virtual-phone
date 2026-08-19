@@ -456,10 +456,17 @@ function isRealUserHistoryMessage(message: ChatMessage): boolean {
         || message.mediaType === "memory_write_request") return false;
     return Boolean(
         message.content.trim()
-        || message.mediaType
-        || message.mediaUrl
-        || message.mediaData,
+            || message.mediaType
+            || message.mediaUrl
+            || message.mediaData,
     );
+}
+
+/** history 末尾是工具流程消息（工具结果/工具通知/记忆写入请求）→ 当前处于同一次生成的工具循环中段。 */
+function isToolFlowHistoryMessage(message: ChatMessage): boolean {
+    return message.mediaType === "tool_result"
+        || message.mediaType === "tool_notice"
+        || message.mediaType === "memory_write_request";
 }
 
 export function appendEmptyGenerateGuardMessage(
@@ -477,9 +484,12 @@ export function appendEmptyGenerateGuardMessage(
     // assistant 角色注入到 messages 末尾，旧逻辑「最后一条 assistant 之后没有 user」就会把
     // 「用户已输入」误判成「未输入」，错误追加续写提示（EMPTY_GENERATE_CONTINUATION_PROMPT）。
     // history 末尾是真实用户消息（含图片/红包等媒体输入）→ 本次是正常回复，不追加续写提示；
-    // 末尾是 assistant / system（如 follow-up 静默提示）→ 用户未输入新消息，照常追加。
+    // 末尾是 assistant / system（如 follow-up 静默提示）→ 用户未输入新消息，照常追加；
+    // 末尾是工具流程消息（tool_result / tool_notice / memory_write_request）→ 本次请求是
+    // 同一次生成在工具循环中的延续，续写提示反而会干扰模型基于工具结果作答（提示词里
+    // 明确禁止引用工具结果），同样不追加。
     const lastHistoryMessage = history[history.length - 1];
-    if (lastHistoryMessage && isRealUserHistoryMessage(lastHistoryMessage)) {
+    if (lastHistoryMessage && (isRealUserHistoryMessage(lastHistoryMessage) || isToolFlowHistoryMessage(lastHistoryMessage))) {
         return;
     }
 
@@ -809,6 +819,8 @@ export async function sendLLMStreamRequest(
         }));
         pushApiLog({
             characterName: meta?.characterName,
+            source: "chat",
+            channel: "chat",
             model: config.defaultModel,
             messages: sanitizedMessages,
             rawResponse: rawOutput,
@@ -941,6 +953,8 @@ export async function sendLLMRequest(
         }));
         pushApiLog({
             characterName: meta?.characterName,
+            source: "chat",
+            channel: "chat",
             model: config.defaultModel,
             messages: sanitizedMessages,
             rawResponse: rawOutput,
@@ -1158,6 +1172,8 @@ export async function sendLLMToolStreamRequest(
         const logEntryRaw = JSON.stringify({ content, reasoning, toolCalls, raw: rawResponse });
         pushApiLog({
             characterName: meta?.characterName,
+            source: "chat",
+            channel: "chat",
             model: config.defaultModel,
             messages: sanitizedMessages,
             rawResponse: logEntryRaw,
@@ -1259,6 +1275,8 @@ export async function sendLLMToolRequest(
         });
         pushApiLog({
             characterName: meta?.characterName,
+            source: "chat",
+            channel: "chat",
             model: config.defaultModel,
             messages: sanitizedMessages,
             rawResponse,
@@ -2003,14 +2021,17 @@ export async function generateOfflineChatCompletion(
         if (tagThinking) reasoning = tagThinking;
     }
 
-    // 摘要缺失时自动补提：拿上次完整输出做上下文，只要求模型补一段摘要，
-    // 避免「静默结束」导致该轮线下记录没有摘要、进不了短期记忆事件流。
+    // 摘要缺失时自动补提：只带最后一轮上下文（系统提示 + 最后一条用户消息 + 本次输出），
+    // 要求模型补一段摘要，避免「静默结束」导致该轮线下记录没有摘要、进不了短期记忆事件流。
+    // 不重发完整 llmMessages：长对话下 token/延迟成本高，且摘要本来就只针对本轮关键事件。
     const MAX_SUMMARY_RETRY = 2;
+    const lastUserMessage = [...llmMessages].reverse().find(m => m.role === "user");
     for (let attempt = 0; attempt < MAX_SUMMARY_RETRY; attempt += 1) {
         if (parsed.summary.trim()) break;
         if (!parsed.content.trim() && !rawOutput.trim()) break; // 连正文都没有，补提没有意义
         const retryMessages: LLMMessage[] = [
-            ...llmMessages,
+            ...(llmMessages[0]?.role === "system" ? [llmMessages[0]] : []),
+            ...(lastUserMessage ? [lastUserMessage] : []),
             { role: "assistant", content: rawOutput },
             {
                 role: "user",

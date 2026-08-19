@@ -336,6 +336,8 @@ async function requestQaCompletion(
     const logQaCall = (entry: { model: string; messages: { role: string; content: string | LLMContentPart[]; marker?: string }[]; rawResponse: string; reasoning?: string }) => {
         pushApiLog({
             characterName: "工坊",
+            source: "qa",
+            channel: "qa",
             model: entry.model,
             messages: entry.messages.map(m => ({
                 role: m.role,
