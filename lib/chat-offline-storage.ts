@@ -14,6 +14,8 @@ export type ChatOfflineTurn = {
     summaryTag: string;
     rawText?: string;
     reasoningText?: string; // 模型思维链（reasoning/CoT）内容
+    thinkingText?: string; // 预设格式 <thinking> 标签解析出的思维链（展示优先于 reasoningText）
+    thinkingTag?: string; // 实际用于提取思维链的标签名（preset.thinking_tag 或默认 thinking）
     createdAt: string;
 };
 
@@ -30,6 +32,8 @@ export type ParsedOfflineResponse = {
     content: string;
     summary: string;
     summaryTag: string;
+    thinking?: string; // 预设格式 <thinking> 标签内容（与模型 API 原生 reasoning 无关）
+    thinkingTag?: string; // 实际用于提取思维链的标签名
 };
 
 function storageKey(sessionId: string): string {
@@ -54,6 +58,8 @@ function normalizeTurn(value: unknown): ChatOfflineTurn | null {
         summary: typeof item.summary === "string" ? item.summary : "",
         summaryTag: typeof item.summaryTag === "string" && item.summaryTag.trim() ? item.summaryTag.trim() : "summary",
         rawText: typeof item.rawText === "string" ? item.rawText : undefined,
+        thinkingText: typeof item.thinkingText === "string" ? item.thinkingText : undefined,
+        thinkingTag: typeof item.thinkingTag === "string" ? item.thinkingTag : undefined,
         createdAt: item.createdAt,
     };
 }
@@ -92,6 +98,8 @@ export function appendChatOfflineTurn(input: {
     summaryTag: string;
     rawText?: string;
     reasoningText?: string;
+    thinkingText?: string;
+    thinkingTag?: string;
 }): ChatOfflineTurn {
     const turn: ChatOfflineTurn = {
         id: createTurnId(),
@@ -102,6 +110,8 @@ export function appendChatOfflineTurn(input: {
         summaryTag: input.summaryTag.trim() || "summary",
         rawText: input.rawText,
         reasoningText: input.reasoningText,
+        thinkingText: input.thinkingText,
+        thinkingTag: input.thinkingTag,
         createdAt: new Date().toISOString(),
     };
     saveChatOfflineTurns(input.sessionId, [...loadChatOfflineTurns(input.sessionId), turn]);
@@ -111,7 +121,7 @@ export function appendChatOfflineTurn(input: {
 export function updateChatOfflineTurn(
     sessionId: string,
     turnId: string,
-    patch: Partial<Pick<ChatOfflineTurn, "userContent" | "assistantContent" | "summary" | "summaryTag" | "rawText" | "reasoningText">>,
+    patch: Partial<Pick<ChatOfflineTurn, "userContent" | "assistantContent" | "summary" | "summaryTag" | "rawText" | "reasoningText" | "thinkingText" | "thinkingTag">>,
 ): ChatOfflineTurn | null {
     let updated: ChatOfflineTurn | null = null;
     const turns = loadChatOfflineTurns(sessionId).map((turn) => {
@@ -207,16 +217,29 @@ function stripXmlField(rawText: string, tag: string): string {
     return rawText.replace(new RegExp(`<${escaped}>[\\s\\S]*?</${escaped}>`, "gi"), "").trim();
 }
 
-export function parseOfflineResponse(rawText: string, summaryTag: string): ParsedOfflineResponse {
+export function parseOfflineResponse(rawText: string, summaryTag: string, thinkingTag?: string): ParsedOfflineResponse {
     const trimmed = rawText.trim();
     const effectiveSummaryTag = summaryTag.trim() || "summary";
+    const effectiveThinkingTag = (thinkingTag || "thinking").trim() || "thinking";
     const summary = extractXmlField(trimmed, [effectiveSummaryTag, "summary"]);
-    const content = extractXmlField(trimmed, ["content"])
-        || stripXmlField(stripXmlField(trimmed, effectiveSummaryTag), "summary");
+    // 预设格式里的思维链：优先用预设配置的标签名（preset.thinking_tag），默认 <thinking>（兼容 <thought>），
+    // 与模型 API 原生 reasoning 是两回事。
+    const thinkingTags = effectiveThinkingTag === "thinking"
+        ? ["thinking", "thought"]
+        : [effectiveThinkingTag];
+    const thinking = extractXmlField(trimmed, thinkingTags);
+    let content = extractXmlField(trimmed, ["content"]);
+    if (!content) {
+        // 无 <content> 标签时回退到剥掉摘要/思维链标签后的全文
+        content = stripXmlField(stripXmlField(trimmed, effectiveSummaryTag), "summary");
+        content = stripXmlField(stripXmlField(content, effectiveThinkingTag), effectiveThinkingTag === "thinking" ? "thought" : "");
+    }
     return {
         rawText: trimmed,
         content: content.trim(),
         summary: summary.trim(),
         summaryTag: effectiveSummaryTag,
+        thinking: thinking.trim() || undefined,
+        thinkingTag: effectiveThinkingTag,
     };
 }

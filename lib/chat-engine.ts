@@ -19,6 +19,7 @@ import {
     normalizeVisionImagePromptLimit,
     createResponseBatchId,
     createToolExecutionId,
+    isChatStreamingEnabled,
 } from "./chat-storage";
 import { extractTextToolDirectiveText, stripTextToolDirectives } from "./text-tool-protocol";
 import type { ApiConfig, PresetConfig, Prompt, PromptOrderEntry, RegexConfig } from "./settings-types";
@@ -52,6 +53,7 @@ import {
 } from "./llm-provider-adapter";
 import { setDebugPromptSnapshot, type DebugPromptSnapshot } from "./debug-store";
 import { extractFinishReason } from "./api-helpers";
+import { fetchLlmPayload } from "./llm-http";
 import { loadMemoryConfig, incrementEventCounter } from "./memory-storage";
 import { retrieveCoreMemoriesForPrompt, retrieveMemoriesForPrompt } from "./memory-service";
 import { formatCoreMemories, formatLongTermMemories } from "./memory-injector";
@@ -71,7 +73,9 @@ import { buildCalendarScheduleMarker, getCurrentCalendarScheduleForPrompt } from
 import { getWeekStartIso } from "./calendar-utils";
 import { buildCharacterTimeContext } from "./character-time";
 import { getPromptTimestampOptionsForTimeContext } from "./prompt-time";
-import { kvGet, kvSet, kvRemove, registerKvMigration } from "./kv-db";
+import { kvGet, kvSet, registerKvMigration } from "./kv-db";
+import { pushApiLog } from "./api-log-store";
+export { getApiLogs, clearApiLogs, type DebugInfo } from "./api-log-store";
 import { stripStateAndInnerForPrompt } from "./prompt-sanitizer";
 import { getInternalCapability, getInternalCapabilitySubToolDefinitions } from "./internal-capability-storage";
 import { isMediaStoreRef, loadMediaBlob } from "./media-cache-storage";
@@ -321,32 +325,8 @@ export function applyVisionImagePromptLimit(history: ChatMessage[], limitValue: 
     return history;
 }
 
-// API Log store — captures recent request/response history for inspection
-export type DebugInfo = {
-    id: string;
-    characterName?: string;
-    model?: string;
-    messages: { role: string; content: string; marker?: string }[];
-    rawResponse: string;
-    timestamp: string;
-    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
-};
-const MAX_API_LOGS = 50;
-const API_LOGS_KEY = "ai_phone_api_logs_v1";
-registerKvMigration(API_LOGS_KEY);
-
-function _loadLogs(): DebugInfo[] {
-    try {
-        const raw = typeof window !== "undefined" ? kvGet(API_LOGS_KEY) : null;
-        return raw ? JSON.parse(raw) as DebugInfo[] : [];
-    } catch { return []; }
-}
-function _saveLogs(logs: DebugInfo[]): void {
-    try { kvSet(API_LOGS_KEY, JSON.stringify(logs)); } catch { /* quota exceeded — ignore */ }
-}
-
-export function getApiLogs(): DebugInfo[] { return _loadLogs(); }
-export function clearApiLogs(): void { try { kvRemove(API_LOGS_KEY); } catch { } }
+// API 调用日志存储已抽到 ./api-log-store（聊天引擎与 simpleLLMCall 通用），
+// 本文件通过上方 re-export 保持 getApiLogs/clearApiLogs/DebugInfo 的对外路径不变。
 
 export type DebugPromptRequestOptions = {
     appId?: string;
@@ -457,10 +437,26 @@ function isRealUserHistoryMessage(message: ChatMessage): boolean {
         || message.mediaType === "memory_write_request") return false;
     return Boolean(
         message.content.trim()
-        || message.mediaType
-        || message.mediaUrl
-        || message.mediaData,
+            || message.mediaType
+            || message.mediaUrl
+            || message.mediaData,
     );
+}
+
+/** history 末尾是工具流程消息（工具结果/工具通知/记忆写入请求）→ 当前处于同一次生成的工具循环中段。 */
+function isToolFlowHistoryMessage(message: ChatMessage): boolean {
+    return message.mediaType === "tool_result"
+        || message.mediaType === "tool_notice"
+        || message.mediaType === "memory_write_request";
+}
+
+/** 日志分流：工坊（appId === "qa"）经聊天引擎发出的调用（答疑 Agent 原生工具循环）归工坊环，
+ *  其余归底层调用日志环。channel 不能硬编码——工坊的 Agent 循环复用 sendLLMToolStreamRequest，
+ *  旧逻辑靠 characterName === "工坊" 分流，改成显式字段后必须从 appId 派生，否则工坊记录漏进主环。 */
+function apiLogChannelFor(options?: { appId?: string }): { source: "chat" | "qa"; channel: "chat" | "qa" } {
+    return options?.appId === "qa"
+        ? { source: "qa", channel: "qa" }
+        : { source: "chat", channel: "chat" };
 }
 
 export function appendEmptyGenerateGuardMessage(
@@ -473,22 +469,21 @@ export function appendEmptyGenerateGuardMessage(
     const hasRealUserHistory = history.some(isRealUserHistoryMessage);
     if (!hasRealUserHistory) return;
 
-    let lastAssistantIndex = -1;
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-        if (messages[index].role === "assistant") {
-            lastAssistantIndex = index;
-            break;
-        }
+    // 判定用户这次是否真的输入了新消息：看原始对话 history 的末尾，而不是组装后的 messages。
+    // 原因：预设里 role=assistant 的条目（例如「模型输出格式」放在 chatHistory 标记之后）会以
+    // assistant 角色注入到 messages 末尾，旧逻辑「最后一条 assistant 之后没有 user」就会把
+    // 「用户已输入」误判成「未输入」，错误追加续写提示（EMPTY_GENERATE_CONTINUATION_PROMPT）。
+    // history 末尾是真实用户消息（含图片/红包等媒体输入）→ 本次是正常回复，不追加续写提示；
+    // 末尾是 assistant / system（如 follow-up 静默提示）→ 用户未输入新消息，照常追加；
+    // 末尾是工具流程消息（tool_result / tool_notice / memory_write_request）→ 本次请求是
+    // 同一次生成在工具循环中的延续，续写提示反而会干扰模型基于工具结果作答（提示词里
+    // 明确禁止引用工具结果），同样不追加。
+    const lastHistoryMessage = history[history.length - 1];
+    if (lastHistoryMessage && (isRealUserHistoryMessage(lastHistoryMessage) || isToolFlowHistoryMessage(lastHistoryMessage))) {
+        return;
     }
-    if (lastAssistantIndex < 0) return;
 
-    const hasUserAfterLastAssistant = messages
-        .slice(lastAssistantIndex + 1)
-        .some(message => message.role === "user");
-
-    if (!hasUserAfterLastAssistant) {
-        messages.push({ role: "user", content: EMPTY_GENERATE_CONTINUATION_PROMPT });
-    }
+    messages.push({ role: "user", content: EMPTY_GENERATE_CONTINUATION_PROMPT });
 }
 
 export function publishDebugPromptSnapshot(params: {
@@ -778,23 +773,28 @@ export async function sendLLMStreamRequest(
     } : undefined;
     const requestMessages = toLlmRequestMessages(afterPlugins.messages);
     const request = buildProviderRequest(config, effectivePreset, requestMessages, { stream: true });
-    const requestBodyJson = JSON.stringify(request.body);
     const llmAbort = new AbortController();
     const llmTimeout = setTimeout(() => llmAbort.abort(), 500_000);
     const detachExternalAbort = attachExternalAbort(llmAbort, options?.signal);
 
     try {
-        const response = await fetch(request.url, {
-            method: "POST",
-            headers: request.headers,
-            body: requestBodyJson,
-            signal: llmAbort.signal,
-        });
+        const response = await fetchLlmPayload(request, { signal: llmAbort.signal });
         if (!response.ok) {
             const errorText = await response.text();
             throw new ChatEngineError(`API Stream Error ${response.status}: ${errorText}`);
         }
-        const { content: streamedContent, rawResponse } = await readSseStream(response, request.providerKind, pluginCallbacks ?? callbacks);
+        // 流式路径收集思维链原文：readSseStream 只通过 onReasoningDelta 回调透传，
+        // 不额外包一层的话日志里就只有清洗后的回复正文，思维链被吞。
+        // 注意：必须无条件创建回调对象（不能 callbacks 为空就不传），否则思维链收集不到。
+        let streamedReasoning = "";
+        const streamLogCallbacks: ChatCompletionStreamCallbacks = {
+            ...(pluginCallbacks ?? callbacks),
+            onReasoningDelta: async (text: string) => {
+                streamedReasoning += text;
+                await (pluginCallbacks ?? callbacks)?.onReasoningDelta?.(text);
+            },
+        };
+        const { content: streamedContent, rawResponse } = await readSseStream(response, request.providerKind, streamLogCallbacks);
         if (!streamedContent.trim()) {
             throw new ChatEngineError("流式响应没有解析到文本增量。");
         }
@@ -802,23 +802,19 @@ export async function sendLLMStreamRequest(
         rawOutput = await applyChatPluginLlmResponse(rawOutput, pluginPurpose);
 
         // Store API log entry — mirror sendLLMRequest so streaming calls also show up
-        // in the "底层调用大模型日志" panel.
+        // in the "底层调用大模型日志" panel. reasoning 单独存思维链原文，供「查看原始」直接展示。
         const sanitizedMessages = request.messagesForLog.map(m => ({
             ...m,
             content: typeof m.content === "string" ? m.content : "[vision: 含图片的多模态消息]",
         }));
-        const logEntry: DebugInfo = {
-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        pushApiLog({
             characterName: meta?.characterName,
+            ...apiLogChannelFor(options),
             model: config.defaultModel,
             messages: sanitizedMessages,
             rawResponse: rawOutput,
-            timestamp: new Date().toISOString(),
-        };
-        const logs = _loadLogs();
-        logs.push(logEntry);
-        while (logs.length > MAX_API_LOGS) logs.shift();
-        _saveLogs(logs);
+            reasoning: streamedReasoning.trim() || undefined,
+        });
 
         if (!options?.skipOutputRegex) {
             const macroEngine = new MacroEngine(meta?.characterName ?? "", meta?.userName ?? "用户");
@@ -901,12 +897,7 @@ export async function sendLLMRequest(
     const detachExternalAbort = attachExternalAbort(llmAbort, options?.signal);
 
     try {
-        const response = await fetch(request.url, {
-            method: "POST",
-            headers: request.headers,
-            body: requestBodyJson,
-            signal: llmAbort.signal,
-        });
+        const response = await fetchLlmPayload(request, { signal: llmAbort.signal });
 
         if (!response.ok) {
             const errorText = await response.text();
@@ -949,19 +940,16 @@ export async function sendLLMRequest(
             ...m,
             content: typeof m.content === "string" ? m.content : "[vision: 含图片的多模态消息]",
         }));
-        const logEntry: DebugInfo = {
-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        pushApiLog({
             characterName: meta?.characterName,
+            ...apiLogChannelFor(options),
             model: config.defaultModel,
             messages: sanitizedMessages,
             rawResponse: rawOutput,
-            timestamp: new Date().toISOString(),
             usage: parsed.usage,
-        };
-        const logs = _loadLogs();
-        logs.push(logEntry);
-        while (logs.length > MAX_API_LOGS) logs.shift();
-        _saveLogs(logs);
+            // 思维链只经 onReasoning 回调透传，之前没进日志；这里单独存一份原文
+            reasoning: parsed.reasoning || undefined,
+        });
 
         if (options?.skipOutputRegex) {
             return rawOutput;
@@ -1074,7 +1062,6 @@ export async function sendLLMToolStreamRequest(
     const effectivePreset = afterPlugins.preset;
     const request = buildProviderRequest(config, effectivePreset, afterPlugins.messages, { tools, stream: true, maxTokens: options?.maxTokens });
     publishDebugPromptSnapshot({ request, config, preset: effectivePreset, meta, options, requestKind: "native-tools-stream", tools });
-    const requestBodyJson = JSON.stringify(request.body);
     const llmAbort = new AbortController();
     const llmTimeout = setTimeout(() => llmAbort.abort(), 500_000);
     const detachExternalAbort = attachExternalAbort(llmAbort, options?.signal);
@@ -1086,12 +1073,7 @@ export async function sendLLMToolStreamRequest(
     const firedToolCallStarts = new Set<number>();
 
     try {
-        const response = await fetch(request.url, {
-            method: "POST",
-            headers: request.headers,
-            body: requestBodyJson,
-            signal: llmAbort.signal,
-        });
+        const response = await fetchLlmPayload(request, { signal: llmAbort.signal });
 
         if (!response.ok) {
             const errorText = await response.text();
@@ -1175,18 +1157,15 @@ export async function sendLLMToolStreamRequest(
             content: typeof m.content === "string" ? m.content : "[vision: 含图片的多模态消息]",
         }));
         const { calls: toolCalls, truncatedNames } = finalizeStreamToolCalls(toolDrafts);
-        const logEntry: DebugInfo = {
-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        const logEntryRaw = JSON.stringify({ content, reasoning, toolCalls, raw: rawResponse });
+        pushApiLog({
             characterName: meta?.characterName,
+            ...apiLogChannelFor(options),
             model: config.defaultModel,
             messages: sanitizedMessages,
-            rawResponse: JSON.stringify({ content, reasoning, toolCalls, raw: rawResponse }),
-            timestamp: new Date().toISOString(),
-        };
-        const logs = _loadLogs();
-        logs.push(logEntry);
-        while (logs.length > MAX_API_LOGS) logs.shift();
-        _saveLogs(logs);
+            rawResponse: logEntryRaw,
+            reasoning: reasoning || undefined,
+        });
 
         if (!content && toolCalls.length === 0 && truncatedNames.length === 0) {
             throw new ChatEngineError("原生动作流式响应没有解析到文本或动作。");
@@ -1198,7 +1177,7 @@ export async function sendLLMToolStreamRequest(
             openRouterReasoningDetails: undefined,
             toolCalls,
             truncatedToolCalls: truncatedNames.length ? truncatedNames : undefined,
-            rawResponse: logEntry.rawResponse,
+            rawResponse: logEntryRaw,
             providerKind: request.providerKind,
         };
     } catch (error: unknown) {
@@ -1237,18 +1216,12 @@ export async function sendLLMToolRequest(
     const effectivePreset = afterPlugins.preset;
     const request = buildProviderRequest(config, effectivePreset, afterPlugins.messages, { tools });
     publishDebugPromptSnapshot({ request, config, preset: effectivePreset, meta, options, requestKind: "native-tools", tools });
-    const requestBodyJson = JSON.stringify(request.body);
     const llmAbort = new AbortController();
     const llmTimeout = setTimeout(() => llmAbort.abort(), 500_000);
     const detachExternalAbort = attachExternalAbort(llmAbort, options?.signal);
 
     try {
-        const response = await fetch(request.url, {
-            method: "POST",
-            headers: request.headers,
-            body: requestBodyJson,
-            signal: llmAbort.signal,
-        });
+        const response = await fetchLlmPayload(request, { signal: llmAbort.signal });
 
         if (!response.ok) {
             const errorText = await response.text();
@@ -1287,19 +1260,14 @@ export async function sendLLMToolRequest(
             toolCalls: parsed.toolCalls,
             raw: parsed.raw,
         });
-        const logEntry: DebugInfo = {
-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        pushApiLog({
             characterName: meta?.characterName,
+            ...apiLogChannelFor(options),
             model: config.defaultModel,
             messages: sanitizedMessages,
             rawResponse,
-            timestamp: new Date().toISOString(),
             usage: parsed.usage,
-        };
-        const logs = _loadLogs();
-        logs.push(logEntry);
-        while (logs.length > MAX_API_LOGS) logs.shift();
-        _saveLogs(logs);
+        });
 
         if (!options?.skipOutputRegex && rawOutput) {
             const macroEngine = new MacroEngine(meta?.characterName ?? "", meta?.userName ?? "用户");
@@ -1954,6 +1922,9 @@ export type ChatCompletionCallbacks = {
         responseBatchId?: string;
         rawResponseText?: string;
     }) => void | Promise<void>;
+    /** 流式生成增量回调（仅在开启流式生成时触发）：每到达一段原文增量就调用一次，
+     *  由 UI 层累积后做预览净化显示。delta 为原始增量（可能含未闭合的富媒体/工具标签）。 */
+    onStreamDelta?: (delta: string) => void | Promise<void>;
     onToolNotice?: (notice: string) => void;
     onToolResult?: (content: string, options?: { toolExecutionId?: string }) => void;
     onToolAssistantTurn?: (content: string, options?: {
@@ -1990,7 +1961,7 @@ export type OfflineChatCompletionResult = ParsedOfflineResponse & {
 export async function generateOfflineChatCompletion(
     session: ChatSession,
     history: ChatMessage[],
-    options?: { signal?: AbortSignal },
+    options?: { signal?: AbortSignal; onStreamDelta?: (delta: string) => void },
 ): Promise<OfflineChatCompletionResult> {
     const { llmMessages, character, config, preset, regexes, userIdentity } = await buildChatPromptMessages(
         session,
@@ -2001,18 +1972,62 @@ export async function generateOfflineChatCompletion(
         },
     );
     const summaryTag = preset?.story_summary_tag?.trim() || "summary";
+    const thinkingTag = preset?.thinking_tag?.trim() || "thinking";
     let reasoning = "";
-    const rawOutput = await sendLLMRequest(config, preset, llmMessages, regexes, {
-        characterName: character.name,
-        userName: userIdentity?.name,
-    }, {
+    const meta = { characterName: character.name, userName: userIdentity?.name };
+    const requestOptions = {
         appTags: ["chat", "offline"],
         debugSessionId: session.id,
         signal: options?.signal,
-        onReasoning: (t) => { reasoning = t; },
-    });
+        onReasoning: (t: string) => { reasoning = t; },
+    };
+    let rawOutput: string;
+    if (isChatStreamingEnabled() && options?.onStreamDelta) {
+        // 线下流式：正文边生成边通过 onStreamDelta 交给 UI 做实时预览；
+        // 摘要补提仍走整段请求（输出短，无需流式）。
+        const streamResult = await sendLLMStreamRequest(config, preset, llmMessages, regexes, meta, {
+            appId: "chat",
+            appTags: ["chat", "offline"],
+            signal: options?.signal,
+        }, {
+            onDelta: (text) => options.onStreamDelta?.(text),
+            onReasoningDelta: (t) => { reasoning += t; },
+        });
+        rawOutput = streamResult.content;
+    } else {
+        rawOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, requestOptions);
+    }
+    let parsed = parseOfflineResponse(rawOutput, summaryTag, thinkingTag);
+
+    // 摘要缺失时自动补提：只带最后一轮上下文（系统提示 + 最后一条用户消息 + 本次输出），
+    // 要求模型补一段摘要，避免「静默结束」导致该轮线下记录没有摘要、进不了短期记忆事件流。
+    // 不重发完整 llmMessages：长对话下 token/延迟成本高，且摘要本来就只针对本轮关键事件。
+    const MAX_SUMMARY_RETRY = 2;
+    const lastUserMessage = [...llmMessages].reverse().find(m => m.role === "user");
+    for (let attempt = 0; attempt < MAX_SUMMARY_RETRY; attempt += 1) {
+        if (parsed.summary.trim()) break;
+        if (!parsed.content.trim() && !rawOutput.trim()) break; // 连正文都没有，补提没有意义
+        const retryMessages: LLMMessage[] = [
+            ...(llmMessages[0]?.role === "system" ? [llmMessages[0]] : []),
+            ...(lastUserMessage ? [lastUserMessage] : []),
+            { role: "assistant", content: rawOutput },
+            {
+                role: "user",
+                content: `刚才的回复里没有输出 <${summaryTag}> 摘要。请只针对上面这段对话的关键事件补一段第三人称摘要，严格按以下格式输出，不要输出任何其他内容：\n<${summaryTag}>一句话摘要</${summaryTag}>`,
+            },
+        ];
+        throwIfAborted(options?.signal);
+        // 补提请求不带 onReasoning：避免用补提请求的思维链覆盖主请求已累积的完整思维链
+        const retryRaw = await sendLLMRequest(config, preset, retryMessages, regexes, meta, { ...requestOptions, onReasoning: undefined });
+        const retried = parseOfflineResponse(retryRaw, summaryTag);
+        if (retried.summary.trim()) {
+            parsed = { ...parsed, summary: retried.summary.trim() };
+            break;
+        }
+    }
+
     return {
-        ...parseOfflineResponse(rawOutput, summaryTag),
+        ...parsed,
         model: config.defaultModel,
         presetName: preset?.name || "默认预设",
         reasoning: reasoning || undefined,
@@ -2055,21 +2070,46 @@ async function generateNativeChatCompletion(
     for (let round = 0; round < maxToolRounds; round += 1) {
         let result: LLMToolRequestResult;
         try {
-            result = await sendLLMToolRequest(
-                config,
-                preset,
-                requestMessages,
-                nativeBundle.definitions,
-                regexes,
-                meta,
-                {
-                    appId: options?.appId ?? "chat",
-                    appTags: requestAppTags,
-                    followUpCount: options?.followUpCount,
-                    debugSessionId: session.id,
-                    signal: options?.signal,
-                },
-            );
+            if (isChatStreamingEnabled()) {
+                let streamReasoning = "";
+                result = await sendLLMToolStreamRequest(
+                    config,
+                    preset,
+                    requestMessages,
+                    nativeBundle.definitions,
+                    regexes,
+                    meta,
+                    {
+                        appId: options?.appId ?? "chat",
+                        appTags: requestAppTags,
+                        followUpCount: options?.followUpCount,
+                        debugSessionId: session.id,
+                        signal: options?.signal,
+                    },
+                    {
+                        onDelta: (text) => callbacks?.onStreamDelta?.(text),
+                        // 流式下 onReasoningDelta 收到的是单段增量：本地累积后再喂 onReasoning，
+                        // 保证下游拿到的是完整思维链（与整段请求的 onReasoning 语义一致）
+                        onReasoningDelta: (text) => { streamReasoning += text; callbacks?.onReasoning?.(streamReasoning); },
+                    },
+                );
+            } else {
+                result = await sendLLMToolRequest(
+                    config,
+                    preset,
+                    requestMessages,
+                    nativeBundle.definitions,
+                    regexes,
+                    meta,
+                    {
+                        appId: options?.appId ?? "chat",
+                        appTags: requestAppTags,
+                        followUpCount: options?.followUpCount,
+                        debugSessionId: session.id,
+                        signal: options?.signal,
+                    },
+                );
+            }
         } catch (err) {
             const errMsg = `⚠️ 回复生成失败: ${err instanceof Error ? err.message : String(err)}`;
             if (parts.length > 0) {
@@ -2299,14 +2339,31 @@ export async function generateChatCompletion(
     for (let round = 0; round < maxToolRounds; round++) {
         let filteredOutput: string;
         try {
-            filteredOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
-                appId: options?.appId ?? "chat",
-                appTags: requestAppTags,
-                followUpCount: options?.followUpCount,
-                debugSessionId: session.id,
-                signal: options?.signal,
-                onReasoning: callbacks?.onReasoning,
-            });
+            if (isChatStreamingEnabled()) {
+                // 流式分支：与 sendLLMRequest 走同一套请求构造/日志/正则，仅把「整段等待」换成
+                // SSE 增量，并通过 onStreamDelta 把原文增量实时交给 UI 层做预览显示。
+                let streamReasoning = "";
+                const streamResult = await sendLLMStreamRequest(config, preset, llmMessages, regexes, meta, {
+                    appId: options?.appId ?? "chat",
+                    appTags: requestAppTags,
+                    followUpCount: options?.followUpCount,
+                    signal: options?.signal,
+                }, {
+                    onDelta: (text) => callbacks?.onStreamDelta?.(text),
+                    // 流式下 onReasoningDelta 是单段增量：累积后再喂 onReasoning（保持整段请求语义）
+                    onReasoningDelta: (text) => { streamReasoning += text; callbacks?.onReasoning?.(streamReasoning); },
+                });
+                filteredOutput = streamResult.content;
+            } else {
+                filteredOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
+                    appId: options?.appId ?? "chat",
+                    appTags: requestAppTags,
+                    followUpCount: options?.followUpCount,
+                    debugSessionId: session.id,
+                    signal: options?.signal,
+                    onReasoning: callbacks?.onReasoning,
+                });
+            }
         } catch (err) {
             const errMsg = `⚠️ 回复生成失败: ${err instanceof Error ? err.message : String(err)}`;
             if (parts.length > 0) {
@@ -2464,14 +2521,30 @@ export async function generateChatCompletion(
             // Last round — one final call
             if (round === maxToolRounds - 1) {
                 try {
-                    const finalOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
-                        appId: options?.appId ?? "chat",
-                        appTags: requestAppTags,
-                        followUpCount: options?.followUpCount,
-                        debugSessionId: session.id,
-                        signal: options?.signal,
-                        onReasoning: callbacks?.onReasoning,
-                    });
+                    let finalOutput: string;
+                    if (isChatStreamingEnabled()) {
+                        let streamReasoning = "";
+                        const streamFinal = await sendLLMStreamRequest(config, preset, llmMessages, regexes, meta, {
+                            appId: options?.appId ?? "chat",
+                            appTags: requestAppTags,
+                            followUpCount: options?.followUpCount,
+                            signal: options?.signal,
+                        }, {
+                            onDelta: (text) => callbacks?.onStreamDelta?.(text),
+                            // 流式下 onReasoningDelta 是单段增量：累积后再喂 onReasoning（保持整段请求语义）
+                            onReasoningDelta: (text) => { streamReasoning += text; callbacks?.onReasoning?.(streamReasoning); },
+                        });
+                        finalOutput = streamFinal.content;
+                    } else {
+                        finalOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
+                            appId: options?.appId ?? "chat",
+                            appTags: requestAppTags,
+                            followUpCount: options?.followUpCount,
+                            debugSessionId: session.id,
+                            signal: options?.signal,
+                            onReasoning: callbacks?.onReasoning,
+                        });
+                    }
                     throwIfAborted(options?.signal);
                     await callbacks?.onTextPart?.(finalOutput);
                     parts.push({ text: finalOutput });
