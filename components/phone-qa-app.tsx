@@ -10,6 +10,7 @@ import { QaFileCard } from "@/components/qa-file-card";
 import { parseQaFileMarker } from "@/lib/qa-computer-tools";
 import { mdiHammerWrench } from "@mdi/js";
 import { CustomAppRunner } from "@/components/app-market/custom-app-runner";
+import { CustomAppForegroundBoundary } from "@/components/app-market/custom-app-failure";
 import { GameHubApp } from "@/components/game/game-hub-app";
 import { BlackMarketApp } from "@/components/shopping/black-market-app";
 import { getInstalledCustomApp } from "@/lib/custom-app-storage";
@@ -1213,7 +1214,17 @@ export function PhoneQaApp({ onClose, onNotice }: PhoneQaAppProps) {
         <div className="qa-preview-runtime">
           {previewItem.type === "app" ? (
             previewApp ? (
-              <CustomAppRunner app={previewApp} onClose={() => setPreviewItem(null)} />
+              <CustomAppForegroundBoundary
+                key={previewApp.id}
+                appName={previewApp.name}
+                appId={previewApp.id}
+                appVersion={previewApp.version}
+                manifestId={previewApp.manifest?.id}
+                closeLabel="返回"
+                onClose={() => setPreviewItem(null)}
+              >
+                <CustomAppRunner app={previewApp} onClose={() => setPreviewItem(null)} />
+              </CustomAppForegroundBoundary>
             ) : (
               <div className="qa-preview-missing">
                 <p>这个应用已被卸载或找不到了。</p>

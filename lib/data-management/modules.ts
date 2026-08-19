@@ -8,9 +8,15 @@ import type { DataModuleDefinition, DataModuleId } from "./types";
 const RESERVED_LOCAL_STORAGE_KEYS = [
   "ai_phone_idb_migrated_v1",
   "ai_phone_settings_idb_migrated_v1",
-  // 工坊偏好键：归属 workshop 模块精确导出，cache 的 includeAll 不得触碰
-  "ai_phone_qa_page_chars",
-  "ai_phone_qa_max_output_tokens",
+];
+
+// Never put the credential used to reach the cloud inside that same cloud
+// backup. The run state is device-local bookkeeping and would also make every
+// backup change itself. Everything else in AiPhoneKvDB is caught by the
+// fallback source below, even when a feature forgot to register its key here.
+const KV_BACKUP_EXCLUDED_KEYS = [
+  "ai_phone_cloud_backup_config_v1",
+  "ai_phone_cloud_backup_state_v1",
 ];
 
 // ⚠️ CONTRACT: this list is the single source of truth for BOTH the data
@@ -19,7 +25,7 @@ const RESERVED_LOCAL_STORAGE_KEYS = [
 // data is stored (a new kv key, a moved key, a new IndexedDB store) MUST be
 // mirrored here in the same change — otherwise that data silently disappears
 // from backups and from the tool even though it is still physically in storage.
-export const DATA_MODULES: DataModuleDefinition[] = [
+const PRIMARY_DATA_MODULES: DataModuleDefinition[] = [
   {
     id: "chat",
     label: "聊天数据",
@@ -29,17 +35,31 @@ export const DATA_MODULES: DataModuleDefinition[] = [
     sources: [
       { type: "indexeddb", dbName: "AiPhoneChatDB", label: "聊天记录" },
       { type: "indexeddb", dbName: "AiPhoneMediaCacheDB", label: "聊天与工具媒体缓存" },
+      { type: "indexeddb", dbName: "AiPhoneQaDB", label: "答疑助手会话" },
       {
         type: "kv",
         label: "聊天设置与待处理状态",
-        keys: ["ai_phone_chat_settings_v1", "ai_phone_followup_schedules_v1", "ai_phone_timed_wake_schedules_v1"],
-        prefixes: ["chat-generating:", "pending_reply_", "ai_phone_chat_offline_turns:", "chat-offline-mode:"],
-      },
-      {
-        type: "kv",
-        label: "聊天插件",
-        keys: ["chat_plugins_v3", "chat_plugin_vars_v2", "chat_plugin_fragments_v2", "chat_plugin_errors_v1"],
-        prefixes: ["chat_plugin_data_v1:"],
+        keys: [
+          "ai_phone_chat_settings_v1",
+          "ai_phone_followup_schedules_v1",
+          "ai_phone_timed_wake_schedules_v1",
+          "ai_phone_removed_contacts_v1",
+          "ai_phone_chat_status_region_v1",
+          "chat-screen-effect-rules",
+          "chat-screen-effect-builtins",
+          "chat_plugins_v3",
+          "chat_plugin_vars_v2",
+          "chat_plugin_fragments_v2",
+          "chat_plugin_errors_v1",
+        ],
+        prefixes: [
+          "chat-generating:",
+          "pending_reply_",
+          "ai_phone_chat_offline_turns:",
+          "chat-offline-mode:",
+          "chat-theater-mode:",
+          "chat_plugin_data_v1:",
+        ],
       },
       {
         type: "localStorage",
@@ -77,7 +97,11 @@ export const DATA_MODULES: DataModuleDefinition[] = [
           "weixin_bots_v1",
           "weixin_keepalive_v1",
           "weixin_cloud_sync_config_v1",
-          "ai_phone_api_logs_v1",
+          "ai_phone_agent_computer_cfg_v1",
+          "ai_phone_idle_reconnect_rules_v1",
+          "ai_phone_qa_feedback_v1",
+          "ai_phone_qa_github_v1",
+          "ai_phone_media_maintenance_config_v1",
         ],
       },
       {
@@ -108,26 +132,24 @@ export const DATA_MODULES: DataModuleDefinition[] = [
   {
     id: "desktop",
     label: "桌面与主题",
-    description: "桌面布局、小组件、主题、图标、自定义 CSS、工坊 AI 助手设置和社交展示资料",
+    description: "桌面布局、小组件、主题、图标、自定义 CSS 和社交展示资料",
     variant: "success",
     critical: true,
     sources: [
-      { type: "indexeddb", dbName: "AiPhoneMascotDB", label: "工坊 AI 聊天记录（桌宠聊天）" },
+      { type: "indexeddb", dbName: "AiPhoneMascotDB", label: "桌宠聊天" },
       { type: "indexeddb", dbName: "ai_phone_theme_db_v1", label: "主题素材库" },
       {
         type: "kv",
         label: "桌面与主题配置",
         keys: [
-          "ai_phone_mascot_settings_v1",
           "ai_phone_icon_layout_v1",
           "ai_phone_icon_layout_v2",
-          "ai_phone_dock_layout_v1",
           "ai_phone_desktop_folders_v1",
+          "ai_phone_dock_layout_v1",
           "ai_phone_canvas_pan_v2",
           "ai_phone_widgets_v1",
           "ai_phone_diy_templates_v1",
           "ai_phone_theme_profile_v1",
-          "ai_phone_css_assets_v1",
           "css-schemes-v1",
           "chat-app-custom-css",
           "music-custom-css",
@@ -137,6 +159,9 @@ export const DATA_MODULES: DataModuleDefinition[] = [
           "moments_signature",
           "ai_phone_sticker_packs_v1",
           "ai_phone_sticker_assign_v1",
+          "ai_phone_mascot_settings_v1",
+          "ai_phone_css_assets_v1",
+          "music-custom-bg-v1",
         ],
       },
     ],
@@ -201,7 +226,7 @@ export const DATA_MODULES: DataModuleDefinition[] = [
   {
     id: "apps",
     label: "内容应用",
-    description: "日历、日记、购物、余额、阅读、音乐、经期记录、自制 APP 与应用偏好",
+    description: "日历、日记、购物、余额、阅读、音乐、经期记录与应用偏好",
     variant: "teal",
     large: true,
     sources: [
@@ -213,8 +238,6 @@ export const DATA_MODULES: DataModuleDefinition[] = [
         type: "kv",
         label: "内容应用配置与缓存",
         keys: [
-          "ai_phone_custom_apps_v1",
-          "ai_phone_custom_app_icon_styles_v1",
           "ai_phone_calendar_plans_v1",
           "ai_phone_calendar_config_v1",
           "ai_phone_diary_entries_v1",
@@ -245,6 +268,20 @@ export const DATA_MODULES: DataModuleDefinition[] = [
           "music-user-recent",
           "reading-import-diagnostic-v1",
           "reading_import_diag_v1",
+          "ai_phone_music_sync_v1",
+          "ai_phone_custom_apps_v1",
+          "ai_phone_custom_app_icon_styles_v1",
+          "ai_phone_custom_app_notifications_v1",
+          "ai_phone_custom_app_badges_v1",
+          "ai_phone_custom_app_tasks_v1",
+          "ai_phone_custom_app_world_activations_v1",
+          "ai_phone_custom_app_suggestions_v1",
+          "ai_phone_reality_bridge_rules_v1",
+          "ai_phone_reality_bridge_feed_v1",
+          "ai_phone_reality_bridge_settings_v1",
+          "ai_phone_reality_bridge_data_items_v1",
+          "ai_phone_reality_bridge_shortcut_actions_v1",
+          "ai_phone_reality_bridge_rule_runs_v1",
         ],
         prefixes: [
           "music-search-cache:",
@@ -273,6 +310,7 @@ export const DATA_MODULES: DataModuleDefinition[] = [
           "ai_phone_resource_hub_upload_cfg_v1",
           "ai_phone_resource_hub_source_v1",
           "ai_phone_resource_hub_flowers_sent_v1",
+          "ai_phone_resource_hub_flowers_seen_v1",
           "ai_phone_resource_hub_notice_v2",
         ],
       },
@@ -317,42 +355,39 @@ export const DATA_MODULES: DataModuleDefinition[] = [
           "ai_phone_black_market_user_id_v1",
           "ai_phone_black_market_scene_sessions_v1",
           "ai_phone_black_market_studio_drafts_v1",
+          "mixology_cabinet_v1",
+          "mixology_recipes_v1",
+          "mixology_sessions_v1",
+          "mixology_builtin_version_v1",
+          "mixology_profile_v1",
         ],
-        prefixes: ["map_world_theme_", "map_adventure_summary_", "ai_phone_black_market_theater_events_", "ai_phone_checkphone_events_"],
+        prefixes: ["map_world_theme_", "map_adventure_summary_", "ai_phone_black_market_theater_events_"],
       },
     ],
   },
-  {
-    id: "workshop",
-    label: "工坊",
-    description: "答疑工坊（小坊）会话记录、GitHub 连接配置与反馈单",
-    variant: "teal",
-    sources: [
-      { type: "indexeddb", dbName: "AiPhoneQaDB", label: "工坊会话记录" },
-      {
-        type: "kv",
-        label: "工坊配置",
-        keys: [
-          "ai_phone_qa_github_v1",
-          "ai_phone_qa_feedback_v1",
-        ],
-      },
-      {
-        type: "localStorage",
-        label: "工坊偏好",
-        keys: [
-          "ai_phone_qa_page_chars",
-          "ai_phone_qa_max_output_tokens",
-        ],
-      },
-    ],
-  },
+];
+
+const ownedKvKeys = PRIMARY_DATA_MODULES.flatMap((module) => module.sources.flatMap((source) =>
+  source.type === "kv" ? (source.keys ?? []) : []));
+const ownedKvPrefixes = PRIMARY_DATA_MODULES.flatMap((module) => module.sources.flatMap((source) =>
+  source.type === "kv" ? (source.prefixes ?? []) : []));
+
+export const DATA_MODULES: DataModuleDefinition[] = [
+  ...PRIMARY_DATA_MODULES,
   {
     id: "cache",
-    label: "缓存与临时",
-    description: "浏览器遗留键、临时状态和未归类的小型缓存",
+    label: "缓存与未分类数据",
+    description: "浏览器遗留键、临时状态，以及尚未显式归类的键值数据",
     variant: "warning",
+    large: true,
     sources: [
+      {
+        type: "kv",
+        label: "未分类键值数据",
+        includeAll: true,
+        excludeKeys: [...ownedKvKeys, ...KV_BACKUP_EXCLUDED_KEYS],
+        excludePrefixes: ownedKvPrefixes,
+      },
       { type: "localStorage", label: "浏览器遗留缓存", includeAll: true, excludeKeys: RESERVED_LOCAL_STORAGE_KEYS },
     ],
   },

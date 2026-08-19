@@ -6,8 +6,7 @@ import {
     determineBaseUrl,
     isNativeAnthropicApi,
     isNativeGoogleApi,
-    isOpenCodeGateway,
-    openCodeUsesAnthropicProtocol,
+    stripHallucinatedTimestamps,
 } from "./api-helpers";
 
 export type LlmProviderKind = "openai-compatible" | "anthropic" | "gemini";
@@ -84,7 +83,6 @@ export type LlmDebugMessage = {
 
 export function nativeToolProtocolForConfig(config: ApiConfig): NativeToolProtocol | null {
     if (config.enableNativeTools === false) return null;
-    if (openCodeUsesAnthropicProtocol(config)) return "anthropic";
     if (isNativeAnthropicApi(config)) return "anthropic";
     if (isNativeGoogleApi(config)) return "gemini";
     return "openai-compatible";
@@ -92,7 +90,6 @@ export function nativeToolProtocolForConfig(config: ApiConfig): NativeToolProtoc
 
 export function providerKindForConfig(config: ApiConfig, options?: { nativeToolProtocol?: NativeToolProtocol | null }): LlmProviderKind {
     if (options?.nativeToolProtocol) return options.nativeToolProtocol;
-    if (openCodeUsesAnthropicProtocol(config)) return "anthropic";
     if (isNativeAnthropicApi(config)) return "anthropic";
     if (isNativeGoogleApi(config)) return "gemini";
     return "openai-compatible";
@@ -260,26 +257,18 @@ export function buildProviderRequest(
     const guardedMessages = config.enableImageRecognition === true ? messages : stripVisionParts(messages);
     const providerMessages = ensureProviderHasUserMessage(normalizeNativeToolMessageAdjacency(guardedMessages));
 
-    let request: LlmRequestPayload;
     if (providerKind === "anthropic") {
-        request = buildAnthropicRequest(config, preset, baseUrl, providerMessages, options);
-    } else if (providerKind === "gemini") {
-        request = buildGeminiRequest(config, preset, baseUrl, providerMessages, options);
-    } else {
-        request = buildOpenAICompatibleRequest(config, preset, baseUrl, providerMessages, options);
+        return buildAnthropicRequest(config, preset, baseUrl, providerMessages, options);
     }
-    // OpenCode 网关未开放浏览器 CORS，所有调用必须经 /api/llm-proxy 服务端转发
-    request.serverProxy = isOpenCodeGateway(config);
-    return request;
+    if (providerKind === "gemini") {
+        return buildGeminiRequest(config, preset, baseUrl, providerMessages, options);
+    }
+    return buildOpenAICompatibleRequest(config, preset, baseUrl, providerMessages, options);
 }
 
-export function stripHallucinatedTimestamps(text: string): string {
-    // 括号内以完整日期时间开头的一律剥掉：兼容带秒、时区（Europe/Madrid、UTC+2）、
-    // 星期等尾巴与全角括号——prompt 给历史消息标注的时间带时区时，AI 会照格式模仿
-    return text
-        .replace(/[（(]\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?(?:\s+[^)）]*)?[)）]\s*/g, "")
-        .replace(/\(system\s*time\s*[:：][^)]*\)\s*/gi, "");
-}
+// 剥离逻辑收敛到 api-helpers（更底层，微信助手运行时也照抄同一份正则）；
+// 这里保留同名再导出，调用方无需改动。
+export { stripHallucinatedTimestamps };
 
 export function buildProviderDebugMessages(
     config: ApiConfig,

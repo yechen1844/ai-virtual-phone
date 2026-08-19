@@ -27,13 +27,15 @@ export type DebugInfo = {
 const MAX_API_LOGS = 150;
 // 工坊环容量：只有答疑引擎写入，量小，维持原值。
 const MAX_QA_API_LOGS = 50;
-// 单环序列化体积预算（字节）：超预算时从最旧开始丢弃，防止单条超大 prompt 撑爆 localStorage。
-const MAX_API_LOGS_BYTES = 2 * 1024 * 1024;
-const MAX_QA_LOGS_BYTES = 1024 * 1024;
+// 单环序列化字符预算：超预算时从最旧开始丢弃，控制 IndexedDB 常驻体积与序列化开销。
+const MAX_API_LOGS_SERIALIZED_CHARS = 2 * 1024 * 1024;
+const MAX_QA_LOGS_SERIALIZED_CHARS = 1024 * 1024;
 // 单条文本截断上限：记忆总结类调用的完整 prompt 动辄几十 KB，写日志前先截断，
 // 控制每次 push 的 parse/stringify 写放大与常驻体积。
 const MAX_LOG_MESSAGE_CHARS = 4000;
+const MAX_LOG_MESSAGES_TOTAL_CHARS = 96_000;
 const MAX_LOG_RESPONSE_CHARS = 8000;
+const MAX_LOG_METADATA_CHARS = 200;
 
 const API_LOGS_KEY = "ai_phone_api_logs_v1";
 // 工坊（QA 助手）专用调用记录：与聊天/记忆等底层调用日志彻底隔离，
@@ -45,11 +47,13 @@ registerKvMigration(QA_LOGS_KEY);
 function _loadLogs(key: string): DebugInfo[] {
     try {
         const raw = typeof window !== "undefined" ? kvGet(key) : null;
-        return raw ? JSON.parse(raw) as DebugInfo[] : [];
+        if (!raw) return [];
+        const parsed: unknown = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed as DebugInfo[] : [];
     } catch { return []; }
 }
 function _saveLogs(key: string, logs: DebugInfo[]): void {
-    try { kvSet(key, JSON.stringify(logs)); } catch { /* quota exceeded — ignore */ }
+    try { kvSet(key, JSON.stringify(logs)); } catch { /* 日志失败不影响主流程 */ }
 }
 
 function truncateForLog(text: string, limit: number): string {
@@ -57,16 +61,65 @@ function truncateForLog(text: string, limit: number): string {
     return `${text.slice(0, limit)}\n…[日志截断：原文共 ${text.length} 字符]`;
 }
 
+function truncateMessagesForLog(messages: DebugInfo["messages"]): DebugInfo["messages"] {
+    const truncated = messages.map(message => ({
+        ...message,
+        content: truncateForLog(message.content, MAX_LOG_MESSAGE_CHARS),
+    }));
+    const totalChars = truncated.reduce((sum, message) => sum + message.content.length, 0);
+    if (totalChars <= MAX_LOG_MESSAGES_TOTAL_CHARS || truncated.length <= 1) return truncated;
+
+    // 首条通常是系统提示，保留它和尽可能多的最新上下文；中间历史用一条说明代替。
+    const first = truncated[0];
+    const tail: DebugInfo["messages"] = [];
+    let usedChars = first.content.length;
+    for (let index = truncated.length - 1; index >= 1; index -= 1) {
+        const message = truncated[index];
+        if (usedChars + message.content.length > MAX_LOG_MESSAGES_TOTAL_CHARS) break;
+        tail.push(message);
+        usedChars += message.content.length;
+    }
+    tail.reverse();
+    const omittedCount = truncated.length - 1 - tail.length;
+    return [
+        first,
+        ...(omittedCount > 0 ? [{
+            role: "system",
+            content: `…[日志截断：省略 ${omittedCount} 条中间消息]`,
+            marker: "log-truncated",
+        }] : []),
+        ...tail,
+    ];
+}
+
 function truncateEntryForLog(entry: Omit<DebugInfo, "id" | "timestamp">): Omit<DebugInfo, "id" | "timestamp"> {
     return {
         ...entry,
-        messages: entry.messages.map(m => ({
-            ...m,
-            content: typeof m.content === "string" ? truncateForLog(m.content, MAX_LOG_MESSAGE_CHARS) : m.content,
-        })),
+        characterName: entry.characterName !== undefined
+            ? truncateForLog(entry.characterName, MAX_LOG_METADATA_CHARS)
+            : undefined,
+        model: entry.model !== undefined ? truncateForLog(entry.model, MAX_LOG_METADATA_CHARS) : undefined,
+        messages: truncateMessagesForLog(entry.messages),
         rawResponse: truncateForLog(entry.rawResponse, MAX_LOG_RESPONSE_CHARS),
         reasoning: entry.reasoning !== undefined ? truncateForLog(entry.reasoning, MAX_LOG_RESPONSE_CHARS) : undefined,
     };
+}
+
+function trimLogsForStorage(logs: DebugInfo[], maxCount: number, maxSerializedChars: number): DebugInfo[] {
+    const candidates = logs.slice(-maxCount);
+    const newestFirst: DebugInfo[] = [];
+    let serializedChars = 2; // []
+
+    // 每条只序列化一次，避免超预算时反复 stringify 整个日志环造成主线程卡顿。
+    for (let index = candidates.length - 1; index >= 0; index -= 1) {
+        const entryChars = JSON.stringify(candidates[index]).length;
+        const separatorChars = newestFirst.length > 0 ? 1 : 0;
+        if (serializedChars + separatorChars + entryChars > maxSerializedChars) break;
+        newestFirst.push(candidates[index]);
+        serializedChars += separatorChars + entryChars;
+    }
+
+    return newestFirst.reverse();
 }
 
 export function getApiLogs(): DebugInfo[] { return _loadLogs(API_LOGS_KEY); }
@@ -83,7 +136,7 @@ export function pushApiLog(entry: Omit<DebugInfo, "id" | "timestamp">): void {
     const isQa = entry.channel === "qa";
     const key = isQa ? QA_LOGS_KEY : API_LOGS_KEY;
     const maxCount = isQa ? MAX_QA_API_LOGS : MAX_API_LOGS;
-    const maxBytes = isQa ? MAX_QA_LOGS_BYTES : MAX_API_LOGS_BYTES;
+    const maxSerializedChars = isQa ? MAX_QA_LOGS_SERIALIZED_CHARS : MAX_API_LOGS_SERIALIZED_CHARS;
     try {
         const logs = _loadLogs(key);
         logs.push({
@@ -91,8 +144,6 @@ export function pushApiLog(entry: Omit<DebugInfo, "id" | "timestamp">): void {
             id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             timestamp: new Date().toISOString(),
         });
-        while (logs.length > maxCount) logs.shift();
-        while (logs.length > 1 && JSON.stringify(logs).length > maxBytes) logs.shift();
-        _saveLogs(key, logs);
+        _saveLogs(key, trimLogsForStorage(logs, maxCount, maxSerializedChars));
     } catch { /* 日志写入失败不影响主流程 */ }
 }

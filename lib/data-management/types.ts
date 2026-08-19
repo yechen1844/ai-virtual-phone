@@ -25,6 +25,9 @@ export type KvSource = {
   keys?: string[];
   prefixes?: string[];
   includeAll?: boolean;
+  /** Keys/prefixes to exclude when includeAll is set (used by the KV catch-all). */
+  excludeKeys?: string[];
+  excludePrefixes?: string[];
   label?: string;
 };
 
