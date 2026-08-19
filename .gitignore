@@ -30,3 +30,7 @@ tools/weixin-local-assistant/config.txt
 *.ts.net.crt
 *.ts.net.key
 /public/models/world-builder/
+
+# 本机 git worktree 与 NEXT_DIST_DIR 独立构建产物，仅本地使用不入库
+.worktrees/
+.next-*/
