@@ -469,6 +469,15 @@ function isToolFlowHistoryMessage(message: ChatMessage): boolean {
         || message.mediaType === "memory_write_request";
 }
 
+/** 日志分流：工坊（appId === "qa"）经聊天引擎发出的调用（答疑 Agent 原生工具循环）归工坊环，
+ *  其余归底层调用日志环。channel 不能硬编码——工坊的 Agent 循环复用 sendLLMToolStreamRequest，
+ *  旧逻辑靠 characterName === "工坊" 分流，改成显式字段后必须从 appId 派生，否则工坊记录漏进主环。 */
+function apiLogChannelFor(options?: { appId?: string }): { source: "chat" | "qa"; channel: "chat" | "qa" } {
+    return options?.appId === "qa"
+        ? { source: "qa", channel: "qa" }
+        : { source: "chat", channel: "chat" };
+}
+
 export function appendEmptyGenerateGuardMessage(
     messages: LLMMessage[],
     config: ApiConfig,
@@ -819,8 +828,7 @@ export async function sendLLMStreamRequest(
         }));
         pushApiLog({
             characterName: meta?.characterName,
-            source: "chat",
-            channel: "chat",
+            ...apiLogChannelFor(options),
             model: config.defaultModel,
             messages: sanitizedMessages,
             rawResponse: rawOutput,
@@ -953,8 +961,7 @@ export async function sendLLMRequest(
         }));
         pushApiLog({
             characterName: meta?.characterName,
-            source: "chat",
-            channel: "chat",
+            ...apiLogChannelFor(options),
             model: config.defaultModel,
             messages: sanitizedMessages,
             rawResponse: rawOutput,
@@ -1172,8 +1179,7 @@ export async function sendLLMToolStreamRequest(
         const logEntryRaw = JSON.stringify({ content, reasoning, toolCalls, raw: rawResponse });
         pushApiLog({
             characterName: meta?.characterName,
-            source: "chat",
-            channel: "chat",
+            ...apiLogChannelFor(options),
             model: config.defaultModel,
             messages: sanitizedMessages,
             rawResponse: logEntryRaw,
@@ -1275,8 +1281,7 @@ export async function sendLLMToolRequest(
         });
         pushApiLog({
             characterName: meta?.characterName,
-            source: "chat",
-            channel: "chat",
+            ...apiLogChannelFor(options),
             model: config.defaultModel,
             messages: sanitizedMessages,
             rawResponse,
