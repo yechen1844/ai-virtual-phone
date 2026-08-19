@@ -38,6 +38,8 @@ export type LlmRequestPayload = {
     body: Record<string, unknown>;
     providerKind: LlmProviderKind;
     messagesForLog: { role: string; content: string | LLMContentPart[]; marker?: string }[];
+    /** 需要经本站 /api/llm-proxy 服务端转发（OpenCode 网关未开放浏览器 CORS 时置 true） */
+    serverProxy?: boolean;
 };
 
 export type LlmParsedResponse = {

@@ -258,6 +258,7 @@ export type ChatAppSettings = {
     enterToSendEnabled?: boolean; // When true, Enter sends chat input and Shift+Enter inserts a newline
     callVibrationEnabled?: boolean; // 语音/视频来电等待接听时循环振动（默认开；iOS 网页不支持振动则无效果）
     maxToolRounds?: number; // 单条消息的工具循环轮数上限（默认 5；每轮=一次模型请求，轮内调用条数不限）
+    streamChatGeneration?: boolean; // 是否开启聊天流式生成（默认关；开启后线上/线下、单聊/群聊走流式 API，边生成边显示）
 };
 
 /** 单条消息工具循环轮数上限（默认 5，夹在 1–20 之间） */
@@ -265,6 +266,11 @@ export function getMaxToolRounds(): number {
     const raw = loadChatAppSettings().maxToolRounds;
     if (typeof raw !== "number" || !Number.isFinite(raw)) return 5;
     return Math.max(1, Math.min(20, Math.round(raw)));
+}
+
+/** 是否开启聊天流式生成（默认关；开启后线上/线下、单聊/群聊走流式 API，边生成边显示） */
+export function isChatStreamingEnabled(): boolean {
+    return loadChatAppSettings().streamChatGeneration === true;
 }
 
 export const CHAT_APP_SETTINGS_UPDATED_EVENT = "chat-app-settings-updated";
