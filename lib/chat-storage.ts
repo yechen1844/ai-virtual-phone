@@ -57,6 +57,10 @@ export type ChatSession = {
     offlineBilingualTranslationPrompt?: string;
     nativeExpandedToolSourceIds?: string[];
     visionImagePromptLimit?: number;
+    /** 流式生成（线上）：开启后该会话的线上 AI 回复边生成边显示（默认关，保持原整段请求行为） */
+    streamOnline?: boolean;
+    /** 流式生成（线下）：开启后该会话的线下 AI 回复边生成边显示（默认关，保持原整段请求行为） */
+    streamOffline?: boolean;
     // Group chat fields
     isGroup?: boolean;
     groupName?: string;
@@ -267,12 +271,16 @@ export function getMaxToolRounds(): number {
     return Math.max(1, Math.min(20, Math.round(raw)));
 }
 
+/** 会话是否开启线上流式生成（默认关；按会话独立控制，单聊/群聊都生效） */
+export function isSessionStreamingEnabled(session: Pick<ChatSession, "streamOnline" | "streamOffline"> | null | undefined, online: boolean): boolean {
+    if (!session) return false;
+    return online ? session.streamOnline === true : session.streamOffline === true;
+}
+
 export const CHAT_APP_SETTINGS_UPDATED_EVENT = "chat-app-settings-updated";
 export const CHAT_MESSAGE_PUSHED_EVENT = "chat-message-pushed";
 export const CHAT_MESSAGES_DELETED_EVENT = "chat-messages-deleted";
 export const CHAT_REQUEST_REPLY_EVENT = "chat-request-reply";
-/** 长按编辑整批回复后重建消息：携带新消息与编辑后的原文，供云同步回写。 */
-export const CHAT_RESPONSE_BATCH_REPLACED_EVENT = "chat-response-batch-replaced";
 
 // ── Media Preview Map ─────────────────────────
 const MEDIA_PREVIEW_MAP: Record<string, string> = {
@@ -1131,16 +1139,26 @@ export function pushChatMessage(msg: Omit<ChatMessage, "id" | "createdAt" | "sta
     dbPutMessage(newMsg);
 
     // Auto update session last message only for records that can produce a list preview.
+    // 优化：直接增量更新内存会话缓存并异步写单条，避免每次发送都走 loadChatSessions +
+    // saveChatSessions 触发全量会话预览重算（会话/消息多了以后会明显卡顿）。
     const preview = getChatMessagePreview(newMsg);
-    const sessions = loadChatSessions();
-    const sessIdx = sessions.findIndex(s => s.id === msg.sessionId);
+    const sessIdx = _sessionsCache.findIndex(s => s.id === msg.sessionId);
     if (sessIdx !== -1 && isSessionPreviewCandidate(newMsg)) {
-        sessions[sessIdx].lastMessageId = newMsg.id;
-        if (preview) {
-            sessions[sessIdx].lastMessagePreview = preview;
+        const target = _sessionsCache[sessIdx];
+        target.lastMessageId = newMsg.id;
+        if (preview) target.lastMessagePreview = preview;
+        target.updatedAt = newMsg.createdAt;
+        dbPutSessions([target]);
+    } else if (sessIdx === -1) {
+        // 缓存未命中（极端情况）：回退全量路径，保证列表预览仍会刷新
+        const sessions = loadChatSessions();
+        const idx2 = sessions.findIndex(s => s.id === msg.sessionId);
+        if (idx2 !== -1 && isSessionPreviewCandidate(newMsg)) {
+            sessions[idx2].lastMessageId = newMsg.id;
+            if (preview) sessions[idx2].lastMessagePreview = preview;
+            sessions[idx2].updatedAt = newMsg.createdAt;
+            saveChatSessions(sessions);
         }
-        sessions[sessIdx].updatedAt = newMsg.createdAt;
-        saveChatSessions(sessions);
     }
 
     if (typeof window !== "undefined") {
@@ -1939,9 +1957,6 @@ export function replaceResponseBatchWithParts(
         rawResponseText,
         responseRoundId: firstMessage.responseRoundId,
         editableResponseText: firstMessage.editableResponseText,
-        // 云消息身份必须跟着走：丢了它，微信云同步下一轮会把原文当成「还没导入过」
-        // 再导一遍，编辑后的版本和原文并存（编辑一次多一条）。
-        cloudSync: firstMessage.cloudSync,
         statusPanel: index === (options?.metaPartIndex ?? 0) ? options?.statusPanel : undefined,
         statusRegionMode: index === (options?.metaPartIndex ?? 0) && options?.statusPanel ? options?.statusRegionMode : undefined,
         innerMonologue: index === (options?.metaPartIndex ?? 0) ? options?.innerMonologue : undefined,
@@ -1966,7 +1981,6 @@ export function replaceResponseBatchWithParts(
             responseBatchId,
             responseRoundId: firstMessage.responseRoundId,
             editableResponseText: firstMessage.editableResponseText,
-            cloudSync: firstMessage.cloudSync,
             followUpIndex: firstMessage.followUpIndex,
             senderCharacterId: firstMessage.senderCharacterId,
             senderName: firstMessage.senderName,
@@ -1993,20 +2007,7 @@ export function replaceResponseBatchWithParts(
         saveChatSessions(sessions);
     }
 
-    dispatchResponseBatchReplaced(sessionId, newMessages, rawResponseText);
     return newMessages;
-}
-
-/**
- * 整批回复被编辑重建：这里不能走 CHAT_MESSAGE_PUSHED / CHAT_MESSAGES_DELETED
- * （前者会被当成新消息新建云端对象，后者会把云端原件删掉），所以单独发一个事件，
- * 由云同步侧「就地覆盖同一条云消息」。
- */
-function dispatchResponseBatchReplaced(sessionId: string, messages: ChatMessage[], rawResponseText: string): void {
-    if (typeof window === "undefined" || messages.length === 0) return;
-    window.dispatchEvent(new CustomEvent(CHAT_RESPONSE_BATCH_REPLACED_EVENT, {
-        detail: { sessionId, messages, rawResponseText },
-    }));
 }
 
 export function replaceGroupResponseRound(
@@ -2061,7 +2062,6 @@ export function replaceGroupResponseRound(
         rawResponseText: msg.rawResponseText,
         responseRoundId,
         editableResponseText,
-        cloudSync: firstMessage.cloudSync,
         statusPanel: msg.statusPanel,
         statusRegionMode: msg.statusRegionMode,
         innerMonologue: msg.innerMonologue,
