@@ -1,7 +1,7 @@
 // lib/group-chat-engine.ts
 // Group chat engine: single API call for all characters.
 
-import { ChatSession, ChatMessage, loadChatAppSettings, createResponseBatchId, createResponseRoundId, createToolExecutionId, loadChatSessions, getLatestCharacterStateValues } from "./chat-storage";
+import { ChatSession, ChatMessage, loadChatAppSettings, createResponseBatchId, createResponseRoundId, createToolExecutionId, loadChatSessions, getLatestCharacterStateValues, isChatStreamingEnabled } from "./chat-storage";
 import { extractTextToolDirectiveText } from "./text-tool-protocol";
 import type { ApiConfig, PresetConfig, RegexConfig } from "./settings-types";
 import { loadCharacters } from "./character-storage";
@@ -10,7 +10,9 @@ import { runChatPluginTransform } from "./chat-plugin-hooks";
 import { buildChatPluginPromptFragments } from "./chat-plugin-storage";
 import {
     sendLLMRequest,
+    sendLLMStreamRequest,
     sendLLMToolRequest,
+    sendLLMToolStreamRequest,
     ChatEngineError,
     buildMusicLocalMacro,
     buildMusicCloudMacro,
@@ -584,12 +586,26 @@ async function runNativeGroupToolLoop(params: {
     for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
         let result: Awaited<ReturnType<typeof sendLLMToolRequest>>;
         try {
-            result = await sendLLMToolRequest(config, preset, requestMessages, nativeBundle.definitions, regexes, meta, {
-                appId: "group_chat",
-                appTags,
-                debugSessionId: session.id,
-                signal,
-            });
+            if (isChatStreamingEnabled()) {
+                let streamReasoning = "";
+                result = await sendLLMToolStreamRequest(config, preset, requestMessages, nativeBundle.definitions, regexes, meta, {
+                    appId: "group_chat",
+                    appTags,
+                    debugSessionId: session.id,
+                    signal,
+                }, {
+                    onDelta: (text) => callbacks?.onStreamDelta?.(text),
+                    // 流式下 onReasoningDelta 是单段增量：累积后再喂 onReasoning（保持整段请求语义）
+                    onReasoningDelta: (text) => { streamReasoning += text; callbacks?.onReasoning?.(streamReasoning); },
+                });
+            } else {
+                result = await sendLLMToolRequest(config, preset, requestMessages, nativeBundle.definitions, regexes, meta, {
+                    appId: "group_chat",
+                    appTags,
+                    debugSessionId: session.id,
+                    signal,
+                });
+            }
         } catch (err) {
             if (finalRawOutput) {
                 throwIfAborted(signal);
@@ -808,13 +824,27 @@ export async function generateGroupChatCompletion(
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
         let filteredOutput: string;
         try {
-            filteredOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
-                appId: "group_chat",
-                appTags,
-                debugSessionId: session.id,
-                signal: options?.signal,
-                onReasoning: callbacks?.onReasoning,
-            });
+            if (isChatStreamingEnabled()) {
+                let streamReasoning = "";
+                const streamResult = await sendLLMStreamRequest(config, preset, llmMessages, regexes, meta, {
+                    appId: "group_chat",
+                    appTags,
+                    signal: options?.signal,
+                }, {
+                    onDelta: (text) => callbacks?.onStreamDelta?.(text),
+                    // 流式下 onReasoningDelta 是单段增量：累积后再喂 onReasoning（保持整段请求语义）
+                    onReasoningDelta: (text) => { streamReasoning += text; callbacks?.onReasoning?.(streamReasoning); },
+                });
+                filteredOutput = streamResult.content;
+            } else {
+                filteredOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
+                    appId: "group_chat",
+                    appTags,
+                    debugSessionId: session.id,
+                    signal: options?.signal,
+                    onReasoning: callbacks?.onReasoning,
+                });
+            }
         } catch (err) {
             if (finalRawOutput) {
                 throwIfAborted(options?.signal);
@@ -957,13 +987,27 @@ export async function generateGroupChatCompletion(
 
             if (round === MAX_TOOL_ROUNDS - 1) {
                 try {
-                    finalRawOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
-                        appId: "group_chat",
-                        appTags,
-                        debugSessionId: session.id,
-                        signal: options?.signal,
-                        onReasoning: callbacks?.onReasoning,
-                    });
+                    if (isChatStreamingEnabled()) {
+                        let streamReasoning = "";
+                        const streamFinal = await sendLLMStreamRequest(config, preset, llmMessages, regexes, meta, {
+                            appId: "group_chat",
+                            appTags,
+                            signal: options?.signal,
+                        }, {
+                            onDelta: (text) => callbacks?.onStreamDelta?.(text),
+                            // 流式下 onReasoningDelta 是单段增量：累积后再喂 onReasoning（保持整段请求语义）
+                            onReasoningDelta: (text) => { streamReasoning += text; callbacks?.onReasoning?.(streamReasoning); },
+                        });
+                        finalRawOutput = streamFinal.content;
+                    } else {
+                        finalRawOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
+                            appId: "group_chat",
+                            appTags,
+                            debugSessionId: session.id,
+                            signal: options?.signal,
+                            onReasoning: callbacks?.onReasoning,
+                        });
+                    }
                     throwIfAborted(options?.signal);
                 } catch {
                     throwIfAborted(options?.signal);
@@ -1049,7 +1093,7 @@ export type GroupOfflineChatCompletionResult = ParsedOfflineResponse & {
 export async function generateGroupOfflineChatCompletion(
     session: ChatSession,
     history: ChatMessage[],
-    options?: { signal?: AbortSignal },
+    options?: { signal?: AbortSignal; onStreamDelta?: (delta: string) => void },
 ): Promise<GroupOfflineChatCompletionResult> {
     const { llmMessages, config, preset, regexes } = await buildGroupChatPromptMessages(
         session,
@@ -1061,18 +1105,58 @@ export async function generateGroupOfflineChatCompletion(
         },
     );
     const summaryTag = preset?.story_summary_tag?.trim() || "summary";
+    const thinkingTag = preset?.thinking_tag?.trim() || "thinking";
     let reasoning = "";
-    const rawOutput = await sendLLMRequest(config, preset, llmMessages, regexes, {
-        characterName: `群聊:${session.groupName || "群聊"}`,
-    }, {
+    const meta = { characterName: `群聊:${session.groupName || "群聊"}` };
+    const requestOptions = {
         appId: "group_chat",
         appTags: ["group_chat", "offline"],
         debugSessionId: session.id,
         signal: options?.signal,
-        onReasoning: (t) => { reasoning = t; },
-    });
+        onReasoning: (t: string) => { reasoning = t; },
+    };
+    let rawOutput: string;
+    if (isChatStreamingEnabled() && options?.onStreamDelta) {
+        const streamResult = await sendLLMStreamRequest(config, preset, llmMessages, regexes, meta, {
+            appId: "group_chat",
+            appTags: ["group_chat", "offline"],
+            signal: options?.signal,
+        }, {
+            onDelta: (text) => options.onStreamDelta?.(text),
+            onReasoningDelta: (t) => { reasoning += t; },
+        });
+        rawOutput = streamResult.content;
+    } else {
+        rawOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, requestOptions);
+    }
+    let parsed = parseOfflineResponse(rawOutput, summaryTag, thinkingTag);
+
+    // 摘要缺失时自动补提：拿上次完整输出做上下文，只要求模型补一段摘要，
+    // 避免「静默结束」导致该轮线下记录没有摘要、进不了短期记忆事件流。
+    const MAX_SUMMARY_RETRY = 2;
+    for (let attempt = 0; attempt < MAX_SUMMARY_RETRY; attempt += 1) {
+        if (parsed.summary.trim()) break;
+        if (!parsed.content.trim() && !rawOutput.trim()) break; // 连正文都没有，补提没有意义
+        const retryMessages: LLMMessage[] = [
+            ...llmMessages,
+            { role: "assistant", content: rawOutput },
+            {
+                role: "user",
+                content: `刚才的回复里没有输出 <${summaryTag}> 摘要。请只针对上面这段对话的关键事件补一段第三人称摘要，严格按以下格式输出，不要输出任何其他内容：\n<${summaryTag}>一句话摘要</${summaryTag}>`,
+            },
+        ];
+        throwIfAborted(options?.signal);
+        // 补提请求不带 onReasoning：避免用补提请求的思维链覆盖主请求已累积的完整思维链
+        const retryRaw = await sendLLMRequest(config, preset, retryMessages, regexes, meta, { ...requestOptions, onReasoning: undefined });
+        const retried = parseOfflineResponse(retryRaw, summaryTag);
+        if (retried.summary.trim()) {
+            parsed = { ...parsed, summary: retried.summary.trim() };
+            break;
+        }
+    }
+
     return {
-        ...parseOfflineResponse(rawOutput, summaryTag),
+        ...parsed,
         model: config.defaultModel,
         presetName: preset?.name || "默认预设",
         reasoning: reasoning || undefined,

@@ -16,6 +16,9 @@ import {
     removeChatContact,
     normalizeVisionImagePromptLimit,
     MAX_VISION_IMAGE_PROMPT_LIMIT,
+    isChatStreamingEnabled,
+    loadChatAppSettings,
+    saveChatAppSettings,
     type ChatMessage,
 } from "@/lib/chat-storage";
 import {
@@ -389,6 +392,8 @@ export function ChatSettingsPanel({
     const [bilingualTranslationEnabled, setBilingualTranslationEnabled] = useState(session.bilingualTranslationEnabled !== false);
     const [collapseBilingualTranslation, setCollapseBilingualTranslation] = useState(session.collapseBilingualTranslation !== false);
     const [discardInvalidStickers, setDiscardInvalidStickers] = useState(session.discardInvalidStickers === true);
+    // 流式生成：全局开关（存 ChatAppSettings），开 = 线上/线下、单聊/群聊回复边生成边显示
+    const [streamChatGeneration, setStreamChatGeneration] = useState(() => isChatStreamingEnabled());
     const defaultBilingualPrompt = session.isGroup ? DEFAULT_GROUP_CHAT_BILINGUAL_PROMPT : DEFAULT_CHAT_BILINGUAL_PROMPT;
     const defaultOfflineBilingualPrompt = session.isGroup ? DEFAULT_GROUP_OFFLINE_CHAT_BILINGUAL_PROMPT : DEFAULT_OFFLINE_CHAT_BILINGUAL_PROMPT;
     const [bilingualTranslationPrompt, setBilingualTranslationPrompt] = useState(session.bilingualTranslationPrompt || defaultBilingualPrompt);
@@ -1073,6 +1078,22 @@ export function ChatSettingsPanel({
                                     onChange={c => {
                                         setDiscardInvalidStickers(c);
                                         updateSession({ discardInvalidStickers: c });
+                                    }}
+                                />
+                            </div>
+                        </div>
+                        <div className="menu-item">
+                            <ChatInfoIcon icon={Sparkles} color={BINDING_ACCENTS.api} />
+                            <div className="menu-label-group">
+                                <span className="menu-label">流式生成</span>
+                                <span className="menu-desc">AI 回复边生成边显示，长文不用干等；关闭则恢复整段返回</span>
+                            </div>
+                            <div className="menu-right">
+                                <Toggle
+                                    checked={streamChatGeneration}
+                                    onChange={c => {
+                                        setStreamChatGeneration(c);
+                                        saveChatAppSettings({ ...loadChatAppSettings(), streamChatGeneration: c });
                                     }}
                                 />
                             </div>
