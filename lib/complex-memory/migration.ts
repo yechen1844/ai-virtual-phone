@@ -188,7 +188,8 @@ export function resetMigration(characterId: string): void {
   saveCharacterState(rest);
 }
 
-/** 执行一步迁移：events 单窗 → 单日日记 → 单周期提炼 → core → legacy → done。 */
+/** 执行一步迁移：事件窗 / 单日日记（含周期链与核心链）逐步推进。失败自动重试 N 次（指数退避），
+ *  全部失败才置 paused 并记录错误，用户可随时「继续」从断点续跑（重试期间状态保持 running，不落盘失败）。 */
 export async function runMigrationStep(
   characterId: string,
   characterName: string,
@@ -200,17 +201,30 @@ export async function runMigrationStep(
     return { success: false, error: state.status === "paused" ? "迁移已暂停" : "迁移已结束" };
   }
 
+  const maxRetries = Math.max(1, loadComplexMemoryConfig().retryCount || 3);
+  let lastError: unknown;
+
   running = true;
   try {
-    const next = await executeStep(characterId, characterName, state);
-    const cs = loadCharacterState(characterId);
-    saveCharacterState({ ...cs, migration: next });
-    return { success: true, done: next.status === "done", state: next };
-  } catch (err) {
+    for (let attempt = 0; attempt < maxRetries; attempt += 1) {
+      try {
+        const next = await executeStep(characterId, characterName, state);
+        const cs = loadCharacterState(characterId);
+        saveCharacterState({ ...cs, migration: next });
+        return { success: true, done: next.status === "done", state: next };
+      } catch (err) {
+        lastError = err;
+        if (attempt < maxRetries - 1) {
+          // 指数退避：800ms → 1600ms → 3200ms …（重试使用同一状态快照，幂等续试）
+          await sleep(800 * Math.pow(2, attempt));
+        }
+      }
+    }
+    // 重试耗尽：置 paused 并记录错误，驱动循环退出，可随时「继续」从断点续跑
     const failed: MigrationState = {
       ...state,
       status: "paused",
-      error: err instanceof Error ? err.message : String(err),
+      error: lastError instanceof Error ? lastError.message : String(lastError),
       updatedAt: new Date().toISOString(),
     };
     const cs = loadCharacterState(characterId);
