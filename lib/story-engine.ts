@@ -22,6 +22,7 @@ import { STORY_PARSER_VERSION } from "./story-parser";
 import { loadStoryMessages, replaceStoryMessages, type StoryMessage } from "./story-storage";
 import type { ChatMessage } from "./chat-storage";
 import { MacroEngine } from "./macro-engine";
+import { recordCharacterActivity } from "./complex-memory/guard";
 
 const DEFAULT_STORY_FOLD_TAGS = "think,thinking,summary";
 const DEFAULT_STORY_CONTEXT_EXCLUDED_TAGS = "think,thinking";
@@ -161,6 +162,7 @@ export async function generateStoryCompletion(
     macroEngine,
     activeTags: ["story"],
   });
+  recordCharacterActivity(characterId, character.name, 1);
   return {
     rawText: parsed.rawText,
     renderedText: parsed.renderedText,

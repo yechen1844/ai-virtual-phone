@@ -5677,6 +5677,104 @@
   line-height: 1.6;
 }
 
+.cm-version-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.cm-cat-chip {
+  padding: 5px 10px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--c-text) 14%, transparent);
+  background: transparent;
+  color: var(--c-text);
+  font-size: calc(11.5px*var(--app-text-scale,1));
+  cursor: pointer;
+  transition: all .15s ease;
+}
+
+.cm-cat-chip.is-active {
+  border-color: #2F9E97;
+  background: color-mix(in srgb, #2F9E97 14%, transparent);
+  color: #2F9E97;
+  font-weight: 700;
+}
+
+.cm-entry-group {
+  margin-top: 10px;
+}
+
+.cm-entry-group-title {
+  font-size: calc(10.5px*var(--app-text-scale,1));
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  color: #2F9E97;
+  margin-bottom: 6px;
+}
+
+.cm-entry-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--c-text) 3.5%, transparent);
+  margin-bottom: 6px;
+}
+
+.cm-entry-text {
+  flex: 1;
+  font-size: calc(12.5px*var(--app-text-scale,1));
+  line-height: 1.6;
+  color: var(--c-text);
+  word-break: break-word;
+}
+
+.cm-entry-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.ui-btn-ghost.is-danger {
+  color: var(--c-danger, #d64545);
+}
+
+.cm-compare-panel {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-left: 2px solid color-mix(in srgb, #2F9E97 40%, transparent);
+  background: color-mix(in srgb, var(--c-text) 3%, transparent);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.cm-compare-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cm-compare-row.is-changed .cm-compare-text {
+  opacity: 0.6;
+}
+
+.cm-compare-row.is-kept .cm-compare-text {
+  color: #2F9E97;
+}
+
+.cm-compare-text {
+  font-size: calc(12px*var(--app-text-scale,1));
+  line-height: 1.5;
+  word-break: break-word;
+}
+
 .cm-filter-select {
   min-width: 140px;
 }
@@ -5724,6 +5822,12 @@
   font-weight: 800;
   color: #2F9E97;
   white-space: nowrap;
+}
+
+.cm-special-badge {
+  margin-left: 4px;
+  color: #F59E0B;
+  font-size: calc(11px*var(--app-text-scale,1));
 }
 
 .cm-daily-periods {
@@ -6093,4 +6197,321 @@
   color: var(--c-text);
   opacity: 0.6;
   letter-spacing: 0.06em;
+}
+
+/* ═══════════ M6 界面三件套 + 清洗 + 周期手动化 ═══════════ */
+
+/* 视图切换（列表/日历、列表/时间轴） */
+.cm-view-toggle {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--c-panel-border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--c-panel);
+}
+
+.cm-view-btn {
+  border: none;
+  background: transparent;
+  color: var(--c-text);
+  opacity: 0.6;
+  font-size: calc(11px*var(--app-text-scale,1));
+  font-weight: 800;
+  padding: 5px 12px;
+  cursor: pointer;
+  letter-spacing: 0.03em;
+  transition: background 0.15s, color 0.15s, opacity 0.15s;
+}
+
+.cm-view-btn:hover {
+  opacity: 0.9;
+}
+
+.cm-view-btn.is-active {
+  background: #2F9E97;
+  color: #fff;
+  opacity: 1;
+}
+
+/* 日历日记 */
+.cm-calendar {
+  gap: 10px;
+}
+
+.cm-calendar-head {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.cm-cal-nav {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  border: 1px solid var(--c-panel-border);
+  background: transparent;
+  color: var(--c-text);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.cm-cal-nav:hover {
+  background: color-mix(in srgb, var(--c-text) 8%, transparent);
+}
+
+.cm-cal-title {
+  font-size: calc(13px*var(--app-text-scale,1));
+  font-weight: 800;
+  color: var(--c-text-title);
+  min-width: 110px;
+  text-align: center;
+}
+
+.cm-calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+
+.cm-cal-weekday {
+  text-align: center;
+  font-size: calc(10px*var(--app-text-scale,1));
+  font-weight: 800;
+  color: var(--c-text);
+  opacity: 0.45;
+  padding: 4px 0;
+  letter-spacing: 0.05em;
+}
+
+.cm-cal-cell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: color-mix(in srgb, var(--c-text) 3%, transparent);
+  color: var(--c-text);
+  cursor: default;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.cm-cal-cell.is-outside {
+  opacity: 0.28;
+}
+
+.cm-cal-cell.has-daily {
+  background: color-mix(in srgb, #2F9E97 12%, transparent);
+  cursor: pointer;
+}
+
+.cm-cal-cell.has-daily:hover {
+  background: color-mix(in srgb, #2F9E97 20%, transparent);
+}
+
+.cm-cal-cell.is-special.has-daily {
+  background: color-mix(in srgb, #F59E0B 16%, transparent);
+}
+
+.cm-cal-cell.is-selected {
+  border-color: #2F9E97;
+  box-shadow: 0 0 0 1px #2F9E97 inset;
+}
+
+.cm-cal-day {
+  font-size: calc(11px*var(--app-text-scale,1));
+  font-weight: 700;
+}
+
+.cm-cal-dot {
+  position: absolute;
+  bottom: 4px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #2F9E97;
+}
+
+.cm-cal-star {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  color: #F59E0B;
+  font-size: calc(10px*var(--app-text-scale,1));
+}
+
+.cm-cal-detail {
+  border-top: 1px dashed color-mix(in srgb, var(--c-text) 15%, transparent);
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 周期时间轴 */
+.cm-timeline {
+  gap: 10px;
+}
+
+.cm-timeline-track {
+  position: relative;
+  height: 52px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--c-text) 4%, transparent);
+  overflow: hidden;
+}
+
+.cm-tl-bar {
+  position: absolute;
+  top: 10px;
+  height: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: filter 0.15s, transform 0.15s;
+}
+
+.cm-tl-bar:hover {
+  filter: brightness(1.12);
+  transform: translateY(-1px);
+}
+
+.cm-tl-bar.is-active {
+  background: linear-gradient(90deg, #2F9E97, #40b8a9);
+}
+
+.cm-tl-bar.is-stabilized {
+  background: linear-gradient(90deg, #5B8DEF, #7aa4f4);
+}
+
+.cm-tl-bar.is-archived {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--c-text) 38%, transparent), color-mix(in srgb, var(--c-text) 30%, transparent));
+}
+
+.cm-tl-bar-label {
+  color: #fff;
+  font-size: calc(10px*var(--app-text-scale,1));
+  font-weight: 800;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+
+.cm-timeline-legend {
+  margin: 0;
+  font-size: calc(10.5px*var(--app-text-scale,1));
+}
+
+/* 周期手动化 */
+.cm-create-period {
+  gap: 10px;
+}
+
+.cm-create-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cm-create-row .cm-config-input {
+  flex: 1;
+  min-width: 120px;
+}
+
+.cm-period-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cm-period-edit-row .cm-config-input {
+  flex: 1;
+  min-width: 160px;
+}
+
+.cm-period-edit-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 记忆清洗 */
+.cm-cleanup-hint {
+  font-size: calc(11px*var(--app-text-scale,1));
+  line-height: 1.7;
+}
+
+.cm-cleanup-list,
+.cm-cleanup-snapshots {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cm-cleanup-cluster,
+.cm-cleanup-snapshot {
+  gap: 10px;
+}
+
+.cm-cleanup-members {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cm-cleanup-member {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--c-text) 4%, transparent);
+}
+
+.cm-cleanup-text {
+  flex: 1;
+  font-size: calc(11px*var(--app-text-scale,1));
+  color: var(--c-text);
+  opacity: 0.8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cm-cleanup-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cm-cleanup-target .cm-filter-select {
+  max-width: 180px;
+}
+
+/* 可交互情绪坐标 */
+.cm-scatter-point {
+  cursor: pointer;
+  transition: r 0.15s, fill 0.15s;
+}
+
+.cm-scatter-point:hover {
+  fill: #F59E0B !important;
+  r: 7;
+}
+
+.cm-scatter-detail {
+  margin-top: 10px;
+  gap: 8px;
 }

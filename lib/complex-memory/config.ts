@@ -2,6 +2,7 @@
 // 复杂记忆系统 · 配置读写（KV）、角色级开关状态、全部默认值。
 
 import { kvGet, kvSet, kvRemove, registerKvMigration, registerDynamicPrefix } from "../kv-db";
+import { ensureWatermarkAnchored } from "./watermark";
 import { loadCharacters } from "../character-storage";
 import type {
   CharacterRuntimeState,
@@ -25,14 +26,21 @@ export const DEFAULT_COMPLEX_MEMORY_CONFIG: ComplexMemoryConfig = {
   ringBufferMaxEntries: 150,
   eventTriggerCount: 100,
   eventTargetLength: 250,
+  eventWindowMaxEntries: 200,
   dailyTargetLength: 800,
   dailyQuietMinutes: 30,
+  rollingAppendMax: 400,
   coreMinLength: 700,
   coreMaxLength: 1000,
-  coreUpdateDiaryCount: 3,
+  coreDailyInterval: 7,
+  maxParallel: 2,
+  retryCount: 3,
   voltageDecayFactor: 0.98,
   voltageRecallBoost: 0.1,
   voltageEraseThreshold: 0.1,
+  eventDecayFactor: 0.94,
+  periodDecayFactor: 0.995,
+  specialDateDecayFactor: 0.995,
   fixedShortTermEntries: 120,
   fixedRecentEventCount: 2,
   recallTopK: 10,
@@ -41,6 +49,11 @@ export const DEFAULT_COMPLEX_MEMORY_CONFIG: ComplexMemoryConfig = {
   vectorRecallEnabled: true,
   rerankEnabled: true,
   silkAssociationEnabled: true,
+  recallTimeWindowFullDays: 30,
+  recallTimeWindowFloorDays: 180,
+  recallTimeWindowFloor: 0.2,
+  emotionRecallLambda: 0.15,
+  fixedSpecialDateCount: 1,
   mirrorToFloatEnabled: true,
   sanitizerBanList: [
     "爹味",
@@ -99,14 +112,21 @@ function normalizeConfig(parsed: Partial<ComplexMemoryConfig>): ComplexMemoryCon
     ringBufferMaxEntries: num(parsed.ringBufferMaxEntries, d.ringBufferMaxEntries, 50, 1000),
     eventTriggerCount: num(parsed.eventTriggerCount, d.eventTriggerCount, 10, 10000),
     eventTargetLength: num(parsed.eventTargetLength, d.eventTargetLength, 50, 2000),
+    eventWindowMaxEntries: num(parsed.eventWindowMaxEntries, d.eventWindowMaxEntries, 20, 5000),
     dailyTargetLength: num(parsed.dailyTargetLength, d.dailyTargetLength, 100, 5000),
     dailyQuietMinutes: num(parsed.dailyQuietMinutes, d.dailyQuietMinutes, 1, 1440),
+    rollingAppendMax: num(parsed.rollingAppendMax, d.rollingAppendMax, 20, 2000),
     coreMinLength: num(parsed.coreMinLength, d.coreMinLength, 100, 5000),
     coreMaxLength: num(parsed.coreMaxLength, d.coreMaxLength, 200, 10000),
-    coreUpdateDiaryCount: num(parsed.coreUpdateDiaryCount, d.coreUpdateDiaryCount, 1, 100),
+    coreDailyInterval: num(parsed.coreDailyInterval, d.coreDailyInterval, 1, 100),
+    maxParallel: num(parsed.maxParallel, d.maxParallel, 1, 10),
+    retryCount: num(parsed.retryCount, d.retryCount, 0, 10),
     voltageDecayFactor: num(parsed.voltageDecayFactor, d.voltageDecayFactor, 0.5, 1),
     voltageRecallBoost: num(parsed.voltageRecallBoost, d.voltageRecallBoost, 0, 1),
     voltageEraseThreshold: num(parsed.voltageEraseThreshold, d.voltageEraseThreshold, 0.001, 1),
+    eventDecayFactor: num(parsed.eventDecayFactor, d.eventDecayFactor, 0.5, 1),
+    periodDecayFactor: num(parsed.periodDecayFactor, d.periodDecayFactor, 0.9, 1),
+    specialDateDecayFactor: num(parsed.specialDateDecayFactor, d.specialDateDecayFactor, 0.9, 1),
     fixedShortTermEntries: num(parsed.fixedShortTermEntries, d.fixedShortTermEntries, 10, 1000),
     fixedRecentEventCount: num(parsed.fixedRecentEventCount, d.fixedRecentEventCount, 0, 50),
     recallTopK: num(parsed.recallTopK, d.recallTopK, 1, 100),
@@ -115,6 +135,11 @@ function normalizeConfig(parsed: Partial<ComplexMemoryConfig>): ComplexMemoryCon
     vectorRecallEnabled: bool(parsed.vectorRecallEnabled, d.vectorRecallEnabled),
     rerankEnabled: bool(parsed.rerankEnabled, d.rerankEnabled),
     silkAssociationEnabled: bool(parsed.silkAssociationEnabled, d.silkAssociationEnabled),
+    recallTimeWindowFullDays: num(parsed.recallTimeWindowFullDays, d.recallTimeWindowFullDays, 1, 3650),
+    recallTimeWindowFloorDays: num(parsed.recallTimeWindowFloorDays, d.recallTimeWindowFloorDays, 1, 36500),
+    recallTimeWindowFloor: num(parsed.recallTimeWindowFloor, d.recallTimeWindowFloor, 0.01, 1),
+    emotionRecallLambda: num(parsed.emotionRecallLambda, d.emotionRecallLambda, 0, 1),
+    fixedSpecialDateCount: num(parsed.fixedSpecialDateCount, d.fixedSpecialDateCount, 0, 30),
     mirrorToFloatEnabled: bool(parsed.mirrorToFloatEnabled, d.mirrorToFloatEnabled),
     sanitizerBanList: Array.isArray(parsed.sanitizerBanList)
       ? parsed.sanitizerBanList.filter((s): s is string => typeof s === "string" && !!s.trim())
@@ -165,6 +190,8 @@ export function setComplexMemoryEnabled(characterId: string, enabled: boolean): 
   const config = loadComplexMemoryConfig();
   if (enabled) {
     config.enabledCharacters[characterId] = true;
+    // 水位线安全锚定：有历史时间线时锚定到当前时刻，杜绝首次回读吞历史
+    ensureWatermarkAnchored(characterId);
     // 首次启用：异步 bootstrap 核心记忆（幂等，已存在则跳过）
     void import("./core-builder").then((m) => {
       const name = loadCharacters().find((c) => c.id === characterId)?.name ?? "角色";

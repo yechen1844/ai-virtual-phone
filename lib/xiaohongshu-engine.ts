@@ -48,6 +48,7 @@ import {
   type XiaohongshuSettings,
 } from "./xiaohongshu-types";
 import { resolveCharacterXiaohongshuDisplayName } from "./xiaohongshu-character-profile";
+import { recordCharacterActivity } from "./complex-memory/guard";
 
 type ParsedBlock = {
   title: string;
@@ -1122,6 +1123,7 @@ export async function generateXiaohongshuCharacterActivity(
     { characterName: `小红书:${resolved.character.name}`, userName: resolved.input.userIdentity?.name },
     { appId: "xiaohongshu", appTags: ["xiaohongshu", "activity"] },
   );
+  recordCharacterActivity(characterId, resolved.character.name, 1);
   return parseWithDebug(raw, output => parseXiaohongshuCharacterActivity(output, notes.map(note => note.id)), "无法解析小红书角色互动内容");
 }
 

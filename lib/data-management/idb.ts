@@ -64,7 +64,12 @@ const COMPLEX_MEMORY_INDEX_SPECS: Array<{ store: string; indexes: StoreIndexBack
     store: "core_entries",
     indexes: [
       { name: "by_character", keyPath: "characterId", unique: false, multiEntry: false },
-      { name: "by_character_version", keyPath: ["characterId", "version"], unique: false, multiEntry: false },
+    ],
+  },
+  {
+    store: "core_snapshots",
+    indexes: [
+      { name: "by_character", keyPath: "characterId", unique: false, multiEntry: false },
     ],
   },
 ];

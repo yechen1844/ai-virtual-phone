@@ -1,4 +1,5 @@
 import { loadCharacters } from "./character-storage";
+import { recordCharacterActivity } from "./complex-memory/guard";
 import { normalizeBilingualTextInput, splitBilingualText } from "./bilingual-text";
 import { previewMessagesForApi, sendLLMRequest } from "./chat-engine";
 import { getChatMessagePreview, loadChatMessages, loadChatSessions, type ChatMessage, type ChatSession } from "./chat-storage";
@@ -5781,6 +5782,7 @@ export async function generateCheckPhonePhone(
         debugNormalizeError: parsed ? diagnosePhoneNormalizeFailure(parsed) : undefined,
       };
     }
+    recordCharacterActivity(characterId, loadCharacters().find((item) => item.id === characterId)?.name ?? "手机角色", 1);
     return {
       payload: normalized,
       summary: formatSnapshotSummary(normalized),

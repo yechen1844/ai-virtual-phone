@@ -9,7 +9,7 @@ import {
 } from "@/lib/complex-memory/config";
 import {
   countByCharacter,
-  getCurrentCore,
+  getCurrentCoreView,
   getDaily,
 } from "@/lib/complex-memory/storage";
 
@@ -33,12 +33,12 @@ export function ComplexMemoryToggle({ characterId, characterName }: ComplexMemor
     (async () => {
       const [counts, core, yesterday] = await Promise.all([
         countByCharacter(characterId),
-        getCurrentCore(characterId),
+        getCurrentCoreView(characterId),
         getDaily(characterId, todayDateString()),
       ]);
       if (cancelled) return;
       setStatus({
-        coreVersion: core?.version ?? null,
+        coreVersion: core.snapshot?.version ?? null,
         lastDailyDate: yesterday?.date ?? null,
         eventCount: counts.events,
       });

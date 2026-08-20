@@ -11,6 +11,7 @@ import {
   Brain,
   CalendarRange,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Download,
   Edit3,
@@ -18,7 +19,6 @@ import {
   Layers,
   ListTree,
   Loader2,
-  Lock,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -26,6 +26,7 @@ import {
   Settings2,
   Sparkles,
   Trash2,
+  Upload,
   Zap,
 } from "lucide-react";
 import { Input, Select, Textarea, Toggle } from "@/components/ui/form";
@@ -50,8 +51,10 @@ import {
   loadEvents,
   loadDailies,
   loadPeriods,
-  loadCoreVersions,
-  getCurrentCore,
+  getCurrentCoreView,
+  loadCoreSnapshots,
+  loadCoreEntries,
+  getCoreSnapshotByVersion,
   deleteEvent,
   deleteDaily,
   deletePeriod,
@@ -59,15 +62,21 @@ import {
   countByCharacter,
   saveDaily,
   saveEvent,
+  savePeriod,
+  type CurrentCoreView,
 } from "@/lib/complex-memory/storage";
 import {
-  manualUpdateCoreMemory,
   bootstrapCoreMemory,
   rebuildCoreMemory,
-  sanitizeCoreContent,
+  regenerateCoreWithFeedback,
+  rollbackCoreVersion,
+  addCoreEntry,
+  editCoreEntry,
+  deleteCoreEntry,
+  sanitizeCoreEntryText,
 } from "@/lib/complex-memory/core-builder";
 import { generateDaily } from "@/lib/complex-memory/daily-generator";
-import { distillPeriod } from "@/lib/complex-memory/period-distiller";
+import { distillPeriod, createPeriodManual } from "@/lib/complex-memory/period-distiller";
 import { runEventGeneration } from "@/lib/complex-memory/event-generator";
 import {
   getMigrationState,
@@ -77,10 +86,24 @@ import {
   resetMigration,
   runMigrationStep,
   estimateMigration,
+  retryFailedDate,
+  exportToFloat,
 } from "@/lib/complex-memory/migration";
+import {
+  scanCleanupClusters,
+  mergeCluster,
+  mergeClusterIntoPeriod,
+  createPeriodFromCluster,
+  rollbackCleanup,
+  listCleanupSnapshots,
+  type CleanupCluster,
+  type CleanupSnapshot,
+} from "@/lib/complex-memory/cleanup";
 import { boostedVoltage, effectiveVoltage } from "@/lib/complex-memory/voltage";
 import type {
-  ComplexCore,
+  ComplexCoreEntry,
+  ComplexCoreSnapshot,
+  CoreCategory,
   ComplexDaily,
   ComplexEvent,
   ComplexPeriod,
@@ -91,7 +114,7 @@ import type {
 
 const ACCENT = "#2F9E97";
 
-type TabId = "core" | "daily" | "period" | "event" | "emotion" | "migration" | "config";
+type TabId = "core" | "daily" | "period" | "event" | "emotion" | "cleanup" | "migration" | "config";
 
 const TABS: Array<{ id: TabId; label: string; icon: typeof Brain }> = [
   { id: "core", label: "核心记忆", icon: Brain },
@@ -99,6 +122,7 @@ const TABS: Array<{ id: TabId; label: string; icon: typeof Brain }> = [
   { id: "period", label: "周期", icon: CalendarRange },
   { id: "event", label: "事件", icon: ListTree },
   { id: "emotion", label: "情绪坐标", icon: Activity },
+  { id: "cleanup", label: "记忆清洗", icon: Sparkles },
   { id: "migration", label: "迁移", icon: Download },
   { id: "config", label: "配置", icon: Settings2 },
 ];
@@ -163,6 +187,16 @@ export function ComplexMemoryExplorer() {
 
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
 
+  // 调度器失败上报：页内展示（全局弹窗由 desktop-shell 负责）
+  useEffect(() => {
+    const onSchedulerError = (e: Event) => {
+      const text = (e as CustomEvent).detail;
+      if (text) notify({ kind: "err", text });
+    };
+    window.addEventListener("complex-memory-scheduler-error", onSchedulerError);
+    return () => window.removeEventListener("complex-memory-scheduler-error", onSchedulerError);
+  }, [notify]);
+
   const selected = characters.find((c) => c.id === selectedId) ?? null;
 
   return (
@@ -208,6 +242,7 @@ export function ComplexMemoryExplorer() {
           {tab === "period" && <PeriodTab characterId={selected.id} characterName={selected.name} notify={notify} refresh={refresh} />}
           {tab === "event" && <EventTab characterId={selected.id} characterName={selected.name} notify={notify} refresh={refresh} />}
           {tab === "emotion" && <EmotionTab characterId={selected.id} />}
+          {tab === "cleanup" && <CleanupTab characterId={selected.id} characterName={selected.name} notify={notify} refresh={refresh} />}
           {tab === "migration" && <MigrationTab characterId={selected.id} characterName={selected.name} notify={notify} />}
           {tab === "config" && <ConfigTab characterId={selected.id} notify={notify} />}
         </div>
@@ -216,157 +251,292 @@ export function ComplexMemoryExplorer() {
   );
 }
 
-// ── 核心记忆页 ──
+// ── 核心记忆页（条目式 + 版本时间线） ──
+const CORE_CATEGORY_ORDER: CoreCategory[] = ["identity", "bond", "principle", "milestone"];
+const CORE_CATEGORY_LABEL: Record<CoreCategory, string> = {
+  identity: "身份认知",
+  bond: "关系纽带",
+  principle: "原则承诺",
+  milestone: "里程碑事件",
+};
+const CORE_TRIGGER_LABEL: Record<string, string> = {
+  bootstrap: "初始化",
+  scheduled: "定期重构",
+  period_driven: "周期驱动",
+  manual: "手动编辑",
+};
+
+type EntryEditor = { mode: "add" } | { mode: "edit"; entry: ComplexCoreEntry };
+
 function CoreTab({ characterId, characterName, notify, refresh }: {
   characterId: string;
   characterName: string;
   notify: (n: Notice) => void;
   refresh: () => void;
 }) {
-  const [core, setCore] = useState<ComplexCore | null>(null);
-  const [versions, setVersions] = useState<ComplexCore[]>([]);
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState("");
+  const [view, setView] = useState<CurrentCoreView | null>(null);
+  const [snapshots, setSnapshots] = useState<ComplexCoreSnapshot[]>([]);
   const [busy, setBusy] = useState(false);
-  const [sanitizeReport, setSanitizeReport] = useState<{ ok: boolean; banned: string[] } | null>(null);
+  const [feedback, setFeedback] = useState("");
+  const [showFeedback, setShowFeedback] = useState(false);
+  const [editor, setEditor] = useState<EntryEditor | null>(null);
+  const [entryDraft, setEntryDraft] = useState("");
+  const [entryCategory, setEntryCategory] = useState<CoreCategory>("principle");
+  const [compareVersion, setCompareVersion] = useState<number | null>(null);
+  const [compareEntries, setCompareEntries] = useState<ComplexCoreEntry[]>([]);
 
   const load = useCallback(async () => {
-    const [current, all] = await Promise.all([getCurrentCore(characterId), loadCoreVersions(characterId)]);
-    setCore(current);
-    setVersions(all);
+    const [v, snaps] = await Promise.all([getCurrentCoreView(characterId), loadCoreSnapshots(characterId)]);
+    setView(v);
+    setSnapshots(snaps);
   }, [characterId]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const handleSave = async () => {
+  const openCompare = useCallback(async (version: number) => {
+    setCompareVersion(version);
+    const snap = await getCoreSnapshotByVersion(characterId, version);
+    if (!snap) { setCompareEntries([]); return; }
+    const all = await loadCoreEntries(characterId);
+    const byId = new Map(all.map((e) => [e.id, e]));
+    setCompareEntries(snap.entryIds.map((id) => byId.get(id)).filter((e): e is ComplexCoreEntry => !!e));
+  }, [characterId]);
+
+  const run = async (
+    task: () => Promise<{ success: boolean; error?: string; version?: number }>,
+    okText: string,
+  ) => {
     setBusy(true);
-    const res = await manualUpdateCoreMemory(characterId, characterName, draft);
+    const res = await task();
     setBusy(false);
     if (res.success) {
-      notify({ kind: "ok", text: `核心记忆已保存为 v${res.version}` });
-      setEditing(false);
-      setDraft("");
+      notify({ kind: "ok", text: `${okText}${res.version ? ` · v${res.version}` : ""}` });
+      setEditor(null);
+      setEntryDraft("");
       await load();
       refresh();
     } else {
-      notify({ kind: "err", text: res.error ?? "保存失败" });
+      notify({ kind: "err", text: res.error ?? "操作失败" });
     }
   };
 
-  const handleRebuild = async () => {
-    setBusy(true);
-    const res = await rebuildCoreMemory(characterId, characterName);
-    setBusy(false);
-    if (res.success) {
-      notify({ kind: "ok", text: "核心记忆定期重构完成" });
-      await load();
-      refresh();
+  const handleBootstrap = () => {
+    void run(() => bootstrapCoreMemory(characterId, characterName), "核心记忆初始化完成");
+  };
+
+  const handleRebuild = () => {
+    void run(() => rebuildCoreMemory(characterId, characterName), "核心记忆定期重构完成");
+  };
+
+  const handleRegenerate = () => {
+    if (!feedback.trim()) { notify({ kind: "err", text: "请先输入改进意见" }); return; }
+    const text = feedback;
+    setFeedback("");
+    setShowFeedback(false);
+    void run(() => regenerateCoreWithFeedback(characterId, characterName, text), "核心记忆按反馈重生成成功");
+  };
+
+  const handleRollback = (snap: ComplexCoreSnapshot) => {
+    void run(() => rollbackCoreVersion(characterId, characterName, snap.version), `已回退到 v${snap.version}`);
+  };
+
+  const startAdd = () => { setEditor({ mode: "add" }); setEntryCategory("principle"); setEntryDraft(""); };
+  const startEdit = (entry: ComplexCoreEntry) => { setEditor({ mode: "edit", entry }); setEntryCategory(entry.category); setEntryDraft(entry.text); };
+
+  const handleSaveEntry = () => {
+    const text = entryDraft.trim();
+    if (!text) { notify({ kind: "err", text: "条目内容为空" }); return; }
+    if (!sanitizeCoreEntryText(text, loadComplexMemoryConfig().sanitizerBanList)) {
+      notify({ kind: "err", text: "条目含禁用词" });
+      return;
+    }
+    if (editor?.mode === "edit") {
+      void run(() => editCoreEntry(characterId, characterName, editor.entry.id, entryCategory, text), "条目已更新");
     } else {
-      notify({ kind: "err", text: res.error ?? "重构失败" });
+      void run(() => addCoreEntry(characterId, characterName, entryCategory, text), "条目已新增");
     }
   };
 
-  const handleCheckSanitize = () => {
-    setSanitizeReport(sanitizeCoreContent(draft, loadComplexMemoryConfig().sanitizerBanList));
+  const handleDeleteEntry = (entry: ComplexCoreEntry) => {
+    void run(() => deleteCoreEntry(characterId, characterName, entry.id), "条目已删除");
   };
 
-  const triggerLabel = core?.trigger === "bootstrap" ? "初始化"
-    : core?.trigger === "scheduled" ? "定期重构"
-    : core?.trigger === "period_driven" ? "周期驱动"
-    : core?.trigger === "manual" ? "手动编辑"
-    : "—";
+  const triggers = view?.snapshot ? (view.snapshot.trigger ?? "bootstrap") : "bootstrap";
+  const grouped = useMemo(() => {
+    const map = new Map<CoreCategory, ComplexCoreEntry[]>();
+    for (const id of CORE_CATEGORY_ORDER) map.set(id, []);
+    for (const e of view?.activeEntries ?? []) map.get(e.category)?.push(e);
+    return map;
+  }, [view]);
+
+  const currentEntryIds = useMemo(() => new Set((view?.activeEntries ?? []).map((e) => e.id)), [view]);
 
   return (
     <div className="cm-section">
       <div className="cm-section-head">
-        <span className="cm-section-title">当前版本</span>
+        <span className="cm-section-title">
+          当前版本
+          <span className="cm-meta-text" style={{ marginLeft: 8 }}>
+            {view?.snapshot ? `v${view.snapshot.version}` : "—"}
+          </span>
+        </span>
         <div className="cm-actions">
           <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={handleRebuild} disabled={busy}>
             {busy ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} 定期重构
           </button>
-          <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={() => { setEditing(true); setDraft(core?.content ?? ""); }}>
-            <Edit3 size={14} /> 手动编辑
+          <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => setShowFeedback((s) => !s)}>
+            <Sparkles size={14} /> 按反馈重生成
           </button>
+          {view?.snapshot && (
+            <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={startAdd} disabled={busy}>
+              <Plus size={14} /> 新增条目
+            </button>
+          )}
         </div>
       </div>
 
-      {editing ? (
+      {/* 反馈重生成输入 */}
+      {showFeedback && (
         <div className="cm-card">
           <Textarea
             className="cm-core-editor"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            rows={14}
-            placeholder="P0-P3 五模块正文…"
+            rows={3}
+            value={feedback}
+            onChange={(e) => setFeedback(e.target.value)}
+            placeholder="例如：把「恋人」关系的约定更明确一些，去掉泛泛的句子…"
           />
           <div className="cm-card-actions">
-            <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={handleCheckSanitize}>
-              <ShieldIcon /> 消毒检查
-            </button>
-            {sanitizeReport && (
-              <span className={`cm-sanitize-report ${sanitizeReport.ok ? "is-ok" : "is-bad"}`}>
-                {sanitizeReport.ok ? "通过，无禁用词" : `命中禁用词：${sanitizeReport.banned.join("、")}`}
-              </span>
-            )}
+            <span className="cm-meta-text">将作为当前版本条目的改进意见生成一个新版本</span>
             <span className="cm-spacer" />
-            <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => setEditing(false)}>取消</button>
-            <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={handleSave} disabled={busy}>
-              {busy ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 保存为新版本
+            <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => setShowFeedback(false)}>取消</button>
+            <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={handleRegenerate} disabled={busy || !feedback.trim()}>
+              <Sparkles size={14} /> 生成新版本
             </button>
           </div>
         </div>
-      ) : core ? (
+      )}
+
+      {/* 条目编辑表单 */}
+      {editor && (
         <div className="cm-card">
           <div className="cm-meta-row">
-            <span className="cm-badge">v{core.version}</span>
-            <span className="cm-badge cm-badge-soft">触发：{triggerLabel}</span>
-            <span className="cm-meta-text">更新于 {fmtTime(core.updatedAt)}</span>
+            {CORE_CATEGORY_ORDER.map((c) => (
+              <button
+                key={c}
+                type="button"
+                className={`cm-cat-chip ${entryCategory === c ? "is-active" : ""}`}
+                onClick={() => setEntryCategory(c)}
+              >
+                {CORE_CATEGORY_LABEL[c]}
+              </button>
+            ))}
           </div>
-          <div className="cm-core-content">{core.content}</div>
+          <Textarea
+            className="cm-core-editor"
+            rows={3}
+            value={entryDraft}
+            onChange={(e) => setEntryDraft(e.target.value)}
+            placeholder="一句话事实（建议 30–80 字），例如：我们约定每年一起看一场电影。"
+          />
+          <div className="cm-card-actions">
+            <span className="cm-spacer" />
+            <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => setEditor(null)}>取消</button>
+            <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={handleSaveEntry} disabled={busy || !entryDraft.trim()}>
+              {busy ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 保存
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 当前条目展示 */}
+      {view?.snapshot ? (
+        <div className="cm-card">
+          <div className="cm-meta-row">
+            <span className="cm-badge">v{view.snapshot.version}</span>
+            <span className="cm-badge cm-badge-soft">触发：{CORE_TRIGGER_LABEL[triggers] ?? "—"}</span>
+            <span className="cm-meta-text">更新于 {fmtTime(view.snapshot.createdAt)}</span>
+            {view.snapshot.note && <span className="cm-meta-text">{view.snapshot.note}</span>}
+          </div>
+          {CORE_CATEGORY_ORDER.map((cat) => {
+            const list = grouped.get(cat) ?? [];
+            if (list.length === 0) return null;
+            return (
+              <div key={cat} className="cm-entry-group">
+                <div className="cm-entry-group-title">{CORE_CATEGORY_LABEL[cat]}</div>
+                {list.map((e) => (
+                  <div key={e.id} className="cm-entry-item">
+                    <span className="cm-entry-text">{e.text}</span>
+                    <span className="cm-entry-actions">
+                      <button type="button" className="ui-btn ui-btn-ghost ts-12" onClick={() => startEdit(e)} disabled={busy}>
+                        <Edit3 size={13} /> 编辑
+                      </button>
+                      <button type="button" className="ui-btn ui-btn-ghost ts-12 is-danger" onClick={() => handleDeleteEntry(e)} disabled={busy}>
+                        <Trash2 size={13} /> 删除
+                      </button>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+          {view.activeEntries.length === 0 && <p className="cm-muted">当前版本没有任何条目，可新增或回退到历史版本。</p>}
         </div>
       ) : (
         <div className="cm-card cm-empty-inline">
           <p>该角色尚无核心记忆。</p>
-          <button
-            type="button"
-            className="ui-btn ui-btn-primary ts-12"
-            onClick={async () => {
-              setBusy(true);
-              const res = await bootstrapCoreMemory(characterId, characterName);
-              setBusy(false);
-              if (res.success) {
-                notify({ kind: "ok", text: "核心记忆初始化完成" });
-                await load();
-                refresh();
-              } else {
-                notify({ kind: "err", text: res.error ?? "初始化失败" });
-              }
-            }}
-            disabled={busy}
-          >
+          <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={handleBootstrap} disabled={busy}>
             {busy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} 立即初始化
           </button>
         </div>
       )}
 
+      {/* 版本时间线 + 对比 */}
       <div className="cm-section-head" style={{ marginTop: 18 }}>
-        <span className="cm-section-title">版本链</span>
+        <span className="cm-section-title">版本时间线 · 共 {snapshots.length} 版</span>
       </div>
       <div className="cm-card">
-        {versions.length === 0 ? (
+        {snapshots.length === 0 ? (
           <p className="cm-muted">暂无历史版本</p>
         ) : (
           <div className="cm-version-list">
-            {[...versions].reverse().map((v) => (
-              <div key={v.id} className={`cm-version-item ${v.isCurrent ? "is-current" : ""}`}>
+            {[...snapshots].reverse().map((s) => (
+              <div key={s.id} className={`cm-version-item ${s.isCurrent ? "is-current" : ""}`}>
                 <div className="cm-version-main">
-                  <span className="cm-badge">v{v.version}</span>
-                  <span className="cm-meta-text">{v.isCurrent ? "当前生效" : "历史版本"}</span>
-                  <span className="cm-meta-text">{fmtTime(v.updatedAt)}</span>
+                  <span className="cm-badge">v{s.version}</span>
+                  <span className={`cm-badge cm-badge-soft`}>{s.isCurrent ? "当前生效" : "历史版本"}</span>
+                  <span className="cm-meta-text">{CORE_TRIGGER_LABEL[s.trigger] ?? s.trigger}</span>
+                  <span className="cm-meta-text">{fmtTime(s.createdAt)}</span>
+                  {s.note && <span className="cm-meta-text">· {s.note}</span>}
                 </div>
-                <div className="cm-version-preview">{v.content.slice(0, 80)}{v.content.length > 80 ? "…" : ""}</div>
+                <div className="cm-version-actions">
+                  <button type="button" className="ui-btn ui-btn-ghost ts-12" onClick={() => void openCompare(s.version)}>
+                    <Layers size={13} /> 对比
+                  </button>
+                  {!s.isCurrent && (
+                    <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => handleRollback(s)} disabled={busy}>
+                      <RotateCcw size={13} /> 回退到此版
+                    </button>
+                  )}
+                </div>
+                {compareVersion === s.version && (
+                  <div className="cm-compare-panel">
+                    {compareEntries.length === 0 ? (
+                      <p className="cm-muted">该版本无可比对条目</p>
+                    ) : (
+                      compareEntries.map((e) => {
+                        const current = currentEntryIds.has(e.id);
+                        return (
+                          <div key={e.id} className={`cm-compare-row ${current ? "is-kept" : "is-changed"}`}>
+                            <span className={`cm-badge cm-badge-soft`}>{CORE_CATEGORY_LABEL[e.category]}</span>
+                            <span className="cm-compare-text">{e.text}</span>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -374,10 +544,6 @@ function CoreTab({ characterId, characterName, notify, refresh }: {
       </div>
     </div>
   );
-}
-
-function ShieldIcon() {
-  return <Lock size={14} />;
 }
 
 // ── 日记页 ──
@@ -394,6 +560,12 @@ function DailyTab({ characterId, characterName, notify, refresh }: {
   const [editing, setEditing] = useState<ComplexDaily | null>(null);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  // 日历视图（M6）
+  const [viewMode, setViewMode] = useState<"list" | "calendar">("list");
+  const nowRef = new Date();
+  const [calYear, setCalYear] = useState(nowRef.getFullYear());
+  const [calMonth, setCalMonth] = useState(nowRef.getMonth());
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const [ds, ps] = await Promise.all([loadDailies(characterId), loadPeriods(characterId)]);
@@ -443,11 +615,55 @@ function DailyTab({ characterId, characterName, notify, refresh }: {
     await load();
   };
 
+  const handleToggleSpecial = async (d: ComplexDaily) => {
+    await saveDaily({ ...d, special: d.special === true ? false : true });
+    notify({ kind: "ok", text: d.special === true ? "已取消特殊日期标记" : "已标记为特殊一天" });
+    await load();
+  };
+
+  // ── 日历视图计算（M6） ──
+  const byDate = useMemo(() => new Map(dailies.map((d) => [d.date, d])), [dailies]);
+  const calCells = useMemo(() => {
+    const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const first = new Date(calYear, calMonth, 1);
+    const startOffset = first.getDay();
+    const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+    const cells: Array<{ date: string; day: number; inMonth: boolean }> = [];
+    for (let i = startOffset - 1; i >= 0; i--) {
+      const d = new Date(calYear, calMonth, -i);
+      cells.push({ date: fmt(d), day: d.getDate(), inMonth: false });
+    }
+    for (let day = 1; day <= daysInMonth; day++) {
+      const d = new Date(calYear, calMonth, day);
+      cells.push({ date: fmt(d), day, inMonth: true });
+    }
+    let tail = 1;
+    while (cells.length % 7 !== 0) {
+      const d = new Date(calYear, calMonth + 1, tail++);
+      cells.push({ date: fmt(d), day: d.getDate(), inMonth: false });
+    }
+    return cells;
+  }, [calYear, calMonth]);
+
+  const selectedDaily = selectedDate ? byDate.get(selectedDate) ?? null : null;
+
   return (
     <div className="cm-section">
       <div className="cm-section-head">
         <span className="cm-section-title">日记 · 共 {dailies.length} 篇</span>
         <div className="cm-actions">
+          <div className="cm-view-toggle" role="group" aria-label="视图切换">
+            <button
+              type="button"
+              className={`cm-view-btn ${viewMode === "list" ? "is-active" : ""}`}
+              onClick={() => setViewMode("list")}
+            >列表</button>
+            <button
+              type="button"
+              className={`cm-view-btn ${viewMode === "calendar" ? "is-active" : ""}`}
+              onClick={() => setViewMode("calendar")}
+            >日历</button>
+          </div>
           <Select value={periodFilter} onChange={(e) => setPeriodFilter(e.target.value)} className="cm-filter-select" aria-label="按周期筛选">
             <option value="all">全部周期</option>
             {periods.map((p) => (
@@ -462,6 +678,55 @@ function DailyTab({ characterId, characterName, notify, refresh }: {
         </div>
       </div>
 
+      {viewMode === "calendar" && (
+        <div className="cm-card cm-calendar">
+          <div className="cm-calendar-head">
+            <button type="button" className="cm-cal-nav" onClick={() => { setCalMonth((m) => (m === 0 ? 11 : m - 1)); if (calMonth === 0) setCalYear((y) => y - 1); }} aria-label="上一月">
+              <ChevronLeft size={15} />
+            </button>
+            <span className="cm-cal-title">{calYear} 年 {calMonth + 1} 月</span>
+            <button type="button" className="cm-cal-nav" onClick={() => { setCalMonth((m) => (m === 11 ? 0 : m + 1)); if (calMonth === 11) setCalYear((y) => y + 1); }} aria-label="下一月">
+              <ChevronRight size={15} />
+            </button>
+          </div>
+          <div className="cm-calendar-grid">
+            {["日", "一", "二", "三", "四", "五", "六"].map((w) => (
+              <div key={w} className="cm-cal-weekday">{w}</div>
+            ))}
+            {calCells.map((cell) => {
+              const daily = byDate.get(cell.date);
+              return (
+                <button
+                  key={cell.date}
+                  type="button"
+                  className={`cm-cal-cell ${cell.inMonth ? "" : "is-outside"} ${daily ? "has-daily" : ""} ${daily?.special === true ? "is-special" : ""} ${selectedDate === cell.date ? "is-selected" : ""}`}
+                  onClick={() => daily && setSelectedDate(selectedDate === cell.date ? null : cell.date)}
+                  disabled={!daily}
+                >
+                  <span className="cm-cal-day">{cell.day}</span>
+                  {daily && <span className="cm-cal-dot" />}
+                  {daily?.special === true && <span className="cm-cal-star">★</span>}
+                </button>
+              );
+            })}
+          </div>
+          {selectedDaily && (
+            <div className="cm-cal-detail">
+              <div className="cm-section-head">
+                <span className="cm-section-title">{selectedDaily.date}{selectedDaily.special === true && <span className="cm-special-badge">★</span>}</span>
+                <span className="cm-meta-text">情绪 {selectedDaily.emotionVector.valence.toFixed(2)} / {selectedDaily.emotionVector.arousal.toFixed(2)}</span>
+              </div>
+              <div className="cm-daily-content">{selectedDaily.content}</div>
+              <div className="cm-card-actions">
+                <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => void handleToggleSpecial(selectedDaily)}>
+                  <Flame size={14} /> {selectedDaily.special === true ? "取消特殊" : "标记特殊"}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {filtered.length === 0 ? (
         <div className="cm-empty-inline cm-card"><p className="cm-muted">暂无日记</p></div>
       ) : (
@@ -469,11 +734,14 @@ function DailyTab({ characterId, characterName, notify, refresh }: {
           {filtered.map((d) => (
             <div key={d.id} className="cm-card cm-daily-item">
               <button type="button" className="cm-daily-head" onClick={() => setExpandedId(expandedId === d.id ? null : d.id)}>
-                <span className="cm-daily-date">{d.date}</span>
+                <span className="cm-daily-date">
+                  {d.date}
+                  {d.special === true && <span className="cm-special-badge" title="特殊一天">★</span>}
+                </span>
                 <span className="cm-daily-periods">
                   {d.belongsToPeriods.map((pid) => periods.find((p) => p.id === pid)?.title).filter(Boolean).join("、") || "无周期"}
                 </span>
-                <span className="cm-daily-voltage">电压 {voltagePct(effectiveVoltage(d))}</span>
+                <span className="cm-daily-voltage">电压 {voltagePct(effectiveVoltage(d, { kind: "daily", special: d.special === true }))}</span>
                 {expandedId === d.id ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
               </button>
               {expandedId === d.id && (
@@ -494,6 +762,9 @@ function DailyTab({ characterId, characterName, notify, refresh }: {
                       <div className="cm-card-actions">
                         <span className="cm-meta-text">情绪 {d.emotionVector.valence.toFixed(2)} / {d.emotionVector.arousal.toFixed(2)}</span>
                         <span className="cm-spacer" />
+                        <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => void handleToggleSpecial(d)}>
+                          <Flame size={14} /> {d.special === true ? "取消特殊" : "标记特殊"}
+                        </button>
                         <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => { setEditing(d); setDraft(d.content); }}>
                           <Edit3 size={14} /> 编辑
                         </button>
@@ -523,6 +794,18 @@ function PeriodTab({ characterId, characterName, notify, refresh }: {
   const [periods, setPeriods] = useState<ComplexPeriod[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // 周期手动化 + 时间轴（M6）
+  const [viewMode, setViewMode] = useState<"list" | "timeline">("list");
+  const [showCreate, setShowCreate] = useState(false);
+  const [createTitle, setCreateTitle] = useState("");
+  const [createStart, setCreateStart] = useState("");
+  const [createEnd, setCreateEnd] = useState("");
+  const [editingTitleId, setEditingTitleId] = useState<string | null>(null);
+  const [titleDraft, setTitleDraft] = useState("");
+  const [editingSummaryId, setEditingSummaryId] = useState<string | null>(null);
+  const [summaryDraft, setSummaryDraft] = useState("");
+  const [briefForId, setBriefForId] = useState<string | null>(null);
+  const [briefDraft, setBriefDraft] = useState("");
 
   const load = useCallback(async () => {
     setPeriods(await loadPeriods(characterId));
@@ -538,9 +821,9 @@ function PeriodTab({ characterId, characterName, notify, refresh }: {
     return [...active, ...rest];
   }, [periods]);
 
-  const handleDistill = async (p: ComplexPeriod) => {
+  const handleDistill = async (p: ComplexPeriod, userBrief?: string) => {
     setBusy(true);
-    const res = await distillPeriod(characterId, characterName, p.id);
+    const res = await distillPeriod(characterId, characterName, p.id, userBrief?.trim() ? { userBrief } : undefined);
     setBusy(false);
     if (res.success) {
       notify({ kind: "ok", text: `周期「${p.title}」提炼完成` });
@@ -551,13 +834,114 @@ function PeriodTab({ characterId, characterName, notify, refresh }: {
     }
   };
 
+  const handleCreate = async () => {
+    setBusy(true);
+    const res = await createPeriodManual(characterId, createTitle, createStart, createEnd || null);
+    setBusy(false);
+    if (res.success) {
+      notify({ kind: "ok", text: "周期已创建" });
+      setShowCreate(false);
+      setCreateTitle("");
+      setCreateStart("");
+      setCreateEnd("");
+      await load();
+      refresh();
+    } else {
+      notify({ kind: "err", text: res.error ?? "创建失败" });
+    }
+  };
+
+  const handleSaveTitle = async (p: ComplexPeriod) => {
+    await savePeriod({ ...p, title: titleDraft.trim() || p.title });
+    setEditingTitleId(null);
+    notify({ kind: "ok", text: "周期主线已更新" });
+    await load();
+  };
+
+  const handleSaveSummary = async (p: ComplexPeriod) => {
+    await savePeriod({ ...p, summary: summaryDraft });
+    setEditingSummaryId(null);
+    notify({ kind: "ok", text: "周期总结已保存" });
+    await load();
+  };
+
   const statusLabel: Record<ComplexPeriod["status"], string> = { active: "进行中", stabilized: "已稳定", archived: "已归档" };
+
+  // 时间轴：以最早周期起点为左端，今天为右端
+  const timeline = useMemo(() => {
+    if (periods.length === 0) return null;
+    const min = Math.min(...periods.map((p) => new Date(p.startTime).getTime()));
+    const max = Date.now();
+    const span = Math.max(1, max - min);
+    const pct = (ts: number) => `${Math.max(0, Math.min(100, ((ts - min) / span) * 100))}%`;
+    return {
+      min,
+      max,
+      pct,
+      bars: periods.map((p) => {
+        const start = new Date(p.startTime).getTime();
+        const end = p.endTime ? new Date(p.endTime).getTime() : max;
+        const left = pct(start);
+        const width = `${Math.max(2, Math.min(100, ((end - start) / span) * 100))}%`;
+        return { p, left, width };
+      }),
+    };
+  }, [periods]);
 
   return (
     <div className="cm-section">
       <div className="cm-section-head">
         <span className="cm-section-title">周期 · 共 {periods.length} 个</span>
+        <div className="cm-actions">
+          <div className="cm-view-toggle" role="group" aria-label="视图切换">
+            <button type="button" className={`cm-view-btn ${viewMode === "list" ? "is-active" : ""}`} onClick={() => setViewMode("list")}>列表</button>
+            <button type="button" className={`cm-view-btn ${viewMode === "timeline" ? "is-active" : ""}`} onClick={() => setViewMode("timeline")}>时间轴</button>
+          </div>
+          <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => setShowCreate((v) => !v)}>
+            <Plus size={14} /> 新建周期
+          </button>
+        </div>
       </div>
+
+      {showCreate && (
+        <div className="cm-card cm-create-period">
+          <div className="cm-create-row">
+            <Input value={createTitle} onChange={(e) => setCreateTitle(e.target.value)} placeholder="周期标题（主线描述）" className="cm-config-input" />
+          </div>
+          <div className="cm-create-row">
+            <Input type="date" value={createStart} onChange={(e) => setCreateStart(e.target.value)} aria-label="起始日期" className="cm-config-input" />
+            <span className="cm-meta-text">至</span>
+            <Input type="date" value={createEnd} onChange={(e) => setCreateEnd(e.target.value)} aria-label="结束日期（可选）" className="cm-config-input" />
+            <span className="cm-meta-text">（结束日期可选）</span>
+          </div>
+          <div className="cm-card-actions">
+            <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => setShowCreate(false)}>取消</button>
+            <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={() => void handleCreate()} disabled={busy}>
+              {busy ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 创建
+            </button>
+          </div>
+        </div>
+      )}
+
+      {viewMode === "timeline" && timeline && (
+        <div className="cm-card cm-timeline">
+          <div className="cm-timeline-track">
+            {timeline.bars.map(({ p, left, width }) => (
+              <div
+                key={p.id}
+                className={`cm-tl-bar is-${p.status}`}
+                style={{ left, width }}
+                title={`${p.title} · ${p.startTime} ~ ${p.endTime ?? "至今"}`}
+                onClick={() => setExpandedId(expandedId === p.id ? null : p.id)}
+              >
+                <span className="cm-tl-bar-label">{p.title}</span>
+              </div>
+            ))}
+          </div>
+          <p className="cm-muted cm-timeline-legend">横轴为时间：起点 = 最早周期开始，终点 = 今天。点击色块展开周期。</p>
+        </div>
+      )}
+
       {sorted.length === 0 ? (
         <div className="cm-empty-inline cm-card"><p className="cm-muted">暂无周期</p></div>
       ) : (
@@ -573,10 +957,41 @@ function PeriodTab({ characterId, characterName, notify, refresh }: {
               </button>
               {expandedId === p.id && (
                 <div className="cm-period-body">
-                  {p.summary ? (
-                    <div className="cm-period-summary">{p.summary}</div>
+                  {editingTitleId === p.id ? (
+                    <div className="cm-period-edit-row">
+                      <Input value={titleDraft} onChange={(e) => setTitleDraft(e.target.value)} className="cm-config-input" />
+                      <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={() => void handleSaveTitle(p)}><Save size={14} /> 保存</button>
+                      <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => setEditingTitleId(null)}>取消</button>
+                    </div>
                   ) : (
-                    <p className="cm-muted">尚未提炼总结</p>
+                    <div className="cm-period-summary">
+                      <strong>{p.title}</strong>（主线）&nbsp;
+                      <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => { setEditingTitleId(p.id); setTitleDraft(p.title); }}>
+                        <Edit3 size={14} /> 编辑主线
+                      </button>
+                    </div>
+                  )}
+                  {editingSummaryId === p.id ? (
+                    <div className="cm-period-edit-col">
+                      <Textarea className="cm-core-editor" rows={6} value={summaryDraft} onChange={(e) => setSummaryDraft(e.target.value)} />
+                      <div className="cm-card-actions">
+                        <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => setEditingSummaryId(null)}>取消</button>
+                        <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={() => void handleSaveSummary(p)}><Save size={14} /> 保存总结</button>
+                      </div>
+                    </div>
+                  ) : p.summary ? (
+                    <div className="cm-period-summary">
+                      {p.summary}
+                      <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => { setEditingSummaryId(p.id); setSummaryDraft(p.summary); }}>
+                        <Edit3 size={14} /> 编辑总结
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="cm-muted">尚未提炼总结
+                      <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => { setEditingSummaryId(p.id); setSummaryDraft(""); }}>
+                        <Edit3 size={14} /> 直接书写
+                      </button>
+                    </p>
                   )}
                   {Object.keys(p.timelineIndex).length > 0 && (
                     <div className="cm-timeline-index">
@@ -588,18 +1003,33 @@ function PeriodTab({ characterId, characterName, notify, refresh }: {
                   {p.linkedPeriods.length > 0 && (
                     <p className="cm-meta-text">丝线关联：{p.linkedPeriods.join("、")}</p>
                   )}
-                  <div className="cm-card-actions">
-                    <span className="cm-meta-text">覆盖事件 {p.coveredEventIds.length} 条 · 电压 {voltagePct(effectiveVoltage(p))}</span>
-                    <span className="cm-spacer" />
-                    {p.status === "active" && (
-                      <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={() => void handleDistill(p)} disabled={busy}>
-                        {busy ? <Loader2 size={14} className="animate-spin" /> : <Flame size={14} />} 立即提炼
+                  {briefForId === p.id ? (
+                    <div className="cm-period-edit-col">
+                      <Textarea className="cm-core-editor" rows={3} value={briefDraft} onChange={(e) => setBriefDraft(e.target.value)} placeholder="补充该周期的主线/重点，作为提炼输入（可选）" />
+                      <div className="cm-card-actions">
+                        <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => setBriefForId(null)}>取消</button>
+                        <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={() => { const b = briefDraft; setBriefForId(null); setBriefDraft(""); void handleDistill(p, b); }} disabled={busy}>
+                          {busy ? <Loader2 size={14} className="animate-spin" /> : <Flame size={14} />} 提炼（含主线）
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="cm-card-actions">
+                      <span className="cm-meta-text">覆盖事件 {p.coveredEventIds.length} 条 · 电压 {voltagePct(effectiveVoltage(p, { kind: "period" }))}</span>
+                      <span className="cm-spacer" />
+                      <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => { setBriefForId(p.id); setBriefDraft(""); }}>
+                        <Flame size={14} /> 手动总结
                       </button>
-                    )}
-                    <button type="button" className="ui-btn ui-btn-danger ts-12" onClick={async () => { await deletePeriod(p.id); notify({ kind: "ok", text: "周期已删除" }); await load(); }}>
-                      <Trash2 size={14} /> 删除
-                    </button>
-                  </div>
+                      {p.status === "active" && (
+                        <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={() => void handleDistill(p)} disabled={busy}>
+                          {busy ? <Loader2 size={14} className="animate-spin" /> : <Flame size={14} />} 立即提炼
+                        </button>
+                      )}
+                      <button type="button" className="ui-btn ui-btn-danger ts-12" onClick={async () => { await deletePeriod(p.id); notify({ kind: "ok", text: "周期已删除" }); await load(); }}>
+                        <Trash2 size={14} /> 删除
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -646,7 +1076,7 @@ function EventTab({ characterId, characterName, notify, refresh }: {
   };
 
   const handleBoost = async (e: ComplexEvent) => {
-    const boosted = boostedVoltage(e, config.voltageRecallBoost);
+    const boosted = boostedVoltage(e, config.voltageRecallBoost, { kind: "event" });
     await saveEvent({ ...e, voltage: boosted.voltage, lastAccessedAt: boosted.lastAccessedAt });
     notify({ kind: "ok", text: "电压已充能" });
     await load();
@@ -667,7 +1097,7 @@ function EventTab({ characterId, characterName, notify, refresh }: {
       ) : (
         <div className="cm-event-list">
           {sorted.map((e) => {
-            const v = effectiveVoltage(e);
+            const v = effectiveVoltage(e, { kind: "event" });
             const pendingErase = e.coveredByPeriod && v < config.voltageEraseThreshold;
             return (
               <div key={e.id} className="cm-card cm-event-item">
@@ -706,9 +1136,10 @@ function EventTab({ characterId, characterName, notify, refresh }: {
   );
 }
 
-// ── 情绪坐标页 ──
+// ── 情绪坐标页（可交互：点击散点查看对应日记） ──
 function EmotionTab({ characterId }: { characterId: string }) {
   const [dailies, setDailies] = useState<ComplexDaily[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     void loadDailies(characterId).then((ds) => {
@@ -734,6 +1165,8 @@ function EmotionTab({ characterId }: { characterId: string }) {
     if (newest === oldest) return 0;
     return (new Date(d.date).getTime() - oldest) / (newest - oldest);
   };
+
+  const selected = dailies.find((d) => d.id === selectedId) ?? null;
 
   return (
     <div className="cm-section">
@@ -764,23 +1197,166 @@ function EmotionTab({ characterId }: { characterId: string }) {
             {dailies.map((d) => {
               const ratio = ageRatio(d);
               const alpha = 0.35 + ratio * 0.65;
+              const isSel = selectedId === d.id;
               return (
                 <circle
                   key={d.id}
                   cx={x(d.emotionVector.valence)}
                   cy={y(d.emotionVector.arousal)}
-                  r={5}
-                  fill={ACCENT}
+                  r={isSel ? 8 : 5}
+                  fill={isSel ? "#F59E0B" : ACCENT}
                   opacity={alpha}
+                  className="cm-scatter-point"
+                  onClick={() => setSelectedId(isSel ? null : d.id)}
                 >
-                  <title>{`${d.date} · 效价 ${d.emotionVector.valence.toFixed(2)} · 唤醒 ${d.emotionVector.arousal.toFixed(2)}`}</title>
+                  <title>{`${d.date} · 效价 ${d.emotionVector.valence.toFixed(2)} · 唤醒 ${d.emotionVector.arousal.toFixed(2)}${d.special === true ? " · ★特殊一天" : ""}`}</title>
                 </circle>
               );
             })}
           </svg>
         )}
-        <p className="cm-muted cm-scatter-legend">颜色深浅表示日期新旧：越深越近。一期为静态展示。</p>
+        <p className="cm-muted cm-scatter-legend">颜色深浅表示日期新旧：越深越近。点击散点查看当天日记。</p>
       </div>
+      {selected && (
+        <div className="cm-card cm-scatter-detail">
+          <div className="cm-section-head">
+            <span className="cm-section-title">{selected.date}{selected.special === true && <span className="cm-special-badge">★</span>}</span>
+            <span className="cm-meta-text">效价 {selected.emotionVector.valence.toFixed(2)} · 唤醒 {selected.emotionVector.arousal.toFixed(2)}</span>
+          </div>
+          <div className="cm-daily-content">{selected.content}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── 记忆清洗页（M6） ──
+function CleanupTab({ characterId, characterName, notify, refresh }: {
+  characterId: string;
+  characterName: string;
+  notify: (n: Notice) => void;
+  refresh: () => void;
+}) {
+  const [clusters, setClusters] = useState<CleanupCluster[]>([]);
+  const [snapshots, setSnapshots] = useState<CleanupSnapshot[]>([]);
+  const [periods, setPeriods] = useState<ComplexPeriod[]>([]);
+  const [scanning, setScanning] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [targetPeriods, setTargetPeriods] = useState<Record<string, string>>({});
+
+  const loadSnaps = useCallback(async () => {
+    setSnapshots(listCleanupSnapshots(characterId));
+  }, [characterId]);
+
+  useEffect(() => {
+    void loadSnaps();
+    void loadPeriods(characterId).then(setPeriods);
+  }, [characterId, loadSnaps]);
+
+  const handleScan = async () => {
+    setScanning(true);
+    const found = await scanCleanupClusters(characterId);
+    setScanning(false);
+    setClusters(found);
+    notify({ kind: found.length > 0 ? "ok" : "err", text: found.length > 0 ? `发现 ${found.length} 组相似记忆` : "未发现相似记忆簇" });
+  };
+
+  const runOp = async (fn: () => Promise<{ success: boolean; error?: string }>, okText: string) => {
+    setBusy(true);
+    const res = await fn();
+    setBusy(false);
+    if (res.success) {
+      notify({ kind: "ok", text: okText });
+      setClusters([]);
+      await loadSnaps();
+      refresh();
+    } else {
+      notify({ kind: "err", text: res.error ?? "操作失败" });
+    }
+  };
+
+  const opLabel: Record<CleanupSnapshot["operation"], string> = {
+    merge: "融合更新",
+    into_period: "并入周期",
+    new_period: "合并为新周期",
+  };
+
+  return (
+    <div className="cm-section">
+      <div className="cm-section-head">
+        <span className="cm-section-title">记忆清洗</span>
+        <div className="cm-actions">
+          <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={() => void handleScan()} disabled={scanning || busy}>
+            {scanning ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} 扫描相似记忆
+          </button>
+        </div>
+      </div>
+      <p className="cm-muted cm-cleanup-hint">对事件与日记做向量相似度聚类，找出「召回时容易互相干扰/混淆」的记忆组；可融合更新、并入周期或合并为新周期。所有操作前自动生成快照，可一键回退（按角色保留最近 3 次）。</p>
+
+      {clusters.length === 0 ? (
+        <div className="cm-empty-inline cm-card"><p className="cm-muted">暂无扫描结果，点击「扫描相似记忆」开始</p></div>
+      ) : (
+        <div className="cm-cleanup-list">
+          {clusters.map((c, idx) => (
+            <div key={c.clusterId} className="cm-card cm-cleanup-cluster">
+              <div className="cm-section-head">
+                <span className="cm-section-title">簇 {idx + 1} · {c.entries.length} 条 · 相似度 {c.similarity.toFixed(2)}</span>
+                <span className="cm-meta-text">{c.reasons.join(" · ")}</span>
+              </div>
+              <div className="cm-cleanup-members">
+                {c.entries.map((e) => (
+                  <div key={e.id} className="cm-cleanup-member">
+                    <span className={`cm-badge cm-badge-soft`}>{e.kind === "daily" ? "日记" : "事件"} {e.date}</span>
+                    <span className="cm-cleanup-text">{e.content.slice(0, 90)}{e.content.length > 90 ? "…" : ""}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="cm-card-actions">
+                <button type="button" className="ui-btn ui-btn-outline ts-12" disabled={busy} onClick={() => void runOp(() => mergeCluster(characterId, characterName, c), "已融合更新")}>
+                  <Sparkles size={14} /> 融合更新
+                </button>
+                <div className="cm-cleanup-target">
+                  <Select value={targetPeriods[c.clusterId] ?? ""} onChange={(e) => setTargetPeriods((prev) => ({ ...prev, [c.clusterId]: e.target.value }))} aria-label="选择目标周期" className="cm-filter-select">
+                    <option value="">选择周期…</option>
+                    {periods.map((p) => (
+                      <option key={p.id} value={p.id}>{p.title}</option>
+                    ))}
+                  </Select>
+                  <button type="button" className="ui-btn ui-btn-outline ts-12" disabled={busy || !targetPeriods[c.clusterId]} onClick={() => void runOp(() => mergeClusterIntoPeriod(characterId, characterName, c, targetPeriods[c.clusterId]), "已并入周期")}>
+                    并入周期
+                  </button>
+                </div>
+                <button type="button" className="ui-btn ui-btn-outline ts-12" disabled={busy} onClick={() => void runOp(() => createPeriodFromCluster(characterId, characterName, c), "已生成新周期")}>
+                  合并为新周期
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="cm-section-head" style={{ marginTop: 18 }}>
+        <span className="cm-section-title">清洗快照 · 最近 {snapshots.length} 次</span>
+      </div>
+      {snapshots.length === 0 ? (
+        <div className="cm-empty-inline cm-card"><p className="cm-muted">暂无清洗快照</p></div>
+      ) : (
+        <div className="cm-cleanup-snapshots">
+          {snapshots.map((s) => (
+            <div key={s.id} className="cm-card cm-cleanup-snapshot">
+              <div className="cm-section-head">
+                <span className="cm-section-title">{opLabel[s.operation]}</span>
+                <span className="cm-meta-text">{s.createdAt.slice(0, 16).replace("T", " ")} · 影响 {s.affected.length} 条</span>
+              </div>
+              <div className="cm-card-actions">
+                <button type="button" className="ui-btn ui-btn-danger ts-12" disabled={busy} onClick={() => void runOp(() => rollbackCleanup(characterId, s.id), "已回退清洗操作")}>
+                  <RotateCcw size={14} /> 回退
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -794,10 +1370,11 @@ const MIGRATION_DAY_OPTIONS = [
 ];
 
 const PHASE_LABEL: Record<MigrationState["phase"], string> = {
-  legacy: "压缩历史素材",
+  events: "回溯生成事件记忆",
   dailies: "回溯生成日记",
   distill: "提炼周期",
   core: "构建核心记忆",
+  legacy: "压缩旧记忆",
   done: "已完成",
 };
 
@@ -806,7 +1383,7 @@ function MigrationTab({ characterId, characterName, notify }: {
   characterName: string;
   notify: (n: Notice) => void;
 }) {
-  const [counts, setCounts] = useState<{ events: number; dailies: number; periods: number; cores: number } | null>(null);
+  const [counts, setCounts] = useState<{ events: number; dailies: number; periods: number; coreEntries: number } | null>(null);
   const [state, setState] = useState<MigrationState | null>(() => getMigrationState(characterId));
   const [days, setDays] = useState<number>(() => loadComplexMemoryConfig().migrationDefaultDays);
   const [estimate, setEstimate] = useState<number | null>(null);
@@ -889,9 +1466,33 @@ function MigrationTab({ characterId, characterName, notify }: {
     setEstimate(estimateMigration(characterId, days));
   };
 
+  const handleExport = async () => {
+    setBusy(true);
+    const res = await exportToFloat(characterId);
+    setBusy(false);
+    if (res.success) {
+      notify({ kind: "ok", text: `已导出到 float：核心 ${res.counts?.cores ?? 0} 条 · 事件 ${res.counts?.events ?? 0} 条 · 周期 ${res.counts?.periods ?? 0} 条` });
+    } else {
+      notify({ kind: "err", text: res.error ?? "导出失败" });
+    }
+  };
+
+  const handleRetryDate = async (date: string) => {
+    setBusy(true);
+    const res = await retryFailedDate(characterId, characterName, date);
+    setBusy(false);
+    if (res.success) {
+      notify({ kind: "ok", text: `「${date}」已重跑成功` });
+      refreshState();
+    } else {
+      notify({ kind: "err", text: res.error ?? "重跑失败" });
+    }
+  };
+
   const running = state?.status === "running";
   const paused = state?.status === "paused";
   const done = state?.status === "done";
+  const inEvents = state?.phase === "events";
   const progress = state && state.totalDays > 0 ? Math.min(100, Math.round((state.doneDays / state.totalDays) * 100)) : 0;
 
   return (
@@ -908,9 +1509,9 @@ function MigrationTab({ characterId, characterName, notify }: {
       {!state || state.status === "idle" ? (
         <div className="cm-card">
           <p className="cm-muted">
-            将「{characterName}」的历史聊天记录回溯生成复杂记忆（日记 / 周期 / 核心），
-            旧 float 长期与核心记忆会压缩为一条「历史沉淀」周期素材，不逐条搬运。
-            迁移从最近日期向过去推进，可随时暂停并断点续跑。
+            将「{characterName}」的历史聊天记录回溯生成复杂记忆：先按窗口生成全部事件记忆，
+            再从近到远补生成日记，随后提炼周期、构建核心记忆，最后把旧 float 长期与核心记忆压缩为一条「历史沉淀」周期素材。
+            全程可随时暂停并断点续跑。
           </p>
           <div className="cm-mig-setup">
             <span className="cm-config-label">回溯范围</span>
@@ -938,12 +1539,15 @@ function MigrationTab({ characterId, characterName, notify }: {
               <span className="cm-badge cm-badge-soft">事件 {counts.events}</span>
               <span className="cm-badge cm-badge-soft">日记 {counts.dailies}</span>
               <span className="cm-badge cm-badge-soft">周期 {counts.periods}</span>
-              <span className="cm-badge cm-badge-soft">核心 v{counts.cores}</span>
+              <span className="cm-badge cm-badge-soft">核心 {counts.coreEntries} 条</span>
             </div>
           )}
           <div className="cm-card-actions">
             <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={() => void handleStart()} disabled={busy}>
               {busy ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />} 开始迁移
+            </button>
+            <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => void handleExport()} disabled={busy}>
+              {busy ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} 导出到 float
             </button>
           </div>
         </div>
@@ -952,7 +1556,9 @@ function MigrationTab({ characterId, characterName, notify }: {
           <div className="cm-meta-row">
             <span className="cm-badge cm-badge-soft">阶段：{PHASE_LABEL[state.phase]}</span>
             <span className="cm-meta-text">
-              {state.doneDays} / {state.totalDays} 天 · {state.currentDate ?? "—"}
+              {inEvents
+                ? state.currentDate ?? "准备生成事件…"
+                : `${state.doneDays} / ${state.totalDays} 天 · ${state.currentDate ?? "—"}`}
             </span>
           </div>
           <div className="cm-mig-progress" role="progressbar" aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100}>
@@ -970,9 +1576,24 @@ function MigrationTab({ characterId, characterName, notify }: {
           {done && state.report && (
             <p className="cm-muted">
               预估消耗 {fmtTokens(state.report.tokenEstimate)}
-              {state.report.failedDates.length > 0 ? ` · ${state.report.failedDates.length} 天失败（${state.report.failedDates.join("、")}）` : " · 无失败项"}。
+              {state.report.failedDates.length > 0 ? ` · ${state.report.failedDates.length} 天失败` : " · 无失败项"}。
               核对通过后可在会话设置中开启复杂记忆开关。
             </p>
+          )}
+          {done && state.report && state.report.failedDates.length > 0 && (
+            <div className="cm-failed-dates">
+              <span className="cm-meta-text">失败日期（可单独重跑）：</span>
+              <div className="cm-failed-date-list">
+                {state.report.failedDates.map((d) => (
+                  <div key={d} className="cm-failed-date-item">
+                    <span className="cm-meta-text">{d}</span>
+                    <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => void handleRetryDate(d)} disabled={busy}>
+                      <RefreshCw size={13} /> 重跑
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
           <div className="cm-card-actions">
             {running && (
@@ -1076,13 +1697,24 @@ function ConfigTab({ characterId, notify }: { characterId: string; notify: (n: N
         {numField("eventTriggerCount", "事件压缩触发数")}
         {numField("eventTargetLength", "事件篇幅目标（字）")}
         {numField("dailyTargetLength", "日记篇幅目标（字）")}
-        {numField("dailyQuietMinutes", "日记静默判定（分钟）")}
+        {numField("dailyQuietMinutes", "日记静默判定（分钟）", "仅约束当天日记")}
+        {numField("rollingAppendMax", "周期每日进展上限（字）")}
         {numField("coreMinLength", "核心篇幅下限（字）")}
         {numField("coreMaxLength", "核心篇幅上限（字）")}
-        {numField("coreUpdateDiaryCount", "定期重构日记累计数")}
-        {numField("voltageDecayFactor", "电压衰减系数", "每 24h 未使用")}
+        {numField("coreDailyInterval", "核心重构日记间隔（篇）", "双触发之一：满 N 篇或周期结束")}
+        {numField("maxParallel", "调度并发上限", "防限流")}
+        {numField("retryCount", "调度失败重试次数", "指数退避")}
+        {numField("voltageDecayFactor", "电压衰减系数", "普通日记，每 24h 未使用")}
+        {numField("eventDecayFactor", "事件衰减系数", "事件衰减快")}
+        {numField("periodDecayFactor", "周期衰减系数", "周期衰减慢")}
+        {numField("specialDateDecayFactor", "特殊日期衰减系数", "周期级慢衰减")}
         {numField("voltageRecallBoost", "召回回升量")}
         {numField("voltageEraseThreshold", "消磨电压阈值")}
+        {numField("recallTimeWindowFullDays", "日记时间窗全额（天）")}
+        {numField("recallTimeWindowFloorDays", "日记时间窗底值（天）")}
+        {numField("recallTimeWindowFloor", "日记时间窗降权底值")}
+        {numField("emotionRecallLambda", "情绪召回权重 λ")}
+        {numField("fixedSpecialDateCount", "特殊日期固定注入篇数")}
         {numField("fixedShortTermEntries", "固定注入短期条数")}
         {numField("fixedRecentEventCount", "固定注入最新事件数")}
         {numField("recallTopK", "向量召回候选数")}

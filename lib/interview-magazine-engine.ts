@@ -29,6 +29,7 @@ import {
   type InterviewUserSnapshot,
   type InterviewWorldBookSnapshot,
 } from "./interview-magazine-types";
+import { recordCharacterActivity } from "./complex-memory/guard";
 
 type InterviewGuestContext = {
   character: Character;
@@ -585,6 +586,7 @@ export async function generateCharacterInterviewAnswer(params: {
     { appId: INTERVIEW_MAGAZINE_APP_ID, appTags: ["interview_magazine", "answer"] },
   );
 
+  recordCharacterActivity(params.characterId, guest.character.name, 1);
   return cleanText(raw, 1000) || "（沉默了一会儿）这个问题，我需要从一个很小的地方说起。";
 }
 

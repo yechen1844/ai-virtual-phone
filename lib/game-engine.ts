@@ -19,6 +19,7 @@ import {
 } from "./settings-storage";
 import type { ApiConfig, PresetConfig, RegexConfig, WorldBookConfig } from "./settings-types";
 import type { GameRolePackage, GameRolePackageMode } from "./game-types";
+import { recordCharacterActivity } from "./complex-memory/guard";
 
 const GAME_BINDING_APP_ID = "game";
 const GAME_PROMPT_APP_ID = "game";
@@ -143,6 +144,9 @@ export async function callGameLLM(input: {
     appId: GAME_PROMPT_APP_ID,
     appTags: GAME_PROMPT_TAGS,
   });
+  if (input.characterId) {
+    recordCharacterActivity(input.characterId, configs.character?.name ?? "游戏", 1);
+  }
   return {
     content,
     model: configs.apiConfig.defaultModel,

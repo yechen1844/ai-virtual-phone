@@ -3,11 +3,11 @@
 // 双层变量：① 模板专属变量原始替换（与 float 总结模板同模式）；
 //          ② 全局宏复用中央 MacroEngine（char/user/time/weekday/timestamp/random/var…）。
 
-import { MacroEngine } from "../macro-engine";
+import { MacroEngine, STATIC_MACRO_NAMES } from "../macro-engine";
 import type { MemoryPromptKey, MemoryPrompts } from "./types";
 
 // ── 默认模板 ──
-export const DEFAULT_PROMPTS: MemoryPrompts = {
+export const DEFAULT_PROMPTS: MemoryPrompts & { coreSplit: string } = {
   event: `{{//事件记忆压缩模板 · 全局宏与专属变量可混用}}
 你将阅读 {{char}} 最近的一段生活时间线（现实时间 {{earliest}} 至 {{latest}}，共 {{eventCount}} 条）。
 请以 {{char}} 第一人称写一段约 {{length}} 字的记忆叙事：
@@ -39,25 +39,31 @@ export const DEFAULT_PROMPTS: MemoryPrompts = {
 </活跃周期>
 
 同时判定：是否有新的长期事件开始？已有长期事件是否结束？
-输出 JSON：{ diary, emotion: { valence, arousal }, periodCheck: { newPeriods, closedPeriods, activePeriodIds } }`,
+对每个活跃周期，用一句话记录「该周期今日进展」（每条不超过 {{rollingAppendMax}} 字，无进展写空串）。
+输出 JSON：{ diary, emotion: { valence, arousal }, periodCheck: { newPeriods, closedPeriods, activePeriodIds }, periodProgress: [{ periodId, progress }] }`,
 
-  period: `以下是周期「{{periodTitle}}」（{{startTime}} 至 {{endTime}}，共 {{durationDays}} 天）关联的全部日记与事件记忆。
-请生成周期总结，覆盖四部分：事件脉络 / 情绪曲线 / 角色成长 / 未解决事项；
+  period: `以下是周期「{{periodTitle}}」（{{startTime}} 至 {{endTime}}，共 {{durationDays}} 天）的滚动累积进展。
+请做轻收尾（合并去重 + 收束语），生成周期总结，覆盖四部分：事件脉络 / 情绪曲线 / 角色成长 / 未解决事项；
 并产出逐日索引 timeline_index（日期 → "Day N: 一句话要点"）。
 
-素材：
+<滚动累积进展>
+{{rollingSummary}}
+</滚动累积进展>
+<关联日记与事件（滚动累积为空时使用）>
 {{periodDairies}}
+</关联日记与事件>
 
 输出 JSON：{ summary, timelineIndex }`,
 
-  core: `请基于以下材料，重写 {{char}} 的核心记忆（{{minLength}}-{{maxLength}} 字）。
-严格按优先级框架组织：
-  P0 禁区 —— 死禁与绝对原则（永不违背）
-  P1 感知与灵魂 —— 我是谁、我如何感知世界
-  P2 誓言与蜕变 —— 我承诺过的、我被改变过的
-  P3 互动动态 —— 我与{{user}}当前的相处状态
-必须包含五个模块：感知与灵魂 / 蜕变 / 誓言 / 互动动态 / 禁区。
-禁用词（爹味/超雄消毒）：{{banList}}；改用陪伴、记得、在意等表达。
+  core: `请基于以下材料，为 {{char}} 产出一组「核心记忆条目」。
+逐条拆解成一句话事实（建议每条 30–80 字），并给每条打上分类 category，取值只能是：
+  identity（身份认知，原 P0）— 我是谁、我如何感知世界
+  bond（关系纽带，原 P1）— 我与重要他人的关系
+  principle（原则承诺，原 P2）— 我答应过、我绝不会违背的原则
+  milestone（里程碑事件，原 P3）— 影响深远的标志性事件
+必须覆盖：身份认知 / 关系纽带 / 原则承诺 / 里程碑事件 四类；条目要具体、可长期复用，避免空泛总结。
+改进意见：{{feedback}}
+禁用词（爹味/超雄消毒）：{{banList}}；含禁用词的条目直接不输出，改用陪伴、记得、在意等表达。
 
 材料：
 <人设>
@@ -69,7 +75,17 @@ export const DEFAULT_PROMPTS: MemoryPrompts = {
 <新材料>
 {{newMaterials}}
 </新材料>
-输出纯文本正文。`,
+
+输出条目数组 JSON：[{ "text": "...", "category": "identity|bond|principle|milestone" }, ...]`,
+
+  coreSplit: `请把以下「旧整块核心记忆」拆解为一组核心记忆条目。
+每条一句话事实（建议 30–80 字），打上分类 category，取值：identity / bond / principle / milestone。
+分类定义：{{categoryDefs}}。原 P0–P3 框架内容丢失前尽量保留，遗漏信息不要创造。
+禁用词：{{banList}}；含禁用词的条目不输出。
+旧整块内容：
+{{legacyContent}}
+
+输出条目数组 JSON：[{ "text": "...", "category": "identity|bond|principle|milestone" }, ...]`,
 
   rerank: `以下是候选记忆、当前对话上下文与核心记忆。
 请对每条候选按四个维度打分（0-10）：主题相关性 / 情感共鸣度 / 时间近因性 / 未解决状态。
@@ -117,6 +133,7 @@ export const PROMPT_VARIABLES: PromptVariableInfo[] = [
   { name: "latest", templates: ["event"], description: "素材结束现实时间（float 同名同义）" },
   { name: "eventCount", templates: ["event"], description: "素材事件条数" },
   { name: "length", templates: ["event", "daily"], description: "篇幅目标字数（读配置项）" },
+  { name: "rollingAppendMax", templates: ["daily"], description: "周期每日进展追加上限字数（读配置项）" },
   { name: "date", templates: ["daily"], description: "日记日期 YYYY-MM-DD" },
   { name: "todayTimeline", templates: ["daily"], description: "今日全部短期上下文素材" },
   { name: "todayEvents", templates: ["daily"], description: "今日已生成的事件记忆" },
@@ -126,7 +143,8 @@ export const PROMPT_VARIABLES: PromptVariableInfo[] = [
   { name: "startTime", templates: ["period"], description: "周期起始日期" },
   { name: "endTime", templates: ["period"], description: "周期结束日期" },
   { name: "durationDays", templates: ["period"], description: "周期持续天数" },
-  { name: "periodDairies", templates: ["period"], description: "该周期关联的全部日记全文合集" },
+  { name: "rollingSummary", templates: ["period"], description: "周期滚动累积进展（带日期戳，轻收尾主素材）" },
+  { name: "periodDairies", templates: ["period"], description: "该周期关联的全部日记全文合集（滚动累积为空时回退）" },
   { name: "persona", templates: ["core"], description: "角色人设全文" },
   { name: "existingCore", templates: ["core"], description: "既有核心记忆（微调时的当前版本；bootstrap 时为空）" },
   { name: "newMaterials", templates: ["core"], description: "触发本次更新的新材料（新增日记 / 周期总结）" },
@@ -155,7 +173,7 @@ export const GLOBAL_MACRO_VARIABLES: PromptVariableInfo[] = [
 const DYNAMIC_MACRO_RE = /^(?:random|setvar|getvar|setglobalvar|getglobalvar|timestamp)(?::|$)/;
 
 export function findUnknownTemplateVariables(template: string): string[] {
-  const known = new Set(PROMPT_VARIABLES.map((v) => v.name));
+  const known = new Set([...PROMPT_VARIABLES.map((v) => v.name), ...STATIC_MACRO_NAMES]);
   const found = new Set<string>();
   const re = /\{\{\s*([^{}]+?)\s*\}\}/g;
   let match: RegExpExecArray | null;

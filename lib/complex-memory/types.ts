@@ -32,6 +32,7 @@ export type ComplexDaily = {
   belongsToPeriods: string[];    // 多对多，可为空数组
   emotionVector: EmotionVector;
   voltage: number;
+  special?: boolean;             // 特殊日期标记：周期级慢衰减 + 固定注入优先生效
   embedding?: number[];
   lastAccessedAt: string;
   createdAt: string;
@@ -52,6 +53,7 @@ export type ComplexPeriod = {
   associatedDates: string[];
   linkedPeriods: string[];       // 同时期关联周期（丝线联想）
   coveredEventIds: string[];     // summary 已覆盖的事件记忆
+  rollingSummary?: string;       // 活跃期滚动累积：每日追加「该周期今日进展」（带日期戳）
   embedding?: number[];
   voltage: number;               // 初始 1.0
   lastAccessedAt: string;
@@ -59,17 +61,43 @@ export type ComplexPeriod = {
   updatedAt: string;
 };
 
-// ── L5 核心记忆 ──
+// ── L5 核心记忆（条目式，与 float 原生 core 同构） ──
 export type CoreTrigger = "bootstrap" | "scheduled" | "period_driven" | "manual";
 
-export type ComplexCore = {
-  id: string;                    // core_v 前缀
+export type CoreCategory = "identity" | "bond" | "principle" | "milestone";
+
+/** 核心记忆条目：一条独立事实，对应 float 的一条 core 记录。条目不可变，编辑=新建+旧条软删。 */
+export type ComplexCoreEntry = {
+  id: string;                       // centry_ 前缀
+  characterId: string;
+  text: string;                     // 一句话事实，建议 30–80 字
+  category: CoreCategory;
+  createdAt: string;
+  sourceTrigger: CoreTrigger;
+  active: boolean;
+};
+
+/** 核心记忆版本快照：一组条目 id 构成一个版本（回退 = isCurrent 指针移动）。 */
+export type ComplexCoreSnapshot = {
+  id: string;                       // cver_ 前缀
   characterId: string;
   version: number;
-  content: string;               // P0-P3 五模块正文
+  entryIds: string[];               // 该版本包含的条目 id
+  note: string;                     // 版本备注：触发来源 / 用户改进意见
+  trigger: CoreTrigger;
+  createdAt: string;
+  isCurrent: boolean;
+};
+
+/** 存量整块核心记忆（DB v1 遗留，迁移拆条用）。 */
+export type LegacyComplexCore = {
+  id: string;
+  characterId: string;
+  version: number;
+  content: string;
   updatedAt: string;
   trigger: CoreTrigger;
-  isCurrent: boolean;            // 版本链指针
+  isCurrent: boolean;
 };
 
 // ── L1 环形缓冲状态（KV 持久化） ──
@@ -95,7 +123,7 @@ export type CharacterRuntimeState = {
 };
 
 // ── 迁移状态 ──
-export type MigrationPhase = "legacy" | "dailies" | "distill" | "core" | "done";
+export type MigrationPhase = "events" | "dailies" | "distill" | "core" | "legacy" | "done";
 
 export type MigrationReport = {
   events: number;
@@ -114,6 +142,7 @@ export type MigrationState = {
   totalDays: number;
   doneDays: number;
   currentDate: string | null;
+  eventWindowIndex?: number;    // events 阶段：已完成的事件窗口数（断点续跑用）
   startedAt: string | null;
   updatedAt: string | null;
   error?: string;
@@ -141,17 +170,27 @@ export type ComplexMemoryConfig = {
   // L2
   eventTriggerCount: number;         // 100
   eventTargetLength: number;         // 250 字
+  eventWindowMaxEntries: number;     // 200 条/窗：单窗素材上限，超限分窗生成
   // L3
   dailyTargetLength: number;         // 800 字
-  dailyQuietMinutes: number;         // 30
+  dailyQuietMinutes: number;         // 30（仅约束当天日记）
+  // L4 周期滚动累积
+  rollingAppendMax: number;          // 400 字/日：活跃周期每日进展追加上限
   // L5
   coreMinLength: number;             // 700 字
   coreMaxLength: number;             // 1000 字
-  coreUpdateDiaryCount: number;      // 3
+  coreDailyInterval: number;         // 7：核心双触发之一（日记数满 N 篇）
+  // 调度器
+  maxParallel: number;               // 2：全角色并行检查并发上限
+  retryCount: number;                // 3：任务失败静默重试次数（指数退避）
   // 电压
-  voltageDecayFactor: number;        // 0.98
+  voltageDecayFactor: number;        // 0.98（普通日记）
   voltageRecallBoost: number;        // 0.1
   voltageEraseThreshold: number;     // 0.1
+  // 分层电压衰减（M5）
+  eventDecayFactor: number;          // 0.94：事件衰减快
+  periodDecayFactor: number;         // 0.995：周期衰减慢
+  specialDateDecayFactor: number;    // 0.995：特殊日期日记享受周期级慢衰减
   // 读取管线
   fixedShortTermEntries: number;     // 120
   fixedRecentEventCount: number;     // 2
@@ -161,6 +200,14 @@ export type ComplexMemoryConfig = {
   vectorRecallEnabled: boolean;      // true
   rerankEnabled: boolean;            // true
   silkAssociationEnabled: boolean;   // true
+  // 每日记忆时间窗（M5）：近 full 天全额，full-floor 天线性衰减至底值
+  recallTimeWindowFullDays: number;  // 30
+  recallTimeWindowFloorDays: number; // 180
+  recallTimeWindowFloor: number;     // 0.2
+  // 情绪参与召回（M5）
+  emotionRecallLambda: number;       // 0.15：score × (1 + λ × 情绪相似度)
+  // 特殊日期固定注入（M5）：最近 N 篇被标记日记进固定注入区
+  fixedSpecialDateCount: number;     // 1
   // 镜像
   mirrorToFloatEnabled: boolean;     // true
   // 消毒
@@ -188,6 +235,7 @@ export type MemoryContextBundle = {
   fixedShortTerm: string;             // 固定注入 · 短期上下文
   fixedEvents: string;                // 固定注入 · 最新事件记忆
   yesterdayDaily: string;             // 固定注入 · 昨日日记
+  specialDateDailies: string;         // 固定注入 · 最近被标记的特殊日期日记
   activePeriods: string;              // 固定注入 · 活跃周期摘要
   recalled: string;                   // 召回 + 重排 + 丝线联想 的格式化文本
   recalledItems: MemoryRecallItem[];  // 供电压回升

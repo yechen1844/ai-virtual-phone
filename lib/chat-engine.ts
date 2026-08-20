@@ -1853,7 +1853,7 @@ export async function buildChatPromptMessages(
         }).catch(() => null);
         if (bundle) {
             coreMemories = bundle.coreMemory;
-            longTermMemories = [bundle.fixedEvents, bundle.yesterdayDaily, bundle.activePeriods, bundle.recalled]
+            longTermMemories = [bundle.fixedEvents, bundle.yesterdayDaily, bundle.specialDateDailies, bundle.activePeriods, bundle.recalled]
                 .filter(Boolean)
                 .join("\n\n");
         }

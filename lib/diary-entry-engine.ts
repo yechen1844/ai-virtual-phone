@@ -11,6 +11,7 @@ import { prepareShortTermContext } from "./short-term-assembler";
 import { formatDiaryEntryContext, parseDiaryEntryContent, type ParsedDiaryEntry } from "./diary-entry-utils";
 import type { DiaryEntry, DiaryEntryTrigger } from "./diary-entry-types";
 import { beginDiaryGeneration, endDiaryGeneration } from "./diary-generating-tracker";
+import { recordCharacterActivity } from "./complex-memory/guard";
 
 type ResolvedDiaryEntryGeneration = {
   character: Character;
@@ -99,6 +100,7 @@ export async function generateDiaryEntryForCharacter(
       { characterName: `日记:${resolved.character.name}`, userName: resolved.userName },
       { appId: "diary", appTags: ["diary", "entries"] },
     );
+    recordCharacterActivity(characterId, resolved.character.name, 1);
     return parseDiaryEntryContent(raw);
   } finally {
     endDiaryGeneration(characterId);

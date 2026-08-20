@@ -343,6 +343,52 @@ export function postProcessTrim(text: string): string {
     return text.replace(/\n*\x00TRIM\x00\n*/g, "");
 }
 
+/**
+ * 静态宏全集（单名宏，无 :: 参数后缀）。
+ * 由 resolve() 的 if 分支逐个核对导出，供复杂记忆模板变量校验白名单使用，
+ * 避免手抄漏项导致「正确变量被误报未识别」。动态宏（setvar::/getvar::/random:/timestamp:…）
+ * 由校验方用前缀正则单独豁免，不入本集。
+ */
+export const STATIC_MACRO_NAMES: ReadonlySet<string> = new Set([
+    // 基础
+    "trim", "char", "user",
+    // 消息
+    "lastUserMessage", "lastCharMessage", "lastMessage", "input",
+    // 角色卡
+    "description", "personality", "persona", "group",
+    // 应用级
+    "affinity", "state", "count", "delay",
+    "timedWakeElapsedMinutes", "timedWakeMinutes", "timedWakeIntent",
+    "periodCareContext", "timeContext", "systemTimeZone", "characterTime",
+    "characterTimeZone", "characterWeekday",
+    "customStickers", "stickerExample", "musicLocal", "musicCloud", "musicOnlineHint",
+    "currentSchedule", "当前日程",
+    // VN
+    "vnScenes", "vnSprites", "vnBeats", "vnCurrentBeat",
+    // 工具定义
+    "tools", "cocreateWriteActions", "cocreateReadActions", "groupTools", "groupRoster",
+    "customAppRichMediaDirectives", "customAppChatCapabilities",
+    "chatBilingualInstruction",
+    "statusRegionSection", "statusRegionExampleLine", "statusRegionComposition", "statusRegionFullExample",
+    "offlineBilingualInstruction", "offlineSummaryTag",
+    "checkPhoneBilingualInstruction", "xiaohongshuBilingualInstruction",
+    "phoneAppId", "phoneAppLabel", "phoneSnapshotSummary", "phoneLastRefreshAt",
+    // 定居
+    "dwellingRoom", "dwellingFurniture", "dwellingItem", "dwellingItemPreview",
+    "bookTitle", "chapterTitle", "chapterContent", "annotationHistory", "noteWallContext", "diaryEntryContext",
+    "xiaohongshuFeedContext", "xiaohongshuUserPostContext", "xiaohongshuCommentContext", "xiaohongshuMentionContext",
+    // 访谈杂志
+    "interviewTheme", "interviewHostName", "interviewGuests", "interviewGuestCount",
+    "interviewCurrentGuest", "interviewOtherGuests", "interviewQuestion", "interviewTranscript",
+    "interviewPhase", "interviewRound", "interviewUserAnswer", "interviewCharacterAnswerHistory",
+    // 共创
+    "cocreateProjectContext", "cocreateCurrentMode", "cocreateCurrentChapter", "cocreateChapterIndex",
+    "cocreateArchivedChapterContext", "cocreateWriterNotebook",
+    // 其它
+    "realCharacterList",
+    "time", "weekday", "uuid", "timestamp",
+]);
+
 /** Simple timestamp formatter. Supports common tokens: YYYY, MM, DD, HH, mm, ss, etc. */
 function formatTimestamp(format: string): string {
     const now = new Date();

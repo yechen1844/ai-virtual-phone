@@ -1,6 +1,9 @@
 // lib/complex-memory/voltage.ts
 // 复杂记忆系统 · 电压懒计算、召回回升、每日落库与消磨扫描。
-// 有效电压 = voltage × 0.98 ^ (idleHours / 24)；被召回注入时 +0.1 并刷新 lastAccessedAt。
+// 分层衰减（M5）：有效电压 = voltage × factor ^ (idleHours / 24)。
+//   event → eventDecayFactor(0.94 快) ；period → periodDecayFactor(0.995 慢)；
+//   daily → special ? specialDateDecayFactor(0.995 周期级) : voltageDecayFactor(0.98)。
+// 被召回注入时 +0.1 并刷新 lastAccessedAt。
 // 消磨条件：effectiveVoltage < 阈值 且 coveredByPeriod 非空 → 删除事件 + 联动删除 float 镜像。
 
 import { loadComplexMemoryConfig, loadCharacterState, saveCharacterState } from "./config";
@@ -21,20 +24,35 @@ export type VoltageEntity = {
   lastAccessedAt: string;
 };
 
-export function effectiveVoltage(entity: VoltageEntity, now = Date.now()): number {
+export type VoltageDecayKind = "event" | "daily" | "period";
+
+export type VoltageOpts = {
+  kind?: VoltageDecayKind;
+  special?: boolean;
+  now?: number;
+};
+
+function decayFactorOf(kind: VoltageDecayKind, special: boolean): number {
+  const config = loadComplexMemoryConfig();
+  if (kind === "event") return config.eventDecayFactor;
+  if (kind === "period") return config.periodDecayFactor;
+  return special ? config.specialDateDecayFactor : config.voltageDecayFactor;
+}
+
+export function effectiveVoltage(entity: VoltageEntity, opts?: VoltageOpts): number {
+  const kind = opts?.kind ?? "daily";
+  const now = opts?.now ?? Date.now();
   const idleMs = now - new Date(entity.lastAccessedAt).getTime();
   const idleHours = idleMs > 0 ? idleMs / 3_600_000 : 0;
-  const decayed = entity.voltage * Math.pow(0.98, idleHours / 24);
+  const factor = decayFactorOf(kind, opts?.special ?? false);
+  const decayed = entity.voltage * Math.pow(factor, idleHours / 24);
   return Math.max(0, Math.min(1, decayed));
 }
 
-export function boostedVoltage(
-  entity: VoltageEntity,
-  boost = 0.1,
-  now = Date.now(),
-): { voltage: number; lastAccessedAt: string } {
+export function boostedVoltage(entity: VoltageEntity, boost: number, opts?: VoltageOpts): { voltage: number; lastAccessedAt: string } {
+  const now = opts?.now ?? Date.now();
   return {
-    voltage: Math.min(1, effectiveVoltage(entity, now) + boost),
+    voltage: Math.min(1, effectiveVoltage(entity, { ...opts, now }) + boost),
     lastAccessedAt: new Date(now).toISOString(),
   };
 }
@@ -52,15 +70,15 @@ export async function runVoltageMaintenance(characterId: string): Promise<void> 
 
   const writes: Array<Promise<void>> = [];
   for (const e of events) {
-    const v = effectiveVoltage(e, now);
+    const v = effectiveVoltage(e, { kind: "event", now });
     if (Math.abs(v - e.voltage) > 0.0001) writes.push(saveEvent({ ...e, voltage: v }));
   }
   for (const d of dailies) {
-    const v = effectiveVoltage(d, now);
+    const v = effectiveVoltage(d, { kind: "daily", special: d.special === true, now });
     if (Math.abs(v - d.voltage) > 0.0001) writes.push(saveDaily({ ...d, voltage: v }));
   }
   for (const p of periods) {
-    const v = effectiveVoltage(p, now);
+    const v = effectiveVoltage(p, { kind: "period", now });
     if (Math.abs(v - p.voltage) > 0.0001) writes.push(savePeriod({ ...p, voltage: v }));
   }
   await Promise.all(writes);
@@ -79,7 +97,7 @@ export async function runEraseScan(characterId: string, periodId?: string): Prom
   for (const e of events) {
     if (!e.coveredByPeriod) continue;
     if (periodId && e.coveredByPeriod !== periodId) continue;
-    if (effectiveVoltage(e, now) >= config.voltageEraseThreshold) continue;
+    if (effectiveVoltage(e, { kind: "event", now }) >= config.voltageEraseThreshold) continue;
 
     const period = await getPeriod(e.coveredByPeriod);
     if (period) {

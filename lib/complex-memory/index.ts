@@ -14,5 +14,16 @@ export * from "./voltage";
 export * from "./recall";
 export * from "./daily-generator";
 export * from "./period-distiller";
-export * from "./core-builder";
+export {
+  sanitizeCoreEntryText,
+  newCoreEntry,
+  bootstrapCoreMemory,
+  splitLegacyCoreMemory,
+  rebuildCoreMemory,
+  fineTuneCoreMemory,
+  regenerateCoreWithFeedback,
+  rollbackCoreVersion,
+  addCoreEntry,
+  editCoreEntry,
+} from "./core-builder";
 export * from "./scheduler";

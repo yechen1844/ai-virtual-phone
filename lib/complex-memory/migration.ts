@@ -1,18 +1,22 @@
 // lib/complex-memory/migration.ts
-// 复杂记忆系统 · 一键迁移（float → 复杂记忆）+ 外部导入占位。
+// 复杂记忆系统 · 一键迁移（双向）+ 外部导入占位。
+// 原生 → 复杂：events（从最早分窗生成事件）→ dailies（从近到远补日记）→ distill（提炼周期）
+//             → core（条目化 bootstrap）→ legacy（旧 float 压缩为历史沉淀周期）→ done。
+// 复杂 → 原生：一键导出，核心条目写 float core、事件与周期总结写 float long_term。
 // 迁移作为可中断的后台任务执行：断点存于角色 state 键，随时续跑。
-// 阶段：legacy（旧 float 记忆压缩为历史周期）→ dailies（逐日回溯生成日记，从近到远）
-//      → distill（提炼已结束周期）→ core（核心记忆 bootstrap）→ done（核对报告）。
 
 import { loadNativeTimeline } from "../short-term-assembler";
 import { loadMemoryEntriesByType } from "../memory-storage";
+import { estimateTokens } from "../token-counter";
 import { loadComplexMemoryConfig, loadCharacterState, saveCharacterState } from "./config";
 import { generateDaily } from "./daily-generator";
 import { distillPeriod } from "./period-distiller";
 import { bootstrapCoreMemory } from "./core-builder";
+import { generateEventWindow } from "./event-generator";
+import { mirrorCoreEntriesToFloat, mirrorEventToFloat, mirrorPeriodToFloat } from "./mirror";
 import {
-  getCurrentCore,
-  loadCoreVersions,
+  getCurrentCoreView,
+  countCores,
   loadDailies,
   loadEvents,
   loadPeriods,
@@ -29,16 +33,44 @@ import type {
 // 单页内并发防护：迁移步骤逐条执行，避免双击/重复调度并发跑。
 let running = false;
 
-const ESTIMATE_PER_DAY = 1400; // 每篇日记 prompt + 输出约 1400 token
-const ESTIMATE_FIXED = 3000;   // legacy + distill + core 固定开销
+const ESTIMATE_PERIOD_FIXED = 1500; // 每个周期提炼固定开销
+const ESTIMATE_CORE_FIXED = 2000;   // 核心 bootstrap 固定开销
 
 export function getMigrationState(characterId: string): MigrationState | null {
   return loadCharacterState(characterId).migration ?? null;
 }
 
+/** 动态 token 估算：基于真实时间线条数，替换固定 1400/天。 */
 export function estimateMigration(characterId: string, days: number): number {
   const dates = computeDates(characterId, days);
-  return dates.length * ESTIMATE_PER_DAY + ESTIMATE_FIXED;
+  const timeline = loadNativeTimeline(characterId);
+  const config = loadComplexMemoryConfig();
+  const windowSize = Math.max(20, config.eventWindowMaxEntries);
+
+  // 事件：全量时间线 ÷ 窗口上限 × 单窗输入输出均值
+  const joined = timeline.map((e) => e.content ?? "").join("\n");
+  const totalInputTokens = estimateTokens(joined);
+  const numWindows = Math.max(1, Math.ceil(timeline.length / windowSize));
+  const perWindowInput = totalInputTokens / numWindows;
+  const perWindowOutput = config.eventTargetLength * 1.5;
+  const eventsTokens = numWindows * (perWindowInput + perWindowOutput);
+
+  // 日记：逐日素材实测 + 输出
+  let dailiesTokens = 0;
+  for (const date of dates) {
+    const dayText = timeline
+      .filter((e) => e.timestamp.slice(0, 10) === date)
+      .map((e) => e.content ?? "")
+      .join("\n");
+    dailiesTokens += estimateTokens(dayText) + config.dailyTargetLength * 1.5;
+  }
+
+  // 周期与核心：按篇数 × 固定系数
+  const periodCount = dates.length > 0 ? Math.ceil(dates.length / 7) : 0;
+  const periodsTokens = periodCount * ESTIMATE_PERIOD_FIXED;
+  const coreTokens = ESTIMATE_CORE_FIXED;
+
+  return Math.round(eventsTokens + dailiesTokens + periodsTokens + coreTokens);
 }
 
 /** 启动迁移：计算回溯日期（从近到远），落断点，返回预估 token。 */
@@ -56,25 +88,28 @@ export async function startMigration(
   }
 
   const dates = computeDates(characterId, days);
-  if (dates.length === 0) {
+  const timeline = loadNativeTimeline(characterId);
+  if (dates.length === 0 && timeline.length < 4) {
     return { success: false, error: "该角色没有可回溯的聊天/时间线历史" };
   }
 
+  const estimate = estimateMigration(characterId, days);
   const now = new Date().toISOString();
   const state: MigrationState = {
     status: "running",
-    phase: "legacy",
+    phase: "events",
     dates,
     totalDays: dates.length,
     doneDays: 0,
     currentDate: null,
+    eventWindowIndex: 0,
     startedAt: now,
     updatedAt: now,
-    tokenEstimate: dates.length * ESTIMATE_PER_DAY + ESTIMATE_FIXED,
+    tokenEstimate: estimate,
   };
   const cs = loadCharacterState(characterId);
   saveCharacterState({ ...cs, migration: state });
-  return { success: true, estimate: state.tokenEstimate };
+  return { success: true, estimate };
 }
 
 export function pauseMigration(characterId: string): void {
@@ -104,7 +139,7 @@ export function resetMigration(characterId: string): void {
   saveCharacterState(rest);
 }
 
-/** 执行一步迁移：legacy → 单日日记 → 单周期提炼 → core → done。 */
+/** 执行一步迁移：events 单窗 → 单日日记 → 单周期提炼 → core → legacy → done。 */
 export async function runMigrationStep(
   characterId: string,
   characterName: string,
@@ -146,9 +181,24 @@ async function executeStep(
   const base = { ...state, updatedAt: now };
 
   switch (state.phase) {
-    case "legacy": {
-      await createLegacyPeriod(characterId);
-      return { ...base, phase: "dailies" };
+    case "events": {
+      const windowIndex = state.eventWindowIndex ?? 0;
+      const res = await generateEventWindow(characterId, characterName, windowIndex);
+      if (!res.success) {
+        if (res.error === "事件不足 4 条") {
+          // 无足够历史，跳过事件阶段直接进入日记
+          return { ...base, phase: "dailies" };
+        }
+        throw new Error(res.error ?? "事件窗口生成失败");
+      }
+      if (res.done) {
+        return { ...base, phase: "dailies", eventWindowIndex: res.nextIndex };
+      }
+      return {
+        ...base,
+        eventWindowIndex: res.nextIndex,
+        currentDate: `事件窗 ${res.nextIndex}/${res.totalWindows}`,
+      };
     }
     case "dailies": {
       const dates = [...state.dates];
@@ -179,17 +229,72 @@ async function executeStep(
       return { ...base, phase: "core" };
     }
     case "core": {
-      const existing = await getCurrentCore(characterId);
-      if (!existing) {
+      const view = await getCurrentCoreView(characterId);
+      if (!view.snapshot) {
         await bootstrapCoreMemory(characterId, characterName);
       }
-      const report = await buildReport(characterId, state);
-      return { ...base, phase: "done", status: "done", report };
+      return { ...base, phase: "legacy" };
     }
-    case "done":
+    case "legacy": {
+      await createLegacyPeriod(characterId);
+      return { ...base, phase: "done" };
+    }
+    case "done": {
+      const report = await buildReport(characterId, state);
+      return { ...base, status: "done", report };
+    }
     default:
       return base;
   }
+}
+
+/** 单独重跑某个失败日期（从 failedDates 移除后重新生成当日日记）。 */
+export async function retryFailedDate(
+  characterId: string,
+  characterName: string,
+  date: string,
+): Promise<{ success: boolean; error?: string }> {
+  const state = getMigrationState(characterId);
+  if (!state) return { success: false, error: "尚未启动迁移" };
+  const res = await generateDaily(characterId, characterName, date, { suppressChain: true });
+  if (!res.success && res.error !== "当日日记已存在（幂等）") {
+    return { success: false, error: res.error ?? "重跑失败" };
+  }
+  const failedDates = (state.failedDates ?? []).filter((d) => d !== date);
+  const cs = loadCharacterState(characterId);
+  saveCharacterState({
+    ...cs,
+    migration: { ...state, failedDates, updatedAt: new Date().toISOString() },
+  });
+  return { success: true };
+}
+
+/** 复杂 → 原生：核心条目写 float core、事件与周期总结写 float long_term。 */
+export async function exportToFloat(
+  characterId: string,
+): Promise<{ success: boolean; error?: string; counts?: { cores: number; events: number; periods: number } }> {
+  const view = await getCurrentCoreView(characterId);
+  if (view.activeEntries.length > 0) {
+    await mirrorCoreEntriesToFloat(characterId, view.activeEntries);
+  }
+
+  const [events, periods] = await Promise.all([loadEvents(characterId), loadPeriods(characterId)]);
+  for (const e of events) {
+    await mirrorEventToFloat(e, { earliest: e.timestamp, latest: e.timestamp, entryCount: 1 });
+  }
+  const summarized = periods.filter((p) => p.summary && p.summary.trim());
+  for (const p of summarized) {
+    await mirrorPeriodToFloat(p);
+  }
+
+  return {
+    success: true,
+    counts: {
+      cores: view.activeEntries.length,
+      events: events.length,
+      periods: summarized.length,
+    },
+  };
 }
 
 async function buildReport(characterId: string, state: MigrationState): Promise<MigrationReport> {
@@ -197,13 +302,13 @@ async function buildReport(characterId: string, state: MigrationState): Promise<
     loadEvents(characterId),
     loadDailies(characterId),
     loadPeriods(characterId),
-    loadCoreVersions(characterId),
+    countCores(characterId),
   ]);
   return {
     events: events.length,
     dailies: dailies.length,
     periods: periods.length,
-    cores: cores.length,
+    cores: cores.entries,
     tokenEstimate: state.tokenEstimate ?? 0,
     failedDates: state.failedDates ?? [],
     checkpoint: { totalDays: state.totalDays, doneDays: state.doneDays, currentDate: state.currentDate },

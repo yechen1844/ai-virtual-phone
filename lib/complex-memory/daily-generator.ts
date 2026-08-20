@@ -15,7 +15,7 @@ import {
 } from "./config";
 import { renderMemoryPrompt, DEFAULT_PROMPTS } from "./prompts";
 import {
-  getCurrentCore,
+  getCurrentCoreView,
   loadActivePeriods,
   loadEvents,
   saveDaily,
@@ -33,17 +33,21 @@ type PeriodCheck = {
   activePeriodIds?: string[];
 };
 
+type PeriodProgressItem = { periodId: string; progress: string };
+
 type DailyParseResult = {
   diary: string;
   emotion: EmotionVector;
   periodCheck: PeriodCheck;
+  periodProgress: PeriodProgressItem[];
 };
 
-/** 调度器入口：找到最近一个"已结束且有活动、日记未生成、已静默"的日期并补生成。 */
+/** 调度器入口：找到最近一个「已结束且有活动、日记未生成」的日期并补生成。
+ *  跨天（昨天及更早）日期已结束，直接视为可补；静默条件只约束当天日记。 */
 export async function maybeGenerateDaily(
   characterId: string,
   characterName: string,
-): Promise<boolean> {
+): Promise<{ generated: boolean; error?: string }> {
   const config = loadComplexMemoryConfig();
   const today = dateString(0);
   const timeline = loadNativeTimeline(characterId);
@@ -51,7 +55,6 @@ export async function maybeGenerateDaily(
   const byDate = new Map<string, { lastTs: number }>();
   for (const e of timeline) {
     const d = e.timestamp.slice(0, 10);
-    if (d >= today) continue;
     const rec = byDate.get(d);
     if (rec) {
       rec.lastTs = Math.max(rec.lastTs, new Date(e.timestamp).getTime());
@@ -59,7 +62,7 @@ export async function maybeGenerateDaily(
       byDate.set(d, { lastTs: new Date(e.timestamp).getTime() });
     }
   }
-  if (byDate.size === 0) return false;
+  if (byDate.size === 0) return { generated: false };
 
   const dates = [...byDate.keys()].sort().reverse();
   const quietMs = config.dailyQuietMinutes * 60_000;
@@ -67,11 +70,13 @@ export async function maybeGenerateDaily(
     const existing = await getDaily(characterId, d);
     if (existing) continue;
     const rec = byDate.get(d)!;
-    if (Date.now() - rec.lastTs < quietMs) continue;
-    await generateDaily(characterId, characterName, d);
-    return true;
+    // 静默条件只约束当天：跨天日期已结束，直接视为可补
+    if (d === today && Date.now() - rec.lastTs < quietMs) continue;
+    const result = await generateDaily(characterId, characterName, d);
+    if (!result.success) return { generated: false, error: result.error };
+    return { generated: true };
   }
-  return false;
+  return { generated: false };
 }
 
 export async function generateDaily(
@@ -99,11 +104,11 @@ export async function generateDaily(
 
     const dayTimeline = loadNativeTimeline(characterId).filter((e) => e.timestamp.slice(0, 10) === date);
     const dayEvents = (await loadEvents(characterId)).filter((e) => e.timestamp.slice(0, 10) === date);
-    const [core, activePeriods] = await Promise.all([getCurrentCore(characterId), loadActivePeriods(characterId)]);
+    const [core, activePeriods] = await Promise.all([getCurrentCoreView(characterId), loadActivePeriods(characterId)]);
 
     const timelineText = formatTimelineForSummarization(dayTimeline)?.eventsText ?? "";
     const eventsText = dayEvents.map((e) => `- ${e.content}`).join("\n");
-    const coreText = core?.content ?? "";
+    const coreText = core.text;
     const periodsText = activePeriods.map((p) => `【${p.title}】${p.summary}`).join("\n");
 
     const template = config.prompts.daily?.trim() || DEFAULT_PROMPTS.daily;
@@ -111,9 +116,12 @@ export async function generateDaily(
       date,
       timeline: timelineText,
       events: eventsText,
+      todayTimeline: timelineText,
+      todayEvents: eventsText,
       coreMemory: coreText,
       activePeriods: periodsText,
       length: String(config.dailyTargetLength),
+      rollingAppendMax: String(config.rollingAppendMax),
     });
 
     const result = await simpleLLMCall(
@@ -127,6 +135,7 @@ export async function generateDaily(
     if (!parsed) return { success: false, error: "日记 JSON 解析失败" };
 
     const periodResult = await applyPeriodCheck(characterId, date, parsed.periodCheck, activePeriods);
+    await applyPeriodProgress(characterId, date, parsed.periodProgress);
 
     const now = new Date().toISOString();
     const daily: ComplexDaily = {
@@ -164,7 +173,8 @@ export async function generateDaily(
     });
 
     closedPeriodIds = periodResult.closedPeriodIds;
-    shouldRebuildCore = newCount >= config.coreUpdateDiaryCount;
+    // 核心双触发：日记数满 coreDailyInterval 篇触发定期重构（周期驱动微调由 period-distiller 的 fineTuneCoreMemory 负责）
+    shouldRebuildCore = newCount >= config.coreDailyInterval;
     outcome = { success: true };
 
     console.log(`[ComplexMemory] 日记生成成功: ${date}`);
@@ -219,6 +229,16 @@ function parseDailyJson(text: string): DailyParseResult | null {
     const activePeriodIds = Array.isArray(pc.activePeriodIds)
       ? pc.activePeriodIds.filter((x): x is string => typeof x === "string")
       : [];
+    const pp = Array.isArray(obj.periodProgress) ? obj.periodProgress : [];
+    const periodProgress: PeriodProgressItem[] = pp
+      .map((item) => {
+        const o = (item ?? {}) as Record<string, unknown>;
+        return {
+          periodId: typeof o.periodId === "string" ? o.periodId : "",
+          progress: typeof o.progress === "string" ? o.progress.trim() : "",
+        };
+      })
+      .filter((x) => x.periodId && x.progress);
     return {
       diary,
       emotion: {
@@ -226,6 +246,7 @@ function parseDailyJson(text: string): DailyParseResult | null {
         arousal: clampNum(emo.arousal, 0, 1, 0.5),
       },
       periodCheck: { newPeriods, closedPeriods, activePeriodIds },
+      periodProgress,
     };
   } catch {
     return null;
@@ -279,4 +300,29 @@ async function applyPeriodCheck(
   }
 
   return { belongsToPeriods: [...belongsToPeriods], closedPeriodIds };
+}
+
+/** 周期滚动累积：把 LLM 输出的「该周期今日进展」按日记日期戳追加进活跃周期 rollingSummary。 */
+async function applyPeriodProgress(
+  characterId: string,
+  date: string,
+  progress: PeriodProgressItem[],
+): Promise<void> {
+  if (progress.length === 0) return;
+  const config = loadComplexMemoryConfig();
+  const periods = await loadActivePeriods(characterId);
+  for (const item of progress) {
+    const p = periods.find((x) => x.id === item.periodId);
+    if (!p || p.endTime !== null) continue;
+    const stamp = `[${date}] ${item.progress}`;
+    const prev = p.rollingSummary?.trim();
+    const next = prev ? `${prev}\n${stamp}` : stamp;
+    // 超出滚动累积上限时截断最旧段落，保持总量可控
+    const lines = next.split("\n");
+    let kept = lines;
+    while (kept.join("\n").length > config.rollingAppendMax * 7) {
+      kept = kept.slice(1);
+    }
+    await savePeriod({ ...p, rollingSummary: kept.join("\n"), updatedAt: new Date().toISOString() });
+  }
 }

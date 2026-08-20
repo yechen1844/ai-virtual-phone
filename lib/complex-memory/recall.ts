@@ -9,7 +9,7 @@ import { estimateTokens } from "../token-counter";
 import { loadComplexMemoryConfig } from "./config";
 import { renderMemoryPrompt, DEFAULT_PROMPTS } from "./prompts";
 import {
-  getCurrentCore,
+  getCurrentCoreView,
   loadEvents,
   loadDailies,
   loadPeriods,
@@ -23,6 +23,7 @@ import type {
   ComplexEvent,
   ComplexMemoryConfig,
   ComplexPeriod,
+  EmotionVector,
   MemoryContextBundle,
   MemoryRecallItem,
 } from "./types";
@@ -33,6 +34,56 @@ function dateString(offsetDays: number): string {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+// ── 轻量情绪探测（M5 情绪参与召回用，无外部依赖） ──
+const POSITIVE_WORDS = [
+  "开心","高兴","幸福","喜欢","爱","兴奋","期待","满意","笑","棒","好","不错",
+  "感动","温暖","甜蜜","幸运","骄傲","快乐","愉快","满足","惊喜","谢谢","感谢","美好",
+];
+const NEGATIVE_WORDS = [
+  "难过","伤心","生气","愤怒","烦","讨厌","失望","焦虑","害怕","哭","累","疲惫","崩溃",
+  "失落","孤独","委屈","郁闷","沮丧","紧张","担心","不安","痛苦","想哭","恨","暴躁",
+];
+const HIGH_AROUSAL_WORDS = [
+  "激动","兴奋","抓狂","大笑","哭","崩溃","尖叫","爆发","愤怒","狂喜","怒吼","震惊","兴奋",
+];
+const LOW_AROUSAL_WORDS = ["平静","安稳","无聊","安静","淡定","疲惫","困","麻木","放松","慵懒"];
+
+/** 从文本中探测情绪向量（valence -1~1, arousal 0~1）。无法判断时返回零向量。 */
+function detectEmotion(text: string): EmotionVector {
+  let pos = 0;
+  let neg = 0;
+  for (const w of POSITIVE_WORDS) if (text.includes(w)) pos += 1;
+  for (const w of NEGATIVE_WORDS) if (text.includes(w)) neg += 1;
+  const total = pos + neg;
+  const valence = total === 0 ? 0 : (pos - neg) / total;
+  let high = 0;
+  let low = 0;
+  for (const w of HIGH_AROUSAL_WORDS) if (text.includes(w)) high += 1;
+  for (const w of LOW_AROUSAL_WORDS) if (text.includes(w)) low += 1;
+  const aTotal = high + low;
+  const arousal = aTotal === 0 ? 0 : high / aTotal;
+  return { valence, arousal };
+}
+
+/** 二维情绪向量余弦相似度（任一侧为零向量则 0）。 */
+function emotionSimilarity(a: EmotionVector, b: EmotionVector): number {
+  const dot = a.valence * b.valence + a.arousal * b.arousal;
+  const magA = Math.hypot(a.valence, a.arousal);
+  const magB = Math.hypot(b.valence, b.arousal);
+  if (magA === 0 || magB === 0) return 0;
+  return dot / (magA * magB);
+}
+
+/** 每日记忆时间窗：近 full 天全额，full→floor 天线性衰减至底值。 */
+function dailyTimeWindowWeight(date: string, config: ComplexMemoryConfig, now = Date.now()): number {
+  const days = Math.max(0, (now - new Date(date).getTime()) / 86_400_000);
+  if (days <= config.recallTimeWindowFullDays) return 1;
+  if (days >= config.recallTimeWindowFloorDays) return config.recallTimeWindowFloor;
+  const span = config.recallTimeWindowFloorDays - config.recallTimeWindowFullDays;
+  const ratio = span > 0 ? (days - config.recallTimeWindowFullDays) / span : 1;
+  return 1 - (1 - config.recallTimeWindowFloor) * ratio;
 }
 
 function formatEventLine(e: ComplexEvent): string {
@@ -67,17 +118,23 @@ export async function buildMemoryContextBundle(
   const config = loadComplexMemoryConfig();
 
   const [core, events, dailies, periods] = await Promise.all([
-    getCurrentCore(characterId),
+    getCurrentCoreView(characterId),
     loadEvents(characterId),
     loadDailies(characterId),
     loadPeriods(characterId),
   ]);
 
-  // ① 固定注入区（硬性保留）
-  const coreMemory = core?.content ?? "";
+  // ① 固定注入区（硬性保留）：核心记忆已按 category 分组渲染（identity→bond→principle→milestone）
+  const coreMemory = core.text;
   const fixedEvents = events.slice(-config.fixedRecentEventCount).map(formatEventLine).join("\n");
   const yesterday = dailies.find((d) => d.date === dateString(-1));
   const yesterdayDaily = yesterday ? formatDailyLine(yesterday) : "";
+  // 特殊日期固定注入：最近 N 篇被标记为特殊的日记优先生效
+  const specialDailies = dailies
+    .filter((d) => d.special === true)
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, Math.max(0, config.fixedSpecialDateCount));
+  const specialDateDailies = specialDailies.map(formatDailyLine).join("\n\n");
   const activePeriods = periods
     .filter((p) => p.status === "active")
     .map(formatPeriodLine)
@@ -87,10 +144,11 @@ export async function buildMemoryContextBundle(
   // ② 向量召回（无 embedding API 时关键词退化）
   let recalledItems = await vectorRecall(characterId, currentContext, config, { events, dailies, periods });
 
-  // 剔除与固定注入区重复的实体（最新事件/昨日日记/活跃周期已硬性注入）
+  // 剔除与固定注入区重复的实体（最新事件/昨日日记/特殊日期日记/活跃周期已硬性注入）
   const fixedIds = new Set<string>([
     ...events.slice(-config.fixedRecentEventCount).map((e) => e.id),
     ...(yesterday ? [yesterday.id] : []),
+    ...specialDailies.map((d) => d.id),
     ...periods.filter((p) => p.status === "active").map((p) => p.id),
   ]);
   recalledItems = recalledItems.filter((item) => !fixedIds.has(item.id));
@@ -111,6 +169,7 @@ export async function buildMemoryContextBundle(
     estimateTokens(fixedShortTerm) +
     estimateTokens(fixedEvents) +
     estimateTokens(yesterdayDaily) +
+    estimateTokens(specialDateDailies) +
     estimateTokens(activePeriods);
   const kept = trimRecalledToBudget(fixedTokens, reranked, config.totalInjectTokenBudget);
 
@@ -119,13 +178,14 @@ export async function buildMemoryContextBundle(
     fixedTokens + kept.reduce((sum, item) => sum + estimateTokens(item.content) + 8, 0);
 
   // 电压回升：所有被最终注入的实体 +0.1 并刷新 lastAccessedAt
-  await boostInjected(characterId, { events, dailies, periods, fixedEventCount: config.fixedRecentEventCount, yesterday, kept });
+  await boostInjected(characterId, { events, dailies, periods, fixedEventCount: config.fixedRecentEventCount, yesterday, specialDailies, kept });
 
   return {
     coreMemory,
     fixedShortTerm,
     fixedEvents,
     yesterdayDaily,
+    specialDateDailies,
     activePeriods,
     recalled,
     recalledItems: kept,
@@ -142,17 +202,19 @@ async function vectorRecall(
 ): Promise<MemoryRecallItem[]> {
   const embApi = config.vectorRecallEnabled ? resolveAuxiliaryApiConfig("embeddingApiConfigId") : null;
 
-  const candidates: Array<{ item: MemoryRecallItem; embedding?: number[] }> = [];
+  const candidates: Array<{ item: MemoryRecallItem; embedding?: number[]; emotion?: EmotionVector }> = [];
   for (const e of entities.events) {
     candidates.push({
       item: { kind: "event", id: e.id, characterId, timestamp: e.timestamp, content: e.content, score: 0, voltage: e.voltage, belongsToPeriods: e.periodsRef },
       embedding: e.embedding,
+      emotion: e.emotion,
     });
   }
   for (const d of entities.dailies) {
     candidates.push({
       item: { kind: "daily", id: d.id, characterId, timestamp: d.date, content: d.content, score: 0, voltage: d.voltage, belongsToPeriods: d.belongsToPeriods },
       embedding: d.embedding,
+      emotion: d.emotionVector,
     });
   }
   for (const p of entities.periods) {
@@ -164,21 +226,39 @@ async function vectorRecall(
 
   if (candidates.length === 0 || !currentContext.trim()) return [];
 
+  // M5 情绪参与召回：探测当前上下文情绪，评分按 score × (1 + λ × 情绪相似度) 加权（周期无情绪向量，跳过）
+  const ctxEmotion = detectEmotion(currentContext);
+  const applyWeights = (scored: Array<{ item: MemoryRecallItem; score: number }>): MemoryRecallItem[] => {
+    const weighted = scored.map((s) => {
+      let score = s.score;
+      const cand = candidates.find((c) => c.item.id === s.item.id);
+      // 每日记忆时间窗：仅日记按时间降权（事件不受此窗，久远但关键的事件必须能召回）
+      if (s.item.kind === "daily") {
+        score *= dailyTimeWindowWeight(s.item.timestamp, config);
+      }
+      // 情绪加权
+      if (cand?.emotion && (ctxEmotion.valence !== 0 || ctxEmotion.arousal !== 0)) {
+        score *= 1 + config.emotionRecallLambda * emotionSimilarity(cand.emotion, ctxEmotion);
+      }
+      return { item: s.item, score };
+    });
+    weighted.sort((a, b) => b.score - a.score);
+    return weighted.slice(0, config.recallTopK).map((s) => ({ ...s.item, score: s.score }));
+  };
+
   if (embApi && resolveEmbeddingModel(embApi)) {
     const queryEmbedding = await generateEmbedding(currentContext, embApi);
     if (queryEmbedding) {
       const withEmb = candidates.filter((c) => c.embedding && c.embedding.length > 0);
       if (withEmb.length > 0) {
         const scored = withEmb.map((c) => ({ item: c.item, score: cosineSimilarity(queryEmbedding, c.embedding!) }));
-        scored.sort((a, b) => b.score - a.score);
-        return scored.slice(0, config.recallTopK).map((s) => ({ ...s.item, score: s.score }));
+        return applyWeights(scored);
       }
     }
   }
 
   const scored = candidates.map((c) => ({ item: c.item, score: keywordOverlapRatio(currentContext, c.item.content) }));
-  scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, config.recallTopK).map((s) => ({ ...s.item, score: s.score }));
+  return applyWeights(scored);
 }
 
 // ── ④ 丝线联想 ──
@@ -306,6 +386,7 @@ async function boostInjected(
     periods: ComplexPeriod[];
     fixedEventCount: number;
     yesterday?: ComplexDaily;
+    specialDailies: ComplexDaily[];
     kept: MemoryRecallItem[];
   },
 ): Promise<void> {
@@ -315,17 +396,22 @@ async function boostInjected(
   const fixedIds = new Set<string>();
   for (const e of deps.events.slice(-deps.fixedEventCount)) {
     fixedIds.add(e.id);
-    const b = boostedVoltage(e, 0.1, now);
+    const b = boostedVoltage(e, 0.1, { kind: "event", now });
     boosts.push(saveEvent({ ...e, ...b }));
   }
   if (deps.yesterday) {
     fixedIds.add(deps.yesterday.id);
-    const b = boostedVoltage(deps.yesterday, 0.1, now);
+    const b = boostedVoltage(deps.yesterday, 0.1, { kind: "daily", special: deps.yesterday.special === true, now });
     boosts.push(saveDaily({ ...deps.yesterday, ...b }));
+  }
+  for (const d of deps.specialDailies) {
+    fixedIds.add(d.id);
+    const b = boostedVoltage(d, 0.1, { kind: "daily", special: true, now });
+    boosts.push(saveDaily({ ...d, ...b }));
   }
   for (const p of deps.periods.filter((x) => x.status === "active")) {
     fixedIds.add(p.id);
-    const b = boostedVoltage(p, 0.1, now);
+    const b = boostedVoltage(p, 0.1, { kind: "period", now });
     boosts.push(savePeriod({ ...p, ...b }));
   }
 
@@ -334,19 +420,19 @@ async function boostInjected(
     if (item.kind === "event") {
       const e = deps.events.find((x) => x.id === item.id);
       if (e) {
-        const b = boostedVoltage(e, 0.1, now);
+        const b = boostedVoltage(e, 0.1, { kind: "event", now });
         boosts.push(saveEvent({ ...e, ...b }));
       }
     } else if (item.kind === "daily") {
       const d = deps.dailies.find((x) => x.id === item.id);
       if (d) {
-        const b = boostedVoltage(d, 0.1, now);
+        const b = boostedVoltage(d, 0.1, { kind: "daily", special: d.special === true, now });
         boosts.push(saveDaily({ ...d, ...b }));
       }
     } else if (item.kind === "period") {
       const p = deps.periods.find((x) => x.id === item.id);
       if (p) {
-        const b = boostedVoltage(p, 0.1, now);
+        const b = boostedVoltage(p, 0.1, { kind: "period", now });
         boosts.push(savePeriod({ ...p, ...b }));
       }
     }

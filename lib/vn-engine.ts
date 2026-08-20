@@ -28,6 +28,7 @@ import { getVnSceneNames, getVnSpriteNames } from "./vn-asset-storage";
 import type { ChatMessage } from "./chat-storage";
 import type { VnFrame, VnOptions } from "./vn-types";
 import { simpleLLMCall } from "./api-helpers";
+import { recordCharacterActivity } from "./complex-memory/guard";
 
 export type VnGenerationResult = {
   rawText: string;
@@ -118,6 +119,7 @@ export async function generateVnCompletion(
   });
 
   const parsed = parseVnResponse(rawOutput);
+  recordCharacterActivity(characterId, character.name, 1);
   return {
     rawText: parsed.rawText,
     frames: parsed.frames,

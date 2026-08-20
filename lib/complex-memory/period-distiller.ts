@@ -28,7 +28,7 @@ export async function distillPeriod(
   characterId: string,
   characterName: string,
   periodId: string,
-  opts?: { suppressChain?: boolean },
+  opts?: { suppressChain?: boolean; userBrief?: string },
 ): Promise<{ success: boolean; error?: string }> {
   const config = loadComplexMemoryConfig();
   const period = await getPeriod(periodId);
@@ -52,15 +52,23 @@ export async function distillPeriod(
 
     const dailiesText = periodDailies.map((d) => `[${d.date}] ${d.content}`).join("\n\n");
     const eventsText = periodEvents.map((e) => `[${e.timestamp.slice(0, 10)}] ${e.content}`).join("\n\n");
+    const rollingSummary = period.rollingSummary?.trim() || "（无滚动累积，以下为关联日记与事件全文）";
+    const durationDays = Math.max(1, Math.round((new Date(period.endTime ?? dateString(0)).getTime() - new Date(period.startTime).getTime()) / 86_400_000) + 1);
 
     const template = config.prompts.period?.trim() || DEFAULT_PROMPTS.period;
-    const prompt = renderMemoryPrompt(template, characterName, getUserName(characterId), {
+    let prompt = renderMemoryPrompt(template, characterName, getUserName(characterId), {
       title: period.title,
       startTime: period.startTime,
       endTime: period.endTime ?? dateString(0),
-      dailies: dailiesText,
+      durationDays: String(durationDays),
+      rollingSummary,
+      periodDairies: dailiesText,
       events: eventsText,
     });
+    // 手动总结：用户补充主线作为额外素材注入
+    if (opts?.userBrief?.trim()) {
+      prompt += `\n\n【用户补充主线】\n${opts.userBrief.trim()}`;
+    }
 
     const result = await simpleLLMCall(
       apiConfig,
@@ -158,4 +166,35 @@ export async function runPeriodMaintenance(characterId: string, characterName: s
       }
     }
   }
+}
+
+// ── 周期手动化：手动创建骨架周期（M6） ──
+export async function createPeriodManual(
+  characterId: string,
+  title: string,
+  startTime: string,
+  endTime?: string | null,
+): Promise<{ success: boolean; error?: string; periodId?: string }> {
+  if (!title.trim()) return { success: false, error: "周期标题不能为空" };
+  if (!startTime) return { success: false, error: "起始日期不能为空" };
+  const now = new Date().toISOString();
+  const period: ComplexPeriod = {
+    id: `period_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    characterId,
+    title: title.trim(),
+    startTime,
+    endTime: endTime || null,
+    status: "active",
+    summary: "",
+    timelineIndex: {},
+    associatedDates: [startTime],
+    linkedPeriods: [],
+    coveredEventIds: [],
+    voltage: 1,
+    lastAccessedAt: now,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await savePeriod(period);
+  return { success: true, periodId: period.id };
 }

@@ -41,6 +41,7 @@ import {
   type CoCreateMode,
   type CoCreateSession,
 } from "./cocreate-types";
+import { recordCharacterActivity } from "./complex-memory/guard";
 
 const MAX_COCREATE_TOOL_ROUNDS = 3;
 const WRITE_OUTPUT_LIMIT = 2400;
@@ -733,6 +734,7 @@ export async function generateCoCreateReply(
   }
 
   workingSession = finalizeCoCreateToolArtifacts(workingSession);
+  recordCharacterActivity(runtime.character.id, runtime.character.name, 1);
   return {
     content: cleanText(lastCleanOutput, mode === "write" ? WRITE_OUTPUT_LIMIT : DISCUSS_OUTPUT_LIMIT) || "我已经处理了这些资料，我们继续。",
     model: runtime.apiConfig.defaultModel,
