@@ -39,8 +39,7 @@ import CSSSchemeBar from "@/components/ui/css-scheme-picker";
 import { Avatar } from "@/components/ui/primitives";
 import { StoryHtmlRenderer } from "@/components/ui/story-html-renderer";
 import { loadCharacters } from "@/lib/character-storage";
-import { maybeRunSummarization } from "@/lib/memory-summarizer";
-import { incrementEventCounter } from "@/lib/memory-storage";
+import { recordCharacterActivity } from "@/lib/complex-memory/guard";
 import { resolveUserIdentity } from "@/lib/settings-storage";
 import {
   generateStoryCompletion,
@@ -651,15 +650,11 @@ export function StoryApp({ onClose }: StoryAppProps) {
 
       const storyCharacter = characters.find((character) => character.id === characterId);
       if (storyCharacter) {
-        void (async () => {
-          try {
-            incrementEventCounter(characterId);
-            incrementEventCounter(characterId);
-            await maybeRunSummarization(characterId, storyCharacter.name);
-          } catch (err) {
-            console.warn("[StoryApp] Memory counter/summarization failed:", err);
-          }
-        })();
+        try {
+          recordCharacterActivity(characterId, storyCharacter.name, 2);
+        } catch (err) {
+          console.warn("[StoryApp] Memory counter/summarization failed:", err);
+        }
       }
     } catch (error) {
       if (!isCurrentGeneration() || isAbortLikeError(error)) return;

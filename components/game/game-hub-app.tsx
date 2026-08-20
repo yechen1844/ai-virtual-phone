@@ -86,8 +86,7 @@ import { loadCharacters } from "@/lib/character-storage";
 import type { Character } from "@/lib/character-types";
 import type { LLMMessage } from "@/lib/llm-prompt-assembler";
 import { resolveUserIdentity } from "@/lib/settings-storage";
-import { incrementEventCounter } from "@/lib/memory-storage";
-import { maybeRunSummarization } from "@/lib/memory-summarizer";
+import { recordCharacterActivity } from "@/lib/complex-memory/guard";
 import { getPwaHostedSafeArea, PWA_DISPLAY_MODE_CHANGED_EVENT } from "@/lib/pwa-display-mode";
 import { IFRAME_ERROR_CAPTURE_SCRIPT } from "@/lib/qa-iframe-error-bridge";
 
@@ -2161,9 +2160,7 @@ export function GameHubApp({ onClose, autoOpenLocalId }: { onClose: () => void; 
         if (result.entry) {
           recorded += 1;
           try {
-            incrementEventCounter(characterId);
-            maybeRunSummarization(characterId, character.name)
-              .catch(err => console.warn("[GameHub] Summarization check failed:", err));
+            recordCharacterActivity(characterId, character.name, 1);
           } catch (err) {
             console.warn("[GameHub] Memory counter failed:", err);
           }

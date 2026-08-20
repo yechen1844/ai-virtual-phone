@@ -36,10 +36,10 @@ import {
     resolveUserIdentity,
 } from "./settings-storage";
 import type { PresetConfig, ApiConfig } from "./settings-types";
-import { loadMemoryConfig, incrementEventCounter } from "./memory-storage";
+import { loadMemoryConfig } from "./memory-storage";
 import { retrieveCoreMemoriesForPrompt, retrieveMemoriesForPrompt } from "./memory-service";
 import { formatCoreMemories, formatLongTermMemories } from "./memory-injector";
-import { maybeRunSummarization } from "./memory-summarizer";
+import { recordCharacterActivity } from "./complex-memory/guard";
 import { assemblePromptPayload, type LLMMessage, type AssemblerInput } from "./llm-prompt-assembler";
 import type { RegexConfig } from "./settings-types";
 import { prepareShortTermContext } from "./short-term-assembler";
@@ -365,10 +365,8 @@ async function triggerAIPost(characterId: string): Promise<void> {
             attachMomentPhotoInBackground(post.id, parsed.photoDescription, characterId, parsed.photoUseReferenceImage === true);
         }
 
-        // Increment event counter for auto-summarization (native data read at summarization time)
-        incrementEventCounter(characterId);
-        maybeRunSummarization(characterId, character.name)
-            .catch(err => console.warn("[Moments] Summarization check failed:", err));
+        // Record activity for auto-summarization (complex memory or float)
+        recordCharacterActivity(characterId, character.name, 1);
 
         dispatchMomentsUpdated();
         // Character's post → NPC reactions (not other main characters)
@@ -839,10 +837,8 @@ async function generateAIComment(post: MomentPost, character: Character): Promis
         });
     }
 
-    // Increment event counter for auto-summarization (native data read at summarization time)
-    incrementEventCounter(character.id);
-    maybeRunSummarization(character.id, character.name)
-        .catch(err => console.warn("[Moments] Summarization check failed:", err));
+    // Record activity for auto-summarization (complex memory or float)
+    recordCharacterActivity(character.id, character.name, 1);
 
     dispatchMomentsUpdated();
     return true;
@@ -1045,10 +1041,8 @@ async function triggerCharacterReply(
     if (repliedAny) {
         dispatchMomentsUpdated();
 
-        // Increment event counter for auto-summarization
-        incrementEventCounter(characterId);
-        maybeRunSummarization(characterId, character.name)
-            .catch(err => console.warn("[Moments] Summarization check failed:", err));
+        // Record activity for auto-summarization (complex memory or float)
+        recordCharacterActivity(characterId, character.name, 1);
     }
     return repliedToUser;
 }

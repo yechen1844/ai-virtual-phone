@@ -9,6 +9,7 @@ export type DataModuleId =
   | "resource_hub"
   | "creative"
   | "workshop"
+  | "complex_memory"
   | "cache";
 
 export type IconVariant = "action" | "success" | "warning" | "danger" | "teal";

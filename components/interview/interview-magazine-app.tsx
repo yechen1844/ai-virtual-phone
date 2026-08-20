@@ -56,8 +56,7 @@ import {
   type InterviewIssue,
   type InterviewMessage,
 } from "@/lib/interview-magazine-types";
-import { incrementEventCounter } from "@/lib/memory-storage";
-import { maybeRunSummarization } from "@/lib/memory-summarizer";
+import { recordCharacterActivity } from "@/lib/complex-memory/guard";
 import { loadUserIdentities, resolveUserIdentity } from "@/lib/settings-storage";
 
 type Props = {
@@ -707,10 +706,7 @@ export function InterviewMagazineApp({ onClose }: Props) {
         timestamp: now,
       });
       for (const guest of result.context.guests) {
-        incrementEventCounter(guest.character.id);
-        maybeRunSummarization(guest.character.id, guest.character.name).catch((summarizeError) => {
-          console.warn("[InterviewMagazine] Summarization check failed:", summarizeError);
-        });
+        recordCharacterActivity(guest.character.id, guest.character.name, 1);
       }
       setIssues(savedIssues);
       if (activeDraftId) {

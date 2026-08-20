@@ -199,6 +199,22 @@ const PRIMARY_DATA_MODULES: DataModuleDefinition[] = [
     ],
   },
   {
+    id: "complex_memory",
+    label: "复杂记忆",
+    description: "复杂记忆系统：事件记忆、每日日记、周期记忆、核心记忆版本链与角色状态",
+    variant: "teal",
+    critical: true,
+    sources: [
+      { type: "indexeddb", dbName: "ai_phone_complex_memory_db_v1", label: "复杂记忆数据库" },
+      {
+        type: "kv",
+        label: "复杂记忆配置与角色状态",
+        keys: ["ai_phone_complex_memory_config_v1"],
+        prefixes: ["ai_phone_complex_memory_state_"],
+      },
+    ],
+  },
+  {
     id: "social",
     label: "社交内容",
     description: "朋友圈、小红书、好友申请和社交互动状态",

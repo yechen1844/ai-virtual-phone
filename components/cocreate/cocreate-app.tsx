@@ -65,8 +65,7 @@ import {
   rollbackCoCreateRevision,
 } from "@/lib/cocreate-tools";
 import { resolveUserIdentity } from "@/lib/settings-storage";
-import { incrementEventCounter } from "@/lib/memory-storage";
-import { maybeRunSummarization } from "@/lib/memory-summarizer";
+import { recordCharacterActivity } from "@/lib/complex-memory/guard";
 
 type CoCreateAppProps = {
   onClose: () => void;
@@ -1656,10 +1655,7 @@ export function CoCreateApp({ onClose, onNotice }: CoCreateAppProps) {
         });
         return saved;
       });
-      incrementEventCounter(partner.id);
-      maybeRunSummarization(partner.id, partner.name).catch((summarizeError) => {
-        console.warn("[cocreate] long-term memory summarization failed", summarizeError);
-      });
+      recordCharacterActivity(partner.id, partner.name, 1);
       setStatus(`已把最近 ${result.messageCount} 条对话总结为一条记忆。`);
       onNotice?.("会话记忆已总结。");
     } catch (summaryError) {

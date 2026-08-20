@@ -6,10 +6,10 @@ import { getWeekStartIso } from "./calendar-utils";
 import { ChatEngineError, sendLLMRequest } from "./chat-engine";
 import { assemblePromptPayload, type LLMMessage } from "./llm-prompt-assembler";
 import { MacroEngine, postProcessTrim } from "./macro-engine";
-import { loadMemoryConfig, incrementEventCounter } from "./memory-storage";
+import { loadMemoryConfig } from "./memory-storage";
 import { formatCoreMemories, formatLongTermMemories } from "./memory-injector";
 import { retrieveCoreMemoriesForPrompt, retrieveMemoriesForPrompt } from "./memory-service";
-import { maybeRunSummarization } from "./memory-summarizer";
+import { recordCharacterActivity } from "./complex-memory/guard";
 import { prepareShortTermContext } from "./short-term-assembler";
 import {
   appendBlackMarketSceneMessage,
@@ -252,9 +252,7 @@ export async function summarizeAndRecordBlackMarketScene(sessionId: string): Pro
   });
 
   try {
-    incrementEventCounter(finalSession.characterId);
-    maybeRunSummarization(finalSession.characterId, finalSession.characterName)
-      .catch(err => console.warn("[BlackMarketScene] Summarization check failed:", err));
+    recordCharacterActivity(finalSession.characterId, finalSession.characterName, 1);
   } catch (err) {
     console.warn("[BlackMarketScene] Memory counter failed:", err);
   }

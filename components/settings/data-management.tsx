@@ -7,6 +7,7 @@ import {
   Brain,
   Database,
   Download,
+  Layers,
   Loader2,
   MessageCircle,
   Palette,
@@ -61,6 +62,7 @@ import {
   type MediaMaintenanceState,
 } from "@/lib/media-maintenance";
 import { isAndroidBrowser, isIOSBrowser } from "@/lib/download-utils";
+import { ComplexMemoryExplorer } from "@/components/complex-memory/explorer";
 import type { BackupManifest, DataModuleId, DataSnapshot, ImportResult, ModuleStats } from "@/lib/data-management/types";
 
 type PendingImport = {
@@ -101,6 +103,7 @@ const MODULE_ICONS: Record<DataModuleId, LucideIcon> = {
   resource_hub: Store,
   creative: Sparkles,
   workshop: Wrench,
+  complex_memory: Layers,
   cache: Archive,
 };
 
@@ -115,6 +118,7 @@ const MODULE_ACCENTS: Record<DataModuleId, string> = {
   resource_hub: CONTENT_APP_ACCENTS.shopping,
   creative: CONTENT_APP_ACCENTS.story,
   workshop: "#0D9488",
+  complex_memory: "#2F9E97",
   cache: BINDING_ACCENTS.regex,
 };
 
@@ -623,6 +627,13 @@ export function DataManagement({ onNotice }: DataManagementProps) {
               </div>
             </div>
           )}
+        </div>
+      </div>
+
+      <div className="data-section">
+        <DataSectionTitle>Complex Memory</DataSectionTitle>
+        <div className="menu-group">
+          <ComplexMemoryExplorer />
         </div>
       </div>
 

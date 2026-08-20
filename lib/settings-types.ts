@@ -258,7 +258,11 @@ export type BindingConfig = {
     qaApiConfigId?: string;
     /** Auxiliary API: used to translate reasoning/chain-of-thought text (global, not per-character) */
     reasoningTranslateApiConfigId?: string;
-};
+    /** Auxiliary API: used for complex memory generation (global, not per-character) */
+    complexMemoryApiConfigId?: string;
+    /** Auxiliary API: used for Flash reranking in complex memory recall (global, not per-character) */
+    complexRerankApiConfigId?: string;
+  };
 
 // --- Chat Toolbox ---
 export type RestToolPackageConfig = {

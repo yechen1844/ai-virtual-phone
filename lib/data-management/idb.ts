@@ -36,13 +36,52 @@ const MEMORY_INDEX_SPECS: StoreIndexBackup[] = [
   { name: "by_character_created", keyPath: ["characterId", "createdAt"], unique: false, multiEntry: false },
 ];
 
+const COMPLEX_MEMORY_DB_NAME = "ai_phone_complex_memory_db_v1";
+const COMPLEX_MEMORY_INDEX_SPECS: Array<{ store: string; indexes: StoreIndexBackup[] }> = [
+  {
+    store: "events",
+    indexes: [
+      { name: "by_character", keyPath: "characterId", unique: false, multiEntry: false },
+      { name: "by_character_created", keyPath: ["characterId", "createdAt"], unique: false, multiEntry: false },
+      { name: "by_covered", keyPath: "coveredByPeriod", unique: false, multiEntry: false },
+    ],
+  },
+  {
+    store: "dailies",
+    indexes: [
+      { name: "by_character", keyPath: "characterId", unique: false, multiEntry: false },
+      { name: "by_character_date", keyPath: ["characterId", "date"], unique: false, multiEntry: false },
+    ],
+  },
+  {
+    store: "periods",
+    indexes: [
+      { name: "by_character", keyPath: "characterId", unique: false, multiEntry: false },
+      { name: "by_character_status", keyPath: ["characterId", "status"], unique: false, multiEntry: false },
+    ],
+  },
+  {
+    store: "core_entries",
+    indexes: [
+      { name: "by_character", keyPath: "characterId", unique: false, multiEntry: false },
+      { name: "by_character_version", keyPath: ["characterId", "version"], unique: false, multiEntry: false },
+    ],
+  },
+];
+
 function hasIndexedDb(): boolean {
   return typeof window !== "undefined" && typeof indexedDB !== "undefined";
 }
 
 function getMissingKnownStoreIndexes(dbName: string, store: IDBObjectStore): StoreIndexBackup[] {
-  if (dbName !== MEMORY_DB_NAME || store.name !== MEMORY_STORE_NAME) return [];
-  return MEMORY_INDEX_SPECS.filter((index) => !store.indexNames.contains(index.name));
+  if (dbName === MEMORY_DB_NAME && store.name === MEMORY_STORE_NAME) {
+    return MEMORY_INDEX_SPECS.filter((index) => !store.indexNames.contains(index.name));
+  }
+  if (dbName === COMPLEX_MEMORY_DB_NAME) {
+    const spec = COMPLEX_MEMORY_INDEX_SPECS.find((s) => s.store === store.name);
+    if (spec) return spec.indexes.filter((index) => !store.indexNames.contains(index.name));
+  }
+  return [];
 }
 
 function ensureKnownStoreIndexes(dbName: string, store: IDBObjectStore): void {

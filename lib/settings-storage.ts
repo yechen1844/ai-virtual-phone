@@ -807,6 +807,8 @@ export function removeApiConfigReferences(apiConfigId: string): void {
         "mascotApiConfigId",
         "qaApiConfigId",
         "reasoningTranslateApiConfigId",
+        "complexMemoryApiConfigId",
+        "complexRerankApiConfigId",
     ] as const;
     for (const field of auxFields) {
         if (next[field] === apiConfigId) {
@@ -888,7 +890,7 @@ export function resolveBinding(
  * Falls back to global default apiConfigId if not explicitly set.
  */
 export function resolveAuxiliaryApiConfig(
-    field: "memorySummaryApiConfigId" | "embeddingApiConfigId" | "mascotApiConfigId" | "reasoningTranslateApiConfigId" | "qaApiConfigId"
+    field: "memorySummaryApiConfigId" | "embeddingApiConfigId" | "mascotApiConfigId" | "reasoningTranslateApiConfigId" | "qaApiConfigId" | "complexMemoryApiConfigId" | "complexRerankApiConfigId"
 ): ApiConfig | null {
     const config = loadBindingConfig();
     const apiConfigs = loadApiConfigs();

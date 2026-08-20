@@ -11,6 +11,7 @@ import {
 } from "./memory-storage";
 import { resolveAuxiliaryApiConfig } from "./settings-storage";
 import { simpleLLMCall } from "./api-helpers";
+import { isComplexMemoryEnabled } from "./complex-memory/config";
 
 const coreBuildingSet = new Set<string>();
 
@@ -144,6 +145,8 @@ export async function maybeRunCoreMemoryPipeline(
     characterId: string,
     characterName: string,
 ): Promise<void> {
+    // 复杂记忆守卫：该角色已启用复杂记忆时，float 核心管线停摆，由镜像代劳
+    if (isComplexMemoryEnabled(characterId)) return;
     const config = loadMemoryConfig();
     if (!config.autoBuildCoreEnabled) return;
 

@@ -1,0 +1,89 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { Layers } from "lucide-react";
+import { Toggle } from "@/components/ui/form";
+import {
+  isComplexMemoryEnabled,
+  setComplexMemoryEnabled,
+} from "@/lib/complex-memory/config";
+import {
+  countByCharacter,
+  getCurrentCore,
+  getDaily,
+} from "@/lib/complex-memory/storage";
+
+type ComplexMemoryToggleProps = {
+  characterId: string;
+  characterName?: string;
+};
+
+type StatusSummary = {
+  coreVersion: number | null;
+  lastDailyDate: string | null;
+  eventCount: number;
+};
+
+export function ComplexMemoryToggle({ characterId, characterName }: ComplexMemoryToggleProps) {
+  const [enabled, setEnabled] = useState<boolean>(() => isComplexMemoryEnabled(characterId));
+  const [status, setStatus] = useState<StatusSummary | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [counts, core, yesterday] = await Promise.all([
+        countByCharacter(characterId),
+        getCurrentCore(characterId),
+        getDaily(characterId, todayDateString()),
+      ]);
+      if (cancelled) return;
+      setStatus({
+        coreVersion: core?.version ?? null,
+        lastDailyDate: yesterday?.date ?? null,
+        eventCount: counts.events,
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [characterId, enabled]);
+
+  const handleToggle = (next: boolean) => {
+    setComplexMemoryEnabled(characterId, next);
+    setEnabled(next);
+  };
+
+  return (
+    <div className="menu-item">
+      <span className="chat-info-icon" style={{ "--icon-color": "#2F9E97" } as React.CSSProperties}>
+        <Layers size={22} strokeWidth={1.75} />
+      </span>
+      <div className="menu-label-group">
+        <span className="menu-label">复杂记忆系统</span>
+        <span className="menu-desc">
+          {enabled
+            ? status
+              ? `核心 v${status.coreVersion ?? "—"} · 事件 ${status.eventCount} 条 · 最近日记 ${status.lastDailyDate ?? "无"}`
+              : "已启用"
+            : "未启用时使用 float 原生记忆"}
+        </span>
+        {enabled && !status?.coreVersion && (
+          <span className="menu-desc" style={{ color: "var(--c-warning, #d08770)" }}>
+            尚无核心记忆：将从未有过的记忆开始，或使用一键迁移
+          </span>
+        )}
+      </div>
+      <div className="menu-right">
+        <Toggle checked={enabled} onChange={handleToggle} />
+      </div>
+    </div>
+  );
+}
+
+function todayDateString(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}

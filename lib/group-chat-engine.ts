@@ -64,10 +64,12 @@ import {
     resolveStatusRegionComposition,
     resolveStatusRegionFullExample,
 } from "./chat-status-region";
-import { loadMemoryConfig, incrementEventCounter } from "./memory-storage";
+import { loadMemoryConfig } from "./memory-storage";
 import { retrieveCoreMemoriesForPrompt, retrieveMemoriesForPrompt } from "./memory-service";
 import { formatCoreMemories, formatLongTermMemories } from "./memory-injector";
-import { maybeRunSummarization } from "./memory-summarizer";
+import { recordCharacterActivity } from "./complex-memory/guard";
+import { isComplexMemoryEnabled } from "./complex-memory/config";
+import { buildMemoryContextBundle } from "./complex-memory/recall";
 import { prepareShortTermContext, prepareGroupShortTermContext } from "./short-term-assembler";
 import { parseActionTags, dispatchActions } from "./action-parser";
 import { getCustomStickerExample, loadCustomStickers } from "./custom-sticker-storage";
@@ -268,12 +270,7 @@ function scheduleGroupMemorySummarization(
         const character = chars.find(c => c.id === characterId);
         if (!character) continue;
 
-        for (let i = 0; i < totalNewEvents; i++) {
-            incrementEventCounter(characterId);
-        }
-
-        maybeRunSummarization(characterId, character.name)
-            .catch(err => console.warn("[GroupChat] Memory counter/summarization failed:", err));
+        recordCharacterActivity(characterId, character.name, totalNewEvents);
     }
 }
 
@@ -353,12 +350,22 @@ async function buildGroupChatPromptMessages(
         });
         let coreMemories = "", longTermMemories = "";
         try {
-            const [coreResults, results] = await Promise.all([
-                retrieveCoreMemoriesForPrompt(charId, memConfig),
-                retrieveMemoriesForPrompt(charId, wbActivationContext, memConfig),
-            ]);
-            coreMemories = formatCoreMemories(coreResults);
-            longTermMemories = formatLongTermMemories(results);
+            if (isComplexMemoryEnabled(charId)) {
+                const bundle = await buildMemoryContextBundle(charId, character.name, wbActivationContext).catch(() => null);
+                if (bundle) {
+                    coreMemories = bundle.coreMemory;
+                    longTermMemories = [bundle.fixedEvents, bundle.yesterdayDaily, bundle.activePeriods, bundle.recalled]
+                        .filter(Boolean)
+                        .join("\n\n");
+                }
+            } else {
+                const [coreResults, results] = await Promise.all([
+                    retrieveCoreMemoriesForPrompt(charId, memConfig),
+                    retrieveMemoriesForPrompt(charId, wbActivationContext, memConfig),
+                ]);
+                coreMemories = formatCoreMemories(coreResults);
+                longTermMemories = formatLongTermMemories(results);
+            }
         } catch { /* ignore */ }
         return {
             character,
