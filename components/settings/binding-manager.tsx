@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useContext, type CSSProperties } from "react";
 import {
+    ArrowDownUp,
     Asterisk,
     BookOpen,
     Box,
@@ -67,7 +68,7 @@ type Level = "global" | "character" | "app";
 type SingleBindingField = "apiConfigId" | "voiceConfigId" | "presetId" | "userIdentityId";
 type MultiBindingField = "worldBookIds" | "regexIds";
 type BindingField = SingleBindingField | MultiBindingField;
-type AuxBindingField = "memorySummaryApiConfigId" | "embeddingApiConfigId" | "mascotApiConfigId" | "reasoningTranslateApiConfigId" | "qaApiConfigId";
+type AuxBindingField = "memorySummaryApiConfigId" | "embeddingApiConfigId" | "mascotApiConfigId" | "reasoningTranslateApiConfigId" | "qaApiConfigId" | "complexMemoryApiConfigId" | "complexRerankApiConfigId";
 
 const BINDING_FIELD_VISUALS: Record<BindingField, { icon: LucideIcon; color: string }> = {
     apiConfigId: { icon: Code2, color: BINDING_ACCENTS.api },
@@ -84,6 +85,8 @@ const AUX_FIELD_VISUALS: Record<AuxBindingField, { icon: LucideIcon; color: stri
     mascotApiConfigId: { icon: Code2, color: BINDING_ACCENTS.api },
     reasoningTranslateApiConfigId: { icon: Languages, color: BINDING_ACCENTS.voice },
     qaApiConfigId: { icon: Wrench, color: BINDING_ACCENTS.api },
+    complexMemoryApiConfigId: { icon: Layers, color: "#2F9E97" },
+    complexRerankApiConfigId: { icon: ArrowDownUp, color: "#2F9E97" },
 };
 
 const APP_OVERRIDE_COLORS = CONTENT_APP_ACCENTS;
@@ -234,6 +237,14 @@ export function BindingManager() {
             }
             if (prev.qaApiConfigId && !validSets.api.has(prev.qaApiConfigId)) {
                 next.qaApiConfigId = undefined;
+                dirty = true;
+            }
+            if (prev.complexMemoryApiConfigId && !validSets.api.has(prev.complexMemoryApiConfigId)) {
+                next.complexMemoryApiConfigId = undefined;
+                dirty = true;
+            }
+            if (prev.complexRerankApiConfigId && !validSets.api.has(prev.complexRerankApiConfigId)) {
+                next.complexRerankApiConfigId = undefined;
                 dirty = true;
             }
             if (dirty) {
@@ -444,6 +455,8 @@ export function BindingManager() {
             case "mascotApiConfigId": return "用于小卷对话与工具调用";
             case "reasoningTranslateApiConfigId": return "用于翻译思考过程（思维链）内容";
             case "qaApiConfigId": return "用于工坊答疑、诊断与内容开发";
+            case "complexMemoryApiConfigId": return "用于复杂记忆的事件/日记/周期/核心生成";
+            case "complexRerankApiConfigId": return "用于复杂记忆召回结果重排序";
         }
     };
 
@@ -454,6 +467,8 @@ export function BindingManager() {
             case "mascotApiConfigId": return "小卷助手 API";
             case "reasoningTranslateApiConfigId": return "思维链翻译 API";
             case "qaApiConfigId": return "工坊 API";
+            case "complexMemoryApiConfigId": return "复杂记忆生成 API";
+            case "complexRerankApiConfigId": return "复杂记忆重排 API";
         }
     };
 
@@ -968,6 +983,8 @@ export function BindingManager() {
                         <div className="flex flex-col gap-3">
                             {renderAuxSelect("memorySummaryApiConfigId", "记忆总结 API")}
                             {renderAuxSelect("embeddingApiConfigId", "向量召回 API")}
+                            {renderAuxSelect("complexMemoryApiConfigId", "复杂记忆生成 API")}
+                            {renderAuxSelect("complexRerankApiConfigId", "复杂记忆重排 API")}
                             {renderAuxSelect("mascotApiConfigId", "小卷助手 API")}
                             {renderAuxSelect("qaApiConfigId", "工坊 API")}
                             {renderAuxSelect("reasoningTranslateApiConfigId", "思维链翻译 API")}

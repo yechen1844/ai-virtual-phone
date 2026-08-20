@@ -62,7 +62,6 @@ import {
   type MediaMaintenanceState,
 } from "@/lib/media-maintenance";
 import { isAndroidBrowser, isIOSBrowser } from "@/lib/download-utils";
-import { ComplexMemoryExplorer } from "@/components/complex-memory/explorer";
 import type { BackupManifest, DataModuleId, DataSnapshot, ImportResult, ModuleStats } from "@/lib/data-management/types";
 
 type PendingImport = {
@@ -627,13 +626,6 @@ export function DataManagement({ onNotice }: DataManagementProps) {
               </div>
             </div>
           )}
-        </div>
-      </div>
-
-      <div className="data-section">
-        <DataSectionTitle>Complex Memory</DataSectionTitle>
-        <div className="menu-group">
-          <ComplexMemoryExplorer />
         </div>
       </div>
 
