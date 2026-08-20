@@ -22,6 +22,7 @@ import {
     getLastCoreSummarizedTimestamp,
 } from "@/lib/memory-storage";
 import { hydrateChatStorage } from "@/lib/chat-storage";
+import { ChatImportPanel } from "./chat-import-panel";
 import { loadNativeTimeline, type NativeTimelineEntry } from "@/lib/short-term-assembler";
 import { runSummarizationPipeline } from "@/lib/memory-summarizer";
 import { runCoreMemoryPipeline } from "@/lib/core-memory-builder";
@@ -206,6 +207,7 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
     const [savingMemory, setSavingMemory] = useState(false);
     const [summarizeRangeOpen, setSummarizeRangeOpen] = useState(false);
     const [sourcePickerOpen, setSourcePickerOpen] = useState(false);
+    const [importOpen, setImportOpen] = useState(false);
 
     const disabledSourceCount = MEMORY_SOURCE_OPTIONS
         .filter(source => (config.shortTermAllowedSources ?? {})[source.key] === false).length;
@@ -1177,6 +1179,16 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
     }
 
     // ── Character List View ──
+    // ── Chat Import Panel (list view → import) ──
+    if (view === "list" && importOpen) {
+        return (
+            <ChatImportPanel
+                onBack={() => setImportOpen(false)}
+                onNotice={onNotice}
+            />
+        );
+    }
+
     return (
         <div className="mem-picker">
             <div className="mem-picker-card">
@@ -1234,6 +1246,13 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                             onClick={() => pickedCharId && handleSelectChar(loadCharacters().find(c => c.id === pickedCharId)!)}
                         >
                             查看TA的记忆
+                        </button>
+                        <button
+                            type="button"
+                            className="ui-chip ui-chip-lg"
+                            onClick={() => setImportOpen(true)}
+                        >
+                            导入聊天记录
                         </button>
                     </div>
 
