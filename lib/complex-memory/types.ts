@@ -18,6 +18,8 @@ export type ComplexEvent = {
   voltage: number;               // 初始 1.0
   importanceScore: number;       // 0-1
   embedding?: number[];          // 生成即向量化
+  sourceMaterials?: string;      // 生成时的原始素材（时间线窗口原文，截断存储，可回查）
+  migrated?: boolean;            // 一键迁移产物标记：电压半衰减（无召回对抗衰减，减少失真）
   lastAccessedAt: string;
   coveredByPeriod?: string;      // 已被某周期 summary 覆盖的标记
   createdAt: string;
@@ -34,6 +36,8 @@ export type ComplexDaily = {
   voltage: number;
   special?: boolean;             // 特殊日期标记：周期级慢衰减 + 固定注入优先生效
   embedding?: number[];
+  sourceMaterials?: string;      // 生成时的原始素材（当日时间线+事件，截断存储）
+  migrated?: boolean;            // 一键迁移产物标记：电压半衰减
   lastAccessedAt: string;
   createdAt: string;
 };
@@ -55,6 +59,8 @@ export type ComplexPeriod = {
   coveredEventIds: string[];     // summary 已覆盖的事件记忆
   rollingSummary?: string;       // 活跃期滚动累积：每日追加「该周期今日进展」（带日期戳）
   embedding?: number[];
+  sourceMaterials?: string;      // 提炼时的原始素材（滚动累积/关联日记与事件，截断存储）
+  migrated?: boolean;            // 一键迁移产物标记：电压半衰减
   voltage: number;               // 初始 1.0
   lastAccessedAt: string;
   createdAt: string;
@@ -85,6 +91,7 @@ export type ComplexCoreSnapshot = {
   entryIds: string[];               // 该版本包含的条目 id
   note: string;                     // 版本备注：触发来源 / 用户改进意见
   trigger: CoreTrigger;
+  sourceMaterials?: string;         // 生成该版本时的素材（人设+既有核心+新材料，截断存储）
   createdAt: string;
   isCurrent: boolean;
 };
@@ -123,7 +130,9 @@ export type CharacterRuntimeState = {
 };
 
 // ── 迁移状态 ──
-export type MigrationPhase = "events" | "dailies" | "distill" | "core" | "legacy" | "done";
+// 动态回放状态机（M7）：素材时间线按条正序推进 → 事件窗 → 到一天结束生成日记 →
+// 周期开合 → 周期关闭即提炼并微调核心 → 日记满 N 篇定期重构核心 → 推进到"现在"。
+export type MigrationPhase = "stream" | "legacy" | "done";
 
 export type MigrationReport = {
   events: number;
@@ -138,11 +147,17 @@ export type MigrationReport = {
 export type MigrationState = {
   status: "idle" | "running" | "paused" | "done";
   phase: MigrationPhase;
-  dates: string[];              // 待迁移日期（从近到远）
+  dates: string[];              // 有消息的日期（正序，最早 → 最近）
   totalDays: number;
-  doneDays: number;
-  currentDate: string | null;
-  eventWindowIndex?: number;    // events 阶段：已完成的事件窗口数（断点续跑用）
+  doneDays: number;             // 已生成日记数
+  currentDate: string | null;   // 最近处理到的日期
+  // 动态回放游标（断点续跑）
+  timelineCursor: number;       // 已纳入事件窗的时间线条目数（0 起）
+  windowIndex: number;          // 已完成的窗口数
+  totalWindows: number;         // 事件窗总数（素材条数 ÷ 窗宽，向上取整）
+  pendingDates: string[];       // 已完全处理、待生成日记的日期（正序队列）
+  nextDailyIndex: number;       // dates 中已覆盖完成并移交 pendingDates 的指针
+  coreDailyCounter: number;     // 迁移内核心定期重构日记计数
   startedAt: string | null;
   updatedAt: string | null;
   error?: string;

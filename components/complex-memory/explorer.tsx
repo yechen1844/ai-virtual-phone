@@ -31,6 +31,9 @@ import {
 } from "lucide-react";
 import { Input, Select, Textarea, Toggle } from "@/components/ui/form";
 import { loadCharacters } from "@/lib/character-storage";
+import { loadNativeTimeline, type NativeTimelineEntry } from "@/lib/short-term-assembler";
+import { resolveUserIdentity } from "@/lib/settings-storage";
+import { MemoryTimeline } from "@/components/memory/memory-timeline";
 import { dateString } from "@/lib/complex-memory/utils";
 import {
   loadComplexMemoryConfig,
@@ -41,6 +44,8 @@ import {
   isComplexMemoryEnabled,
   setComplexMemoryEnabled,
   getEnabledCharacterIds,
+  loadCharacterRules,
+  saveCharacterRules,
 } from "@/lib/complex-memory/config";
 import {
   PROMPT_VARIABLES,
@@ -85,6 +90,7 @@ import {
   resumeMigration,
   resetMigration,
   runMigrationStep,
+  driveMigration,
   estimateMigration,
   retryFailedDate,
   exportToFloat,
@@ -114,7 +120,7 @@ import type {
 
 const ACCENT = "#2F9E97";
 
-type TabId = "core" | "daily" | "period" | "event" | "emotion" | "cleanup" | "migration" | "config";
+type TabId = "core" | "daily" | "period" | "event" | "emotion" | "cleanup" | "native" | "migration" | "config";
 
 const TABS: Array<{ id: TabId; label: string; icon: typeof Brain }> = [
   { id: "core", label: "核心记忆", icon: Brain },
@@ -123,6 +129,7 @@ const TABS: Array<{ id: TabId; label: string; icon: typeof Brain }> = [
   { id: "event", label: "事件", icon: ListTree },
   { id: "emotion", label: "情绪坐标", icon: Activity },
   { id: "cleanup", label: "记忆清洗", icon: Sparkles },
+  { id: "native", label: "原生记忆", icon: Layers },
   { id: "migration", label: "迁移", icon: Download },
   { id: "config", label: "配置", icon: Settings2 },
 ];
@@ -243,6 +250,7 @@ export function ComplexMemoryExplorer() {
           {tab === "event" && <EventTab characterId={selected.id} characterName={selected.name} notify={notify} refresh={refresh} />}
           {tab === "emotion" && <EmotionTab characterId={selected.id} />}
           {tab === "cleanup" && <CleanupTab characterId={selected.id} characterName={selected.name} notify={notify} refresh={refresh} />}
+          {tab === "native" && <NativeMemoryTab characterId={selected.id} />}
           {tab === "migration" && <MigrationTab characterId={selected.id} characterName={selected.name} notify={notify} />}
           {tab === "config" && <ConfigTab characterId={selected.id} notify={notify} />}
         </div>
@@ -267,6 +275,29 @@ const CORE_TRIGGER_LABEL: Record<string, string> = {
 };
 
 type EntryEditor = { mode: "add" } | { mode: "edit"; entry: ComplexCoreEntry };
+
+// ── 向量化标志 + 原始记录折叠（供四类记忆卡片复用） ──
+function VecBadge({ embedding }: { embedding?: number[] }) {
+  return embedding && embedding.length > 0 ? (
+    <span className="cm-badge cm-badge-soft" title="已向量化，可参与向量召回">已向量化</span>
+  ) : (
+    <span className="cm-badge cm-badge-warn" title="未向量化">未向量化</span>
+  );
+}
+
+function SourceMaterialsView({ materials }: { materials?: string }) {
+  const [open, setOpen] = useState(false);
+  if (!materials) return null;
+  return (
+    <div className="cm-source-materials">
+      <button type="button" className="cm-source-toggle" onClick={() => setOpen((v) => !v)}>
+        {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        {open ? "收起" : "查看"}原始记录（生成素材）
+      </button>
+      {open && <pre className="cm-source-text">{materials}</pre>}
+    </div>
+  );
+}
 
 function CoreTab({ characterId, characterName, notify, refresh }: {
   characterId: string;
@@ -510,6 +541,7 @@ function CoreTab({ characterId, characterName, notify, refresh }: {
                   <span className="cm-meta-text">{fmtTime(s.createdAt)}</span>
                   {s.note && <span className="cm-meta-text">· {s.note}</span>}
                 </div>
+                <SourceMaterialsView materials={s.sourceMaterials} />
                 <div className="cm-version-actions">
                   <button type="button" className="ui-btn ui-btn-ghost ts-12" onClick={() => void openCompare(s.version)}>
                     <Layers size={13} /> 对比
@@ -741,6 +773,7 @@ function DailyTab({ characterId, characterName, notify, refresh }: {
                 <span className="cm-daily-periods">
                   {d.belongsToPeriods.map((pid) => periods.find((p) => p.id === pid)?.title).filter(Boolean).join("、") || "无周期"}
                 </span>
+                <VecBadge embedding={d.embedding} />
                 <span className="cm-daily-voltage">电压 {voltagePct(effectiveVoltage(d, { kind: "daily", special: d.special === true }))}</span>
                 {expandedId === d.id ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
               </button>
@@ -759,6 +792,7 @@ function DailyTab({ characterId, characterName, notify, refresh }: {
                   ) : (
                     <>
                       <div className="cm-daily-content">{d.content}</div>
+                      <SourceMaterialsView materials={d.sourceMaterials} />
                       <div className="cm-card-actions">
                         <span className="cm-meta-text">情绪 {d.emotionVector.valence.toFixed(2)} / {d.emotionVector.arousal.toFixed(2)}</span>
                         <span className="cm-spacer" />
@@ -952,6 +986,7 @@ function PeriodTab({ characterId, characterName, notify, refresh }: {
                 <span className={`cm-status-dot is-${p.status}`} />
                 <span className="cm-period-title">{p.title}</span>
                 <span className="cm-period-range">{p.startTime} ~ {p.endTime ?? "至今"}</span>
+                <VecBadge embedding={p.embedding} />
                 <span className="cm-badge cm-badge-soft">{statusLabel[p.status]}</span>
                 {expandedId === p.id ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
               </button>
@@ -1000,6 +1035,7 @@ function PeriodTab({ characterId, characterName, notify, refresh }: {
                       ))}
                     </div>
                   )}
+                  <SourceMaterialsView materials={p.sourceMaterials} />
                   {p.linkedPeriods.length > 0 && (
                     <p className="cm-meta-text">丝线关联：{p.linkedPeriods.join("、")}</p>
                   )}
@@ -1104,6 +1140,7 @@ function EventTab({ characterId, characterName, notify, refresh }: {
                 <button type="button" className="cm-event-head" onClick={() => setExpandedId(expandedId === e.id ? null : e.id)}>
                   <span className="cm-event-time">{e.timestamp.slice(0, 16).replace("T", " ")}</span>
                   <span className="cm-event-importance">重要 {Math.round(e.importanceScore * 100)}%</span>
+                  <VecBadge embedding={e.embedding} />
                   {pendingErase && <span className="cm-badge cm-badge-warn">待消磨</span>}
                   {e.coveredByPeriod && <span className="cm-badge cm-badge-soft">已覆盖</span>}
                   <span className="cm-event-voltage">
@@ -1115,6 +1152,7 @@ function EventTab({ characterId, characterName, notify, refresh }: {
                 {expandedId === e.id && (
                   <div className="cm-event-body">
                     <div className="cm-event-content">{e.content}</div>
+                    <SourceMaterialsView materials={e.sourceMaterials} />
                     <div className="cm-card-actions">
                       <span className="cm-meta-text">情绪 {e.emotion.valence.toFixed(2)} / {e.emotion.arousal.toFixed(2)}</span>
                       <span className="cm-spacer" />
@@ -1226,6 +1264,66 @@ function EmotionTab({ characterId }: { characterId: string }) {
           <div className="cm-daily-content">{selected.content}</div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── 原生记忆页（M6 修复：短期上下文 + 共享事件，与 float 原生记忆查看器同构） ──
+const NATIVE_TIMELINE_ENTRY_CAP = 2000;
+
+function NativeMemoryTab({ characterId }: { characterId: string }) {
+  const [sub, setSub] = useState<"short" | "shared">("short");
+  const [shortEvents, setShortEvents] = useState<NativeTimelineEntry[]>([]);
+  const [sharedEvents, setSharedEvents] = useState<NativeTimelineEntry[]>([]);
+  const [userName, setUserName] = useState("用户");
+
+  useEffect(() => {
+    // 与 float memory-bank 完全一致的取材口径：
+    // 短期 = 全量时间线剔除「用户自己的朋友圈」与「访谈共享期」；
+    // 共享 = 用户朋友圈 + 群聊 + 访谈共享期
+    const timeline = loadNativeTimeline(characterId).slice(-NATIVE_TIMELINE_ENTRY_CAP);
+    setShortEvents(
+      timeline.filter(
+        (e) =>
+          !(e.sourceApp === "moments" && e.postAuthorType === "user") &&
+          !(e.sourceApp === "interview_magazine" && e.sourceDetail === "interview_shared_issue"),
+      ),
+    );
+    setSharedEvents(
+      timeline.filter(
+        (e) =>
+          (e.sourceApp === "moments" && e.postAuthorType === "user") ||
+          (e.sourceApp === "chat" && e.sourceDetail === "group") ||
+          (e.sourceApp === "interview_magazine" && e.sourceDetail === "interview_shared_issue"),
+      ),
+    );
+    setUserName(resolveUserIdentity(characterId, "chat")?.name || "用户");
+  }, [characterId]);
+
+  return (
+    <div className="cm-section">
+      <div className="cm-section-head">
+        <span className="cm-section-title">原生记忆 · 短期 {shortEvents.length} 条 / 共享 {sharedEvents.length} 条</span>
+        <div className="cm-actions">
+          <div className="cm-view-toggle" role="group" aria-label="原生记忆视图">
+            <button type="button" className={`cm-view-btn ${sub === "short" ? "is-active" : ""}`} onClick={() => setSub("short")}>短期上下文</button>
+            <button type="button" className={`cm-view-btn ${sub === "shared" ? "is-active" : ""}`} onClick={() => setSub("shared")}>共享事件</button>
+          </div>
+        </div>
+      </div>
+      <div className="cm-card">
+        {sub === "short" ? (
+          shortEvents.length === 0 ? (
+            <p className="cm-muted">暂无短期上下文</p>
+          ) : (
+            <MemoryTimeline events={shortEvents} userName={userName} />
+          )
+        ) : sharedEvents.length === 0 ? (
+          <p className="cm-muted">暂无共享事件。用户发朋友圈或参与群聊后会自动显示。</p>
+        ) : (
+          <MemoryTimeline events={sharedEvents} userName={userName} />
+        )}
+      </div>
     </div>
   );
 }
@@ -1370,10 +1468,7 @@ const MIGRATION_DAY_OPTIONS = [
 ];
 
 const PHASE_LABEL: Record<MigrationState["phase"], string> = {
-  events: "回溯生成事件记忆",
-  dailies: "回溯生成日记",
-  distill: "提炼周期",
-  core: "构建核心记忆",
+  stream: "时间正序回放",
   legacy: "压缩旧记忆",
   done: "已完成",
 };
@@ -1413,19 +1508,15 @@ function MigrationTab({ characterId, characterName, notify }: {
 
   const startAuto = () => {
     if (autoRef.current) return;
-    autoRef.current = setInterval(async () => {
-      const res = await runMigrationStep(characterId, characterName);
+    // 迁移由后台驱动循环自动按批次推进（幂等），此处只负责定时刷新进度
+    void driveMigration(characterId, characterName);
+    autoRef.current = setInterval(() => {
+      const ms = getMigrationState(characterId);
       refreshState();
-      if (res.done) {
+      if (!ms || ms.status !== "running") {
         stopAuto();
-        return;
       }
-      // 上一步 LLM 仍在执行时 runMigrationStep 会返回 busy 错误，属正常轮询，跳过即可
-      if (res.error && res.error !== "迁移步骤执行中") {
-        stopAuto();
-        notify({ kind: "err", text: res.error });
-      }
-    }, 400);
+    }, 1500);
   };
 
   const handleStart = async () => {
@@ -1492,8 +1583,10 @@ function MigrationTab({ characterId, characterName, notify }: {
   const running = state?.status === "running";
   const paused = state?.status === "paused";
   const done = state?.status === "done";
-  const inEvents = state?.phase === "events";
-  const progress = state && state.totalDays > 0 ? Math.min(100, Math.round((state.doneDays / state.totalDays) * 100)) : 0;
+  // 综合进度：事件窗推进 60% + 日记完成 40%（事件窗驱动日记产生）
+  const eventPct = state && state.totalWindows > 0 ? state.windowIndex / state.totalWindows : 0;
+  const dailyPct = state && state.totalDays > 0 ? state.doneDays / state.totalDays : 0;
+  const progress = state ? Math.min(100, Math.round((eventPct * 0.6 + dailyPct * 0.4) * 100)) : 0;
 
   return (
     <div className="cm-section">
@@ -1509,9 +1602,10 @@ function MigrationTab({ characterId, characterName, notify }: {
       {!state || state.status === "idle" ? (
         <div className="cm-card">
           <p className="cm-muted">
-            将「{characterName}」的历史聊天记录回溯生成复杂记忆：先按窗口生成全部事件记忆，
-            再从近到远补生成日记，随后提炼周期、构建核心记忆，最后把旧 float 长期与核心记忆压缩为一条「历史沉淀」周期素材。
-            全程可随时暂停并断点续跑。
+            将「{characterName}」的历史聊天记录按时间正序动态回放：逐窗生成事件记忆（每窗注入当时的核心记忆、
+            活跃周期、前一日日记与短期上下文），到一天结束即生成当日日记并判定周期开合，周期关闭立即提炼并微调核心，
+            日记满 {loadComplexMemoryConfig().coreDailyInterval} 篇定期重构核心，空白天跳过。产物与正常逐日累积完全一致，
+            电压半衰减减少失真。全程自动推进，可随时暂停并断点续跑。
           </p>
           <div className="cm-mig-setup">
             <span className="cm-config-label">回溯范围</span>
@@ -1556,9 +1650,11 @@ function MigrationTab({ characterId, characterName, notify }: {
           <div className="cm-meta-row">
             <span className="cm-badge cm-badge-soft">阶段：{PHASE_LABEL[state.phase]}</span>
             <span className="cm-meta-text">
-              {inEvents
-                ? state.currentDate ?? "准备生成事件…"
-                : `${state.doneDays} / ${state.totalDays} 天 · ${state.currentDate ?? "—"}`}
+              {state.phase === "legacy"
+                ? "压缩旧 float 记忆…"
+                : state.phase === "done"
+                  ? `${state.doneDays} / ${state.totalDays} 天`
+                  : `事件窗 ${state.windowIndex}/${state.totalWindows} · 日记 ${state.doneDays}/${state.totalDays} 天 · ${state.currentDate ?? "准备中…"}`}
             </span>
           </div>
           <div className="cm-mig-progress" role="progressbar" aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100}>
@@ -1633,6 +1729,12 @@ function ConfigTab({ characterId, notify }: { characterId: string; notify: (n: N
   const [promptKey, setPromptKey] = useState<MemoryPromptKey>("core");
   const [promptDraft, setPromptDraft] = useState<string>(() => getMemoryPrompt("core"));
   const [unknownVars, setUnknownVars] = useState<string[]>([]);
+  const [rulesDraft, setRulesDraft] = useState<string>(() => loadCharacterRules(characterId));
+
+  const saveRules = () => {
+    saveCharacterRules(characterId, rulesDraft);
+    notify({ kind: "ok", text: "角色规则词已保存（将注入事件/日记/核心提示词）" });
+  };
 
   const update = (patch: Partial<ComplexMemoryConfig>) => {
     const next = { ...config, ...patch };
@@ -1725,6 +1827,30 @@ function ConfigTab({ characterId, notify }: { characterId: string; notify: (n: N
         {boolField("rerankEnabled", "重排序")}
         {boolField("silkAssociationEnabled", "丝线联想")}
         {boolField("mirrorToFloatEnabled", "镜像到 float")}
+      </div>
+
+      <div className="cm-section-head" style={{ marginTop: 18 }}>
+        <span className="cm-section-title">角色规则词</span>
+        <span className="cm-meta-text">按角色绑定，注入事件/日记/核心提示词的 {"{{rules}}"} 变量</span>
+      </div>
+      <div className="cm-card">
+        <Textarea
+          className="cm-core-editor"
+          rows={5}
+          value={rulesDraft}
+          onChange={(e) => setRulesDraft(e.target.value)}
+          placeholder="例如：她说话喜欢用括号补充内心想法；生气时会故意冷淡但希望被追问；聊到前任话题会回避。每行一条。"
+        />
+        <div className="cm-card-actions">
+          <span className="cm-meta-text">留空即删除该角色的规则词</span>
+          <span className="cm-spacer" />
+          <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => setRulesDraft("")}>
+            <RotateCcw size={14} /> 清空
+          </button>
+          <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={saveRules}>
+            <Save size={14} /> 保存规则词
+          </button>
+        </div>
       </div>
 
       <div className="cm-section-head" style={{ marginTop: 18 }}>

@@ -3,6 +3,16 @@
 
 import { resolveUserIdentity } from "../settings-storage";
 
+/** 生成素材截断上限（字符）：sourceMaterials 只存摘要供回查，避免体积失控。 */
+export const SOURCE_MATERIALS_CAP = 3000;
+
+/** 截断生成素材：超限保留头部并附说明。 */
+export function capSourceMaterials(text: string): string {
+  if (!text) return "";
+  if (text.length <= SOURCE_MATERIALS_CAP) return text;
+  return `${text.slice(0, SOURCE_MATERIALS_CAP)}\n…[原始素材过长已截断，共 ${text.length} 字符]`;
+}
+
 export function getUserName(characterId: string): string {
   try {
     return resolveUserIdentity(characterId, "chat")?.name || "用户";

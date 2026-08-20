@@ -66,6 +66,15 @@ async function runTaskWithRetry(
 }
 
 async function runCharacterTasks(characterId: string, characterName: string): Promise<void> {
+  // 迁移驱动：状态为 running 时确保后台驱动循环存在（页面刷新/切换后自动恢复推进，幂等）
+  await runTaskWithRetry(characterName, "迁移驱动", async () => {
+    const { getMigrationState, driveMigration } = await import("./migration");
+    const ms = getMigrationState(characterId);
+    if (ms?.status === "running") {
+      void driveMigration(characterId, characterName);
+    }
+    return { ok: true };
+  });
   await runTaskWithRetry(characterName, "日记补生成", async () => {
     const r = await maybeGenerateDaily(characterId, characterName);
     return { ok: r.generated || !r.error, error: r.error };

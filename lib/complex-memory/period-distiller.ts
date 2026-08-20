@@ -19,7 +19,7 @@ import {
   saveEvent,
   savePeriod,
 } from "./storage";
-import { getUserName, dateString, extractJsonObject } from "./utils";
+import { getUserName, dateString, extractJsonObject, capSourceMaterials } from "./utils";
 import { runEraseScan } from "./voltage";
 import { fineTuneCoreMemory } from "./core-builder";
 import type { ComplexPeriod } from "./types";
@@ -28,7 +28,7 @@ export async function distillPeriod(
   characterId: string,
   characterName: string,
   periodId: string,
-  opts?: { suppressChain?: boolean; userBrief?: string },
+  opts?: { suppressChain?: boolean; userBrief?: string; migrated?: boolean },
 ): Promise<{ success: boolean; error?: string }> {
   const config = loadComplexMemoryConfig();
   const period = await getPeriod(periodId);
@@ -87,6 +87,13 @@ export async function distillPeriod(
       timelineIndex: parsed.timelineIndex,
       status: "stabilized",
       coveredEventIds: periodEvents.map((e) => e.id),
+      // 原始素材截断存储（供查看器回查「总结的原始记录」）
+      sourceMaterials: capSourceMaterials(
+        [rollingSummary.startsWith("（无滚动累积") ? "" : `[滚动累积]\n${rollingSummary}`, dailiesText && `[关联日记]\n${dailiesText}`, eventsText && `[关联事件]\n${eventsText}`]
+          .filter(Boolean)
+          .join("\n\n"),
+      ),
+      migrated: opts?.migrated === true ? true : undefined,
       updatedAt: now,
     };
     await savePeriod(updated);

@@ -22,7 +22,8 @@ import {
   savePeriod,
   getDaily,
 } from "./storage";
-import { getUserName, dateString, extractJsonObject, clampNum } from "./utils";
+import { getUserName, dateString, extractJsonObject, clampNum, capSourceMaterials } from "./utils";
+import { buildGenerationContext } from "./context-builder";
 import { distillPeriod } from "./period-distiller";
 import { rebuildCoreMemory } from "./core-builder";
 import type { ComplexDaily, ComplexPeriod, EmotionVector } from "./types";
@@ -83,7 +84,7 @@ export async function generateDaily(
   characterId: string,
   characterName: string,
   date: string,
-  opts?: { suppressChain?: boolean },
+  opts?: { suppressChain?: boolean; migrated?: boolean },
 ): Promise<{ success: boolean; error?: string }> {
   const config = loadComplexMemoryConfig();
 
@@ -109,7 +110,9 @@ export async function generateDaily(
     const timelineText = formatTimelineForSummarization(dayTimeline)?.eventsText ?? "";
     const eventsText = dayEvents.map((e) => `- ${e.content}`).join("\n");
     const coreText = core.text;
-    const periodsText = activePeriods.map((p) => `【${p.title}】${p.summary}`).join("\n");
+    const periodsText = activePeriods.map((p) => `【${p.title}】${p.startTime} 起${p.endTime ? `至 ${p.endTime}` : "至今"}：${p.summary}`).join("\n");
+    const periodMainlines = activePeriods.map((p) => `【${p.title}】${p.summary}`).join("\n");
+    const ctx = buildGenerationContext(characterId);
 
     const template = config.prompts.daily?.trim() || DEFAULT_PROMPTS.daily;
     const prompt = renderMemoryPrompt(template, characterName, getUserName(characterId), {
@@ -120,6 +123,12 @@ export async function generateDaily(
       todayEvents: eventsText,
       coreMemory: coreText,
       activePeriods: periodsText,
+      periodMainlines,
+      persona: ctx.persona,
+      personality: ctx.personality,
+      rules: ctx.rules,
+      userPersona: ctx.userPersona,
+      worldContext: ctx.worldContext,
       length: String(config.dailyTargetLength),
       rollingAppendMax: String(config.rollingAppendMax),
     });
@@ -146,6 +155,13 @@ export async function generateDaily(
       belongsToPeriods: periodResult.belongsToPeriods,
       emotionVector: parsed.emotion,
       voltage: 1,
+      // 原始素材截断存储（供查看器回查「总结的原始记录」）
+      sourceMaterials: capSourceMaterials(
+        [timelineText && `[当日时间线]\n${timelineText}`, eventsText && `[当日事件记忆]\n${eventsText}`]
+          .filter(Boolean)
+          .join("\n\n"),
+      ),
+      migrated: opts?.migrated === true ? true : undefined,
       lastAccessedAt: now,
       createdAt: now,
     };

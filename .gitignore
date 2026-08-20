@@ -37,3 +37,6 @@ tools/weixin-local-assistant/config.txt
 
 # Trae 本地分享包临时目录，不入库
 .trae-html-share-packages/
+
+# 构建日志（本地排查用，不入库）
+build-log.txt

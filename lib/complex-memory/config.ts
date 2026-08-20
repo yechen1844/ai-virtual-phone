@@ -16,9 +16,35 @@ import { DEFAULT_PROMPTS } from "./prompts";
 // ── 键名 ──
 export const COMPLEX_MEMORY_CONFIG_KEY = "ai_phone_complex_memory_config_v1";
 export const COMPLEX_MEMORY_STATE_PREFIX = "ai_phone_complex_memory_state_";
+export const COMPLEX_MEMORY_RULES_PREFIX = "ai_phone_complex_memory_rules_";
 
 registerKvMigration(COMPLEX_MEMORY_CONFIG_KEY);
 registerDynamicPrefix(COMPLEX_MEMORY_STATE_PREFIX);
+registerDynamicPrefix(COMPLEX_MEMORY_RULES_PREFIX);
+
+// ── 角色规则词（user 自定义，按角色绑定；用于人设理解偏差时的辅助修正） ──
+export function loadCharacterRules(characterId: string): string {
+  if (typeof window === "undefined") return "";
+  try {
+    return kvGet(COMPLEX_MEMORY_RULES_PREFIX + characterId) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function saveCharacterRules(characterId: string, text: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    const trimmed = text.trim();
+    if (trimmed) {
+      kvSet(COMPLEX_MEMORY_RULES_PREFIX + characterId, trimmed);
+    } else {
+      kvRemove(COMPLEX_MEMORY_RULES_PREFIX + characterId);
+    }
+  } catch {
+    /* 规则词写入失败不影响主流程 */
+  }
+}
 
 // ── 默认配置 ──
 export const DEFAULT_COMPLEX_MEMORY_CONFIG: ComplexMemoryConfig = {
@@ -192,12 +218,18 @@ export function setComplexMemoryEnabled(characterId: string, enabled: boolean): 
     config.enabledCharacters[characterId] = true;
     // 水位线安全锚定：有历史时间线时锚定到当前时刻，杜绝首次回读吞历史
     ensureWatermarkAnchored(characterId);
-    // 首次启用：异步 bootstrap 核心记忆（幂等，已存在则跳过）
+    // 首次启用：异步 bootstrap 核心记忆（幂等，已存在则跳过）；失败必须可见，不静默吞掉
     void import("./core-builder").then((m) => {
       const name = loadCharacters().find((c) => c.id === characterId)?.name ?? "角色";
-      m.bootstrapCoreMemory(characterId, name).catch((err) =>
-        console.warn("[ComplexMemory] 核心记忆 bootstrap 失败:", characterId, err),
-      );
+      return m.bootstrapCoreMemory(characterId, name).then((res) => {
+        if (!res.success && res.error) {
+          console.warn("[ComplexMemory] 核心记忆 bootstrap 未完成:", res.error);
+          dispatchGlobalNotice(`复杂记忆·${name} 核心记忆初始化失败：${res.error}。请检查辅助 API 绑定（复杂记忆生成）后重试。`);
+        }
+      });
+    }).catch((err) => {
+      console.warn("[ComplexMemory] 核心记忆 bootstrap 失败:", characterId, err);
+      dispatchGlobalNotice("复杂记忆核心记忆初始化异常，请检查辅助 API 配置后重试。");
     });
   } else {
     delete config.enabledCharacters[characterId];
@@ -264,13 +296,25 @@ export function clearCharacterState(characterId: string): void {
   kvRemove(COMPLEX_MEMORY_STATE_PREFIX + characterId);
 }
 
-// ── 生成互斥锁 ──
+// ── 生成互斥锁（带过期抢占：锁持有超过 10 分钟视为泄漏，允许新任务抢占） ──
+const LOCK_STALE_MS = 10 * 60 * 1000;
+
+function dispatchGlobalNotice(message: string): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent("global-notice", { detail: message }));
+}
+
 export function acquireGenerationLock(
   characterId: string,
   kind: NonNullable<CharacterRuntimeState["generationLock"]>["kind"],
 ): boolean {
   const state = loadCharacterState(characterId);
-  if (state.generationLock) return false;
+  if (state.generationLock) {
+    const startedAt = state.generationLock.startedAt ? new Date(state.generationLock.startedAt).getTime() : 0;
+    // 锁超时（任务崩溃/浏览器强杀未释放）：允许抢占，避免生成任务永久卡死
+    if (Date.now() - startedAt < LOCK_STALE_MS) return false;
+    console.warn(`[ComplexMemory] 生成锁超时抢占: ${state.generationLock.kind} → ${kind}`);
+  }
   state.generationLock = { kind, startedAt: new Date().toISOString() };
   saveCharacterState(state);
   return true;

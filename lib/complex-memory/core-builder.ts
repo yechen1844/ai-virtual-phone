@@ -24,7 +24,8 @@ import {
   renderCoreEntriesText,
 } from "./storage";
 import { mirrorCoreEntriesToFloat } from "./mirror";
-import { getUserName } from "./utils";
+import { getUserName, capSourceMaterials } from "./utils";
+import { buildGenerationContext } from "./context-builder";
 import type { ComplexCoreEntry, ComplexCoreSnapshot, CoreCategory, CoreTrigger } from "./types";
 
 const CORE_CATEGORIES: CoreCategory[] = ["identity", "bond", "principle", "milestone"];
@@ -41,17 +42,23 @@ function parseCoreEntriesJson(text: string): ParsedCoreEntry[] | null {
     .replace(/^```[a-zA-Z]*\s*/g, "")
     .replace(/\s*```$/g, "")
     .trim();
-  const start = cleaned.indexOf("[");
-  const end = cleaned.lastIndexOf("]");
-  if (start < 0 || end <= start) return null;
+  // 兼容两种输出：裸数组 [ {...}, ... ] 或对象 { entries: [ {...}, ... ] }（部分模型偏好后者）
+  const arrStart = cleaned.indexOf("[");
+  const arrEnd = cleaned.lastIndexOf("]");
+  if (arrStart < 0 || arrEnd <= arrStart) return null;
   try {
-    const arr = JSON.parse(cleaned.slice(start, end + 1)) as Array<Record<string, unknown>>;
+    const raw = cleaned.slice(arrStart, arrEnd + 1);
+    const parsed: unknown = JSON.parse(raw);
+    const arr = Array.isArray(parsed)
+      ? parsed
+      : (parsed as { entries?: unknown[] })?.entries;
     if (!Array.isArray(arr)) return null;
     const out: ParsedCoreEntry[] = [];
     for (const item of arr) {
-      const textVal = typeof item.text === "string" ? item.text.trim() : "";
+      const o = (item ?? {}) as Record<string, unknown>;
+      const textVal = typeof o.text === "string" ? o.text.trim() : "";
       if (!textVal) continue;
-      const cat = CORE_CATEGORIES.includes(item.category as CoreCategory) ? (item.category as CoreCategory) : "principle";
+      const cat = CORE_CATEGORIES.includes(o.category as CoreCategory) ? (o.category as CoreCategory) : "principle";
       out.push({ text: textVal, category: cat });
     }
     return out.length > 0 ? out : null;
@@ -97,6 +104,7 @@ async function commitCoreVersion(
     trigger: CoreTrigger;
     note: string;
     entries: ComplexCoreEntry[];
+    sourceMaterials?: string;
   },
 ): Promise<{ success: boolean; error?: string; version?: number }> {
   if (props.entries.length === 0) {
@@ -120,6 +128,8 @@ async function commitCoreVersion(
     entryIds: props.entries.map((e) => e.id),
     note: props.note,
     trigger: props.trigger,
+    // 生成该版本时的素材截断存储（供查看器回查「总结的原始记录」）
+    sourceMaterials: props.sourceMaterials ? capSourceMaterials(props.sourceMaterials) : undefined,
     createdAt: now,
     isCurrent: true,
   };
@@ -148,13 +158,16 @@ async function generateCoreEntries(
   if (!apiConfig) return { success: false, error: "未配置复杂记忆生成 API" };
 
   const persona = getCharacter(characterId).persona;
+  const ctx = buildGenerationContext(characterId);
   const template = config.prompts.core?.trim() || DEFAULT_PROMPTS.core;
   const prompt = renderMemoryPrompt(template, characterName, getUserName(characterId), {
     persona,
+    personality: ctx.personality,
+    rules: ctx.rules,
+    userPersona: ctx.userPersona,
+    worldContext: ctx.worldContext,
     existingCore: existingCoreText,
     newMaterials,
-    minLength: String(config.coreMinLength),
-    maxLength: String(config.coreMaxLength),
     banList: config.sanitizerBanList.join("、"),
     feedback,
   });
@@ -204,7 +217,12 @@ async function generateAndCommit(
     feedback,
   );
   if (!res.success || !res.entries) return { success: false, error: res.error };
-  return commitCoreVersion(characterId, { trigger, note: note || trigger, entries: res.entries });
+  return commitCoreVersion(characterId, {
+    trigger,
+    note: note || trigger,
+    entries: res.entries,
+    sourceMaterials: newMaterials,
+  });
 }
 
 // ── bootstrap：首次启用生成 v1（无快照时；有存量整块则拆条） ──

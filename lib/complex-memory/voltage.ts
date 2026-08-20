@@ -44,7 +44,10 @@ export function effectiveVoltage(entity: VoltageEntity, opts?: VoltageOpts): num
   const now = opts?.now ?? Date.now();
   const idleMs = now - new Date(entity.lastAccessedAt).getTime();
   const idleHours = idleMs > 0 ? idleMs / 3_600_000 : 0;
-  const factor = decayFactorOf(kind, opts?.special ?? false);
+  let factor = decayFactorOf(kind, opts?.special ?? false);
+  // 迁移产物半衰减（M7）：迁移是瞬间回放、没有正常召回机制对抗衰减，
+  // 衰减因子向 1 靠拢一半（如 0.98 → 0.99），减少失真但保留衰减。
+  if ((entity as { migrated?: boolean }).migrated) factor = 1 - (1 - factor) / 2;
   const decayed = entity.voltage * Math.pow(factor, idleHours / 24);
   return Math.max(0, Math.min(1, decayed));
 }

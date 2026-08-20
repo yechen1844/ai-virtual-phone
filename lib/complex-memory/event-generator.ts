@@ -3,7 +3,7 @@
 // 读取水位线之后的时间线 → LLM 压缩为第一人称叙事 → 向量化 → 入库 → 镜像 float。
 
 import { simpleLLMCall } from "../api-helpers";
-import { resolveAuxiliaryApiConfig, resolveUserIdentity } from "../settings-storage";
+import { resolveAuxiliaryApiConfig } from "../settings-storage";
 import { formatTimelineForSummarization, type NativeTimelineEntry } from "../short-term-assembler";
 import { generateEmbedding, resolveEmbeddingModel } from "../memory-embedding";
 import {
@@ -13,20 +13,14 @@ import {
   getRingBuffer,
   updateRingBuffer,
 } from "./config";
+import { buildGenerationContext } from "./context-builder";
 import { ensureWatermarkAnchored } from "./watermark";
 import { loadSourceTimeline } from "./source";
 import { renderMemoryPrompt, DEFAULT_PROMPTS } from "./prompts";
-import { saveEvent } from "./storage";
+import { saveEvent, getCurrentCoreView, loadActivePeriods, getDaily } from "./storage";
 import { mirrorEventToFloat } from "./mirror";
+import { getUserName, capSourceMaterials, dateString } from "./utils";
 import type { ComplexEvent, EmotionVector } from "./types";
-
-function getUserName(characterId: string): string {
-  try {
-    return resolveUserIdentity(characterId, "chat")?.name || "用户";
-  } catch {
-    return "用户";
-  }
-}
 
 function clampNum(v: unknown, min: number, max: number, fallback: number): number {
   return typeof v === "number" && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback;
@@ -141,17 +135,37 @@ function sliceWindows(entries: NativeTimelineEntry[], size: number): NativeTimel
   return out;
 }
 
+/** 给定日期（YYYY-MM-DD）的前一天（本地日期，避免 UTC 跨天偏差）。 */
+function prevDateStr(dateStr: string): string {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  if (!y || !m || !d) return dateStr;
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() - 1);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+}
+
 /** 对单个窗口执行：格式化 → LLM → 解析 → 向量化 → 入库 → 镜像 float。失败返回 null。 */
 async function generateEventForWindow(
   characterId: string,
   characterName: string,
   targetLength: number,
   windowEntries: NativeTimelineEntry[],
-  opts?: { suppressMirror?: boolean },
+  opts?: { suppressMirror?: boolean; migrated?: boolean; contextDate?: string },
 ): Promise<ComplexEvent | null> {
   const config = loadComplexMemoryConfig();
   const formatted = formatTimelineForSummarization(windowEntries);
   if (!formatted) return null;
+
+  // 注入参考上下文：人设/规则/user人设/世界观 + 核心记忆 + 活跃周期 + 昨日日记（与正常生成机制一致）
+  const ctx = buildGenerationContext(characterId);
+  const [coreView, activePeriods] = await Promise.all([
+    getCurrentCoreView(characterId),
+    loadActivePeriods(characterId),
+  ]);
+  const coreText = coreView.text;
+  const periodsText = activePeriods.map((p) => `【${p.title}】${p.startTime} 起${p.endTime ? `至 ${p.endTime}` : "至今"}：${p.summary}`).join("\n");
+  // 昨日日记：正常机制读真实日历昨天；迁移回放时读「窗口时间点的前一天」，保持与当时一致
+  const yesterdayDaily = await getDaily(characterId, opts?.contextDate ? prevDateStr(opts.contextDate) : dateString(-1));
 
   const { eventsText, earliest, latest } = formatted;
   const template = config.prompts.event?.trim() || DEFAULT_PROMPTS.event;
@@ -161,6 +175,14 @@ async function generateEventForWindow(
     eventCount: String(formatted.count),
     length: String(targetLength),
     events: eventsText,
+    persona: ctx.persona,
+    personality: ctx.personality,
+    rules: ctx.rules,
+    userPersona: ctx.userPersona,
+    worldContext: ctx.worldContext,
+    coreMemory: coreText,
+    activePeriods: periodsText,
+    yesterdayDaily: yesterdayDaily?.content ?? "",
   });
 
   const apiConfig = resolveAuxiliaryApiConfig("complexMemoryApiConfigId");
@@ -204,6 +226,9 @@ async function generateEventForWindow(
     voltage: 1,
     importanceScore: parsed.importanceScore,
     embedding,
+    // 原始素材截断存储（供查看器回查「总结的原始记录」）
+    sourceMaterials: capSourceMaterials(eventsText),
+    migrated: opts?.migrated === true ? true : undefined,
     lastAccessedAt: now,
     createdAt: now,
   };
@@ -225,6 +250,7 @@ export async function generateEventWindow(
   characterId: string,
   characterName: string,
   windowIndex: number,
+  opts?: { migrated?: boolean },
 ): Promise<{
   success: boolean;
   error?: string;
@@ -249,7 +275,12 @@ export async function generateEventWindow(
     characterName,
     config.eventTargetLength,
     windows[windowIndex],
-    { suppressMirror: true },
+    {
+      suppressMirror: true,
+      migrated: opts?.migrated === true,
+      // 昨日日记注入时间点：该窗口最后一条消息所在日期（迁移回放时保持「当时」语义）
+      contextDate: windows[windowIndex][windows[windowIndex].length - 1]?.timestamp.slice(0, 10),
+    },
   );
   if (!event) {
     return { success: false, error: "事件窗口生成失败", totalWindows: windows.length, nextIndex: windowIndex, done: false };

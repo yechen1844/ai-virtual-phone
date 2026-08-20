@@ -6,6 +6,8 @@ import type { ApiConfig } from "./settings-types";
 import { pushApiLog } from "./api-log-store";
 
 const SIMPLE_ANTHROPIC_AUTO_MAX_TOKENS = 8192;
+/** simpleLLMCall 默认请求超时：LLM 挂起时终止并报错，避免生成任务无限等待。 */
+const SIMPLE_LLM_TIMEOUT_MS = 120_000;
 
 /**
  * Resolve the base URL for an API config.
@@ -131,6 +133,14 @@ export async function simpleLLMCall(
         return { content: null, error: "API 地址或密钥无效" };
     }
 
+    // 默认 120s 超时：LLM 挂起时终止并报错，避免生成任务无限等待（调用方可用 signal 覆盖）
+    const effectiveSignal = options?.signal;
+    const timeoutController = effectiveSignal ? null : new AbortController();
+    const timeoutTimer = timeoutController
+        ? setTimeout(() => timeoutController.abort(), SIMPLE_LLM_TIMEOUT_MS)
+        : null;
+    const signal = effectiveSignal ?? timeoutController?.signal;
+
     const headers = buildRequestHeaders(config, baseUrl);
     const temperature = options?.temperature ?? 0.7;
     const max_tokens = options?.max_tokens;
@@ -192,9 +202,9 @@ export async function simpleLLMCall(
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ url: fetchUrl, headers, body }),
-                signal: options?.signal,
+                signal,
             })
-            : await fetch(fetchUrl, { method: "POST", headers, body, signal: options?.signal });
+            : await fetch(fetchUrl, { method: "POST", headers, body, signal });
 
         if (!res.ok) {
             const errText = await res.text().catch(() => "");
@@ -240,6 +250,8 @@ export async function simpleLLMCall(
             rawResponse: `[请求失败] ${err instanceof Error ? err.message : String(err)}`,
         });
         return { content: null, error: `请求失败: ${err instanceof Error ? err.message : String(err)}` };
+    } finally {
+        if (timeoutTimer) clearTimeout(timeoutTimer);
     }
 }
 
