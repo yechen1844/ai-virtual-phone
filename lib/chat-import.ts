@@ -5,7 +5,6 @@
 // - 幂等：按消息 id 去重，重复导入同一角色不产生重复记录
 // - 目标角色必须在 float 中已存在（用户自行新建角色后选择导入）
 
-import { createOrGetSession, importChatMessages, type ChatMessage } from "./chat-storage";
 import { loadCharacters } from "./character-storage";
 
 export const CHAT_IMPORT_FORMAT = "ai-phone-chat-import";
@@ -18,6 +17,9 @@ export type ChatImportMessage = {
   mediaType?: ChatMessage["mediaType"];
   mediaData?: ChatMessage["mediaData"];
 };
+
+// 动态类型引用（运行时由 import() 拉取，类型层保持准确）
+import type { ChatMessage } from "./chat-storage";
 
 export type ChatImportPayload = {
   format: string;
@@ -68,6 +70,21 @@ export async function importChatHistory(
   const char = chars.find((c) => c.id === characterId);
   if (!char) {
     return { success: false, error: "目标角色不存在，请先在 float 中新建该角色再导入" };
+  }
+
+  // 运行时动态导入存储模块：强制取当前构建产物，并做类型守卫。
+  // 规避浏览器/服务器缓存了「不含 importChatMessages 的旧 chunk」导致的 (0, ty.xx) 原生报错。
+  const storage = await import("./chat-storage");
+  const { createOrGetSession, importChatMessages } = storage;
+  if (typeof createOrGetSession !== "function" || typeof importChatMessages !== "function") {
+    const miss = [
+      typeof createOrGetSession !== "function" ? "createOrGetSession" : "",
+      typeof importChatMessages !== "function" ? "importChatMessages" : "",
+    ].filter(Boolean).join("、");
+    return {
+      success: false,
+      error: `导入逻辑未完整加载（缺：${miss}），大概率是页面加载的是旧构建。请强制刷新（Ctrl/Cmd+Shift+R）后重试；若仍失败请确认线上已是最新部署`,
+    };
   }
 
   const session = createOrGetSession(characterId);
