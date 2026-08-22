@@ -3887,6 +3887,11 @@
 }
 .ui-entry-card[data-active="true"] { border-color: var(--c-icon-active); }
 .ui-entry-card[data-disabled="true"] { opacity: 0.5; }
+/* 多选模式下选中条目高亮 */
+.ui-entry-card[data-selected="true"] {
+  border-color: var(--c-icon-active);
+  background: color-mix(in srgb, var(--c-icon-active) 8%, transparent);
+}
 
 /* ── Entry card 左滑操作（新增/删除） ── */
 .ui-swipe-wrap {
