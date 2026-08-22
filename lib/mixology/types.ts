@@ -56,13 +56,11 @@ export const MIX_KIND_SECTION_LABELS: Record<MixMaterialKind, string> = {
 /** 必选槽：没配齐不能开局；其余槽可留空 */
 export const MIX_REQUIRED_KINDS: MixMaterialKind[] = ["character"];
 
-/** 一格最多叠几件 */
-export const MIX_SLOT_MAX = 3;
-
 /**
  * 叠放语义：
- * concat = 这一格里条件满足的全部生效，按顺序依次拼接（多段文风叠加、主装饰 + 补丁装饰）；
- * first  = 只用第一件条件满足的（状态卡只能有一张、小剧场一轮只演一出）。
+ * concat = 这一格里条件满足的全部生效，按顺序依次拼接（多段文风叠加、主装饰 + 补丁装饰；
+ *          小票/尾调是"多块并行"——每件各自成块，一轮可同时带多个状态栏与小剧场）；
+ * first  = 只用第一件条件满足的（一局只有一张角色卡、一副面具）。
  */
 export const MIX_SLOT_STACK: Record<MixMaterialKind, "concat" | "first"> = {
     character: "first",
@@ -71,9 +69,9 @@ export const MIX_SLOT_STACK: Record<MixMaterialKind, "concat" | "first"> = {
     flavor: "concat",
     glass: "concat",
     strength: "concat",
-    ticket: "first",
+    ticket: "concat",
     garnish: "concat",
-    encore: "first",
+    encore: "concat",
     filter: "concat",
     mechanism: "concat",
 };
@@ -232,6 +230,13 @@ export type MixTicketMaterial = MixMaterialMeta & {
     previewRaw?: string;
     /** 这张小票里哪几项要记住（记住的值可被条件判断、可被 {{状态.X}} 取用） */
     vars?: MixTicketVar[];
+    /**
+     * 历史回传策略：往期轮次的壳内原文要不要回传给模型。
+     * latest（默认）= 只回传最近一轮——状态接续与格式示范都够用，token 不随轮数涨；
+     * all = 全部回传——契约需要引用往期内容时用，token 随轮数线性增长；
+     * none = 完全不回传——纯展示、不需要接续也不怕掉格式时最省 token。
+     */
+    historyFeed?: "latest" | "all" | "none";
 };
 
 /** 外观：对局界面美化（官方语义类 + 界面定位符的 CSS） */
@@ -251,6 +256,8 @@ export type MixEncoreMaterial = MixMaterialMeta & {
     html?: string;
     /** 编辑器预览用示例数据 */
     previewRaw?: string;
+    /** 历史回传策略（同小票）：latest（默认）只回传最近一轮，all 全部回传，none 完全不回传 */
+    historyFeed?: "latest" | "all" | "none";
 };
 
 /** 尾调渲染代码：新旧字段统一出口 */
@@ -504,7 +511,7 @@ export function mixSlotFirstId(slots: MixSlotsRaw | undefined, kind: MixMaterial
 export function normalizeMixSlots(slots: MixSlotsRaw | undefined): Partial<Record<MixMaterialKind, MixSlotEntry[]>> {
     const out: Partial<Record<MixMaterialKind, MixSlotEntry[]>> = {};
     for (const kind of MIX_SLOT_ORDER) {
-        const entries = mixSlotEntries(slots, kind).slice(0, MIX_SLOT_MAX);
+        const entries = mixSlotEntries(slots, kind);
         if (entries.length) out[kind] = entries;
     }
     return out;
@@ -514,7 +521,7 @@ export function normalizeMixSlots(slots: MixSlotsRaw | undefined): Partial<Recor
 export type MixRecipe = {
     id: string;
     name: string;
-    /** kind → 这一格叠的材料（有序，最多 MIX_SLOT_MAX 件）；角色卡必有，其余可缺 */
+    /** kind → 这一格叠的材料（有序，不设数量上限）；角色卡必有，其余可缺 */
     slots: Partial<Record<MixMaterialKind, MixSlotEntry[]>>;
     /** 作者署名与头像：从配方页入柜时带回；自己的配方展示本地创作者资料 */
     author?: string;
@@ -529,16 +536,41 @@ export type MixRecipe = {
     updatedAt: number;
 };
 
+/**
+ * 一轮里的一块壳内原文（状态栏或小剧场）。
+ * id = 供稿材料：渲染时按它找皮（现役件 → 退役快照 → 酒柜同 id 件）；
+ * 抽不到归属（旧格式输出、契约外的多余块）时缺省，渲染退回这一格的第一件。
+ */
+export type MixTurnBlock = {
+    id?: string;
+    raw: string;
+};
+
 /** 对局消息 */
 export type MixTurn = {
     id: string;
     role: "user" | "assistant";
     /** 正文（assistant 侧已剥离小票块） */
     text: string;
-    /** 该轮小票壳内原文（有小票材料且 AI 按契约输出时才有） */
+    /** 该轮小票壳内原文（有小票材料且 AI 按契约输出时才有）；多块时为第一块，全量见 ticketRaws */
     ticketRaw?: string;
-    /** 该轮小剧场壳内原文（尾调写了契约且 AI 输出时才有） */
+    /** 该轮小剧场壳内原文（尾调写了契约且 AI 输出时才有）；多块时为第一块，全量见 encoreRaws */
     encoreRaw?: string;
+    /**
+     * 多块并行（一轮多个状态栏/小剧场）时的全量块序列，按输出顺序排列。
+     * 老数据没有这两个字段——读取一律走 mixTurnTicketBlocks / mixTurnEncoreBlocks，
+     * 它们会把旧的单块字段包装成一块返回。
+     */
+    ticketRaws?: MixTurnBlock[];
+    encoreRaws?: MixTurnBlock[];
+    /**
+     * 供稿材料戳（可选）：平时不写——历史轮跟着当前件的渲染代码走（整体换皮）。
+     * 只在局中换小票/尾调那一刻，由旧件给已有的轮盖上自己的 id；
+     * 渲染时有戳的轮用戳指向的皮（见 MixSession.retiredRender），新轮用新件。
+     * 多块格式的轮不用戳——每块自带供稿材料 id。
+     */
+    ticketId?: string;
+    encoreId?: string;
     /**
      * 这一轮结束时记住的值。回溯 / 重说 / 编辑某轮之后，
      * 直接取剩下最后一轮的这份快照还原，数字不会停留在被丢掉的未来。
@@ -573,9 +605,38 @@ export type MixSession = {
      * 不写回材料：材料是作者的作品，玩家挪一下自己的屏幕不该改到别人的作品。
      */
     panelBox?: Record<string, MixPanelLayout>;
+    /**
+     * 退役的渲染皮（materialId → 渲染 HTML）：局中换小票/尾调那一刻，旧件的
+     * 渲染代码快照进来，被盖了戳的历史轮（MixTurn.ticketId/encoreId）按这份
+     * 皮回放——旧件之后从酒柜删掉也不受影响。每件只存一份，不逐轮存。
+     */
+    retiredRender?: Record<string, string>;
+    /**
+     * 背景观感微调（对局页右上角亮度按钮）：mask = 蒙版亮度 -40~100（0 为默认
+     * 三段蒙版原样，负值在蒙版外再压一层匀黑更暗，100 为完全无蒙版）；
+     * blur = 封面模糊 0~20px。按局保存——不同封面的明暗各不相同，各局各调。
+     */
+    bgTune?: { mask: number; blur: number };
     createdAt: number;
     updatedAt: number;
 };
+
+/**
+ * 读一轮的状态栏块序列：新格式（ticketRaws）直接用；老数据把单块字段包装成一块，
+ * 块的归属沿用换装时盖的戳（没盖过就是缺省 = 跟当前件走）。
+ */
+export function mixTurnTicketBlocks(turn: MixTurn): MixTurnBlock[] {
+    if (turn.ticketRaws?.length) return turn.ticketRaws;
+    if (turn.ticketRaw) return [{ id: turn.ticketId, raw: turn.ticketRaw }];
+    return [];
+}
+
+/** 读一轮的小剧场块序列（同 mixTurnTicketBlocks） */
+export function mixTurnEncoreBlocks(turn: MixTurn): MixTurnBlock[] {
+    if (turn.encoreRaws?.length) return turn.encoreRaws;
+    if (turn.encoreRaw) return [{ id: turn.encoreId, raw: turn.encoreRaw }];
+    return [];
+}
 
 /**
  * 与云端的关联状态（参考应用市场的显式同步模型）：

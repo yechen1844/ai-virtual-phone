@@ -108,7 +108,6 @@ type CustomAppRunnerProps = {
 
 type BridgeResult = unknown;
 
-const EMPTY_CUSTOM_APP_SRC_DOC = "<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>";
 const CUSTOM_APP_BACKGROUND_RUNNER_TIMEOUT_MS = 5 * 60_000;
 
 function normalizeAssetRef(value: string): string {
@@ -1963,15 +1962,21 @@ export function CustomAppRunner({
           </button>
         </div>
       ) : null}
-      <iframe
-        ref={iframeRef}
-        title={app.name}
-        className="custom-app-runner-frame"
-        sandbox="allow-scripts allow-downloads"
-        allow="autoplay"
-        onLoad={syncHostedSafeArea}
-        srcDoc={bridgeReady ? srcDoc : EMPTY_CUSTOM_APP_SRC_DOC}
-      />
+      {bridgeReady ? (
+        // Chromium can leave a sandboxed about:srcdoc document with a 0x0 layout tree
+        // when the same iframe first loads an empty srcDoc and is immediately navigated
+        // to the real app. Mount it only after the host listener is ready so the final
+        // document is the iframe's first and only srcDoc navigation.
+        <iframe
+          ref={iframeRef}
+          title={app.name}
+          className="custom-app-runner-frame"
+          sandbox="allow-scripts allow-downloads"
+          allow="autoplay"
+          onLoad={syncHostedSafeArea}
+          srcDoc={srcDoc}
+        />
+      ) : null}
 
       {frameFailure ? (
         <CustomAppFailurePanel

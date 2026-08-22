@@ -38,9 +38,12 @@ export type MixHookPayload = {
     userName: string;
     /** 落杯前：玩家这一句；出杯后：模型这一段正文 */
     text?: string;
-    /** 出杯后：这一轮的状态栏与小剧场原文 */
+    /** 出杯后：这一轮的状态栏与小剧场原文（多块并行时为第一块，全量见 ticketRaws/encoreRaws） */
     ticketRaw?: string;
     encoreRaw?: string;
+    /** 出杯后：这一轮全部状态栏/小剧场块的原文，按输出顺序 */
+    ticketRaws?: string[];
+    encoreRaws?: string[];
 };
 
 /** 沙盒还回来的东西 */

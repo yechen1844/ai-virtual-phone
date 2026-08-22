@@ -1,11 +1,11 @@
 "use client";
 
-// 独家特调 · 创作工坊预览：那几类"要眼见为实"的材料，在编辑器里就地试穿——
-// 小票喂示例数据渲染，装饰套在样例正文上，尾调进沙盒跑，
+// 独家特调 · 材料预览：那几类"要眼见为实"的材料，编辑器与详情页共用同一套试穿——
+// 小票喂示例数据渲染，装饰套在样例正文上，尾调进沙盒跑，滤网拿样文试洗，
 // 机括摆进一块假的对局画面里，界面能拖能点、钩子能当场跑一遍看它还回来什么。
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, Play, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Check, ChevronDown, ChevronLeft, Copy, Play, X } from "lucide-react";
 import { MixProseView } from "./prose-view";
 import { MixRichText } from "./rich-text";
 import { MixTicketFrame } from "./ticket-frame";
@@ -13,7 +13,9 @@ import { MixMechanismPanel } from "./mechanism-panel";
 import { scopeMixCss } from "@/lib/mixology/css-scope";
 import { MIX_HOOK_LABELS, type MixHook } from "@/lib/mixology/mechanism-protocol";
 import { disposeMixSandboxesForMaterial, runMixHook } from "@/lib/mixology/mechanism-runtime";
-import type { MixPanelLayout, MixState } from "@/lib/mixology/types";
+import { applyMixFilterRules } from "@/lib/mixology/prose";
+import { MIX_CRAFT_PROMPTS } from "@/lib/mixology/crafting-guides";
+import { MIX_KIND_LABELS, mixEncoreRenderHtml, type MixFilterRule, type MixMaterial, type MixMaterialKind, type MixPanelLayout, type MixState } from "@/lib/mixology/types";
 
 /** 装饰预览用的样例正文：覆盖五种正文标记，方便作者一眼看全 */
 const GARNISH_SAMPLE = [
@@ -28,10 +30,15 @@ export type MixPreviewTarget =
     | { kind: "garnish"; css: string }
     | { kind: "encore"; html: string; raw?: string }
     | { kind: "canvas"; html: string; cover?: string }
+    | { kind: "filter"; rules: MixFilterRule[] }
     | { kind: "mechanism"; name: string; html: string; layout: MixPanelLayout; script: string };
 
-/** 预览内容本体：四类材料各自的"眼见为实" */
-function MixPreviewBody({ target }: { target: MixPreviewTarget }) {
+/**
+ * 预览内容本体：各类材料的"眼见为实"。
+ * guide=false 是详情页（看别人的作品）：收掉「先去某个框里写」这类写作指引——
+ * 看的人手边没有编辑器，那些话只会让人摸不着头脑。
+ */
+function MixPreviewBody({ target, guide = true }: { target: MixPreviewTarget; guide?: boolean }) {
     return (
         <>
         {target.kind === "ticket" ? (
@@ -42,29 +49,43 @@ function MixPreviewBody({ target }: { target: MixPreviewTarget }) {
                         <MixTicketFrame html={target.html} raw={target.raw} />
                     </div>
                 </>
-            ) : (
+            ) : guide ? (
                 <div className="mix-comment-empty">
                     先在「预览示例数据」里写几行示例，
                     <br />
                     这里就能看到小票渲染成什么样。
                 </div>
+            ) : (
+                <div className="mix-comment-empty">作者没留预览示例数据，这张小票要进对局才看得到效果。</div>
             )
         ) : null}
 
         {target.kind === "garnish" ? (
             <>
-                <div className="mix-detail-label">套在样例正文上的效果</div>
-                {/* 试穿也走同一套收口，所见即对局里的实际效果 */}
+                <div className="mix-detail-label">套在样例对局上的效果</div>
+                {/* 试穿也走同一套收口，所见即对局里的实际效果。舞台带标题栏与输入栏——
+                    外观管的是整个对局画面，只摆正文会让人以为部件类不生效 */}
                 <div className="mix-garnish-stage mix-garnish-scope">
                     <style>{scopeMixCss(target.css)}</style>
+                    <div className="mix-game-header" style={{ marginTop: 0 }}>
+                        <span className="mix-icon-btn" aria-hidden="true"><ChevronLeft size={18} /></span>
+                        <div className="mix-game-title">试穿舞台</div>
+                        <span className="mix-icon-btn" aria-hidden="true"><Play size={14} /></span>
+                    </div>
                     <MixProseView text={GARNISH_SAMPLE} />
                     <div className="mix-user-turn">
                         <div className="mix-user-bubble">我把伞递过去，「一起走？」</div>
                     </div>
+                    <div className="mix-game-inputbar" style={{ pointerEvents: "none" }}>
+                        <div className="mix-game-input" style={{ opacity: 0.75 }}>发送消息…</div>
+                        <span className="mix-send-btn"><Play size={14} /></span>
+                    </div>
                 </div>
+                {guide ? <>
                 <div className="mix-detail-label" style={{ marginTop: 14 }}>可用的官方类名</div>
                 <div className="mix-detail-value" data-code="true">
                     {[
+                        "── 正文语义类 ──",
                         ".mix-prose    正文容器（默认 14px / 行高 1.75）",
                         ".mix-para     普通段落（默认首行缩进 2em，不想缩写 text-indent: 0）",
                         ".mix-scene    场景过场行（【】）",
@@ -72,15 +93,33 @@ function MixPreviewBody({ target }: { target: MixPreviewTarget }) {
                         ".mix-thought  心声（* *）",
                         ".mix-accent   强调（~ ~）",
                         ".mix-narration 叙述",
-                        ".mix-user-bubble 玩家气泡",
-                        ".mix-ticket-wrap 小票外框",
                         "",
-                        "body / html / :root  等同于整个对局画面",
+                        "── 界面部件类 ──",
+                        ".mix-game        对局画面根（body / html / :root 也等同于它）",
+                        ".mix-game-bg     封面背景层",
+                        ".mix-game-header 顶部标题栏（可换装不可藏：返回按钮在里面）",
+                        ".mix-game-title  标题文字",
+                        ".mix-icon-btn    图标按钮（标题栏与输入栏两侧）",
+                        ".mix-game-scroll 对话滚动区",
+                        ".mix-user-turn / .mix-user-bubble  玩家轮 / 玩家气泡",
+                        ".mix-assistant-turn 每轮 AI 回复的容器",
+                        ".mix-turn-act    消息角落的复制/回溯/编辑小按钮",
+                        ".mix-game-inputbar 底部输入栏",
+                        ".mix-game-input  输入框",
+                        ".mix-send-btn    发送按钮",
+                        ".mix-state-bar / .mix-state-chip  记住值状态条 / 小芯片",
+                        ".mix-ticket-wrap 状态栏卡片外框",
+                        ".mix-encore-inline 小剧场容器",
+                        ".mix-game-thinking 生成中指示",
+                        "",
                         "样式只在对局画面内生效，改不到应用的其他页面",
                     ].join("\n")}
                 </div>
+                </> : null}
             </>
         ) : null}
+
+        {target.kind === "filter" ? <MixFilterStage rules={target.rules} /> : null}
 
         {target.kind === "canvas" ? (
             <>
@@ -110,6 +149,33 @@ function MixPreviewBody({ target }: { target: MixPreviewTarget }) {
     );
 }
 
+
+/** 滤网试洗的默认样文：星号加长破折号，最常见的两类清洗对象 */
+const FILTER_SAMPLE = "**他顿了顿**——「嗯……今天也加班？」";
+
+/**
+ * 滤网试洗：贴一段样文，即时看全部规则跑完的结果。
+ * 与编辑器里的「试跑」同口径：不分模式、按顺序全部跑一遍，写错的正则自动作废。
+ */
+function MixFilterStage({ rules }: { rules: MixFilterRule[] }) {
+    const [sample, setSample] = useState(FILTER_SAMPLE);
+    const result = useMemo(
+        () => applyMixFilterRules(applyMixFilterRules(sample, rules, "context"), rules, "display"),
+        [sample, rules],
+    );
+    return (
+        <>
+            <div className="mix-detail-label">贴一段样文，看规则跑完的结果</div>
+            <textarea
+                className="mix-textarea"
+                style={{ minHeight: 72, marginTop: 8 }}
+                value={sample}
+                onChange={(e) => setSample(e.target.value)}
+            />
+            {sample ? <div className="mix-filter-result">{result || "（全部被清空了）"}</div> : null}
+        </>
+    );
+}
 
 /** 机括试摆用的假对局：正文与角色名都写死，只是给面板一个真实比例的舞台 */
 const MECH_SAMPLE = [
@@ -280,6 +346,7 @@ function previewKey(target: MixPreviewTarget): string {
         case "garnish": return `g${target.css}`;
         case "encore": return `e${target.html}${target.raw ?? ""}`;
         case "canvas": return `c${target.html}${target.cover ?? ""}`;
+        case "filter": return `f${JSON.stringify(target.rules)}`;
         case "mechanism": return `m${target.html}${target.script}${JSON.stringify(target.layout)}`;
     }
 }
@@ -292,10 +359,13 @@ export function MixPreviewInline({
     label,
     target,
     disabled,
+    guide,
 }: {
     label: string;
     target: MixPreviewTarget;
     disabled?: boolean;
+    /** false = 详情页语境：预览里不出现"先去某个框里写"这类编辑器指引 */
+    guide?: boolean;
 }) {
     const [open, setOpen] = useState(false);
     // 展开后是一直看得见的，若每次按键都重建 srcDoc，iframe 会不停闪。
@@ -344,7 +414,7 @@ export function MixPreviewInline({
             </button>
             {open && shown ? (
                 <div className="mix-preview-panel" ref={panelRef}>
-                    <MixPreviewBody target={shown} />
+                    <MixPreviewBody target={shown} guide={guide} />
                 </div>
             ) : null}
         </div>
@@ -412,4 +482,122 @@ export function MixStructureSheet({ highlight, onClose }: { highlight?: string; 
             </div>
         </div>
     );
+}
+
+// ── 制作说明 ──
+// 每类材料一份写好的委托词：复制发给任意 AI，末尾补一句自己的想法，
+// 拿回来的内容按【框名】逐段贴回编辑器。文案本体在 lib/mixology/crafting-guides.ts。
+
+export function MixCraftSheet({ kind, onClose }: { kind: MixMaterialKind; onClose: () => void }) {
+    const prompt = MIX_CRAFT_PROMPTS[kind];
+    const [copied, setCopied] = useState(false);
+
+    const copy = useCallback(async () => {
+        try {
+            await navigator.clipboard.writeText(prompt);
+        } catch {
+            // 剪贴板 API 不可用（旧内核 / 非安全上下文）：退回选区复制
+            const box = document.createElement("textarea");
+            box.value = prompt;
+            box.style.position = "fixed";
+            box.style.opacity = "0";
+            document.body.appendChild(box);
+            box.select();
+            try { document.execCommand("copy"); } finally { box.remove(); }
+        }
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1600);
+    }, [prompt]);
+
+    return (
+        <div className="mix-sheet-mask" onClick={onClose}>
+            <div className="mix-sheet" onClick={(e) => e.stopPropagation()}>
+                <div className="mix-sheet-head">
+                    <div className="mix-sheet-title">发给 AI 的制作说明 · {MIX_KIND_LABELS[kind]}</div>
+                    <button type="button" className="mix-icon-btn" onClick={onClose} aria-label="关闭"><X size={18} /></button>
+                </div>
+                <div className="mix-sheet-body">
+                    <div className="mix-struct-note">
+                        下面是一份写好的<b>委托词</b>：整段复制发给任意 AI（豆包、DeepSeek、ChatGPT 都行），
+                        在末尾<b>【我的想法】</b>处补上你的点子，AI 就会按编辑器的框逐段产出内容，逐框贴回来即可。
+                    </div>
+                    <button type="button" className="mix-craft-copy" data-done={copied ? "true" : undefined} onClick={() => void copy()}>
+                        {copied ? <Check size={14} /> : <Copy size={14} />}
+                        {copied ? "已复制，去发给 AI 吧" : "复制委托词"}
+                    </button>
+                    <div className="mix-craft-text">{prompt}</div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+/**
+ * 半宽缩样容器：内容按两倍宽渲染再 scale(0.5)，视觉上等于手机全宽比例。
+ * transform 不改布局高度，这里用 ResizeObserver 量内层实际高度、给外层
+ * 一半——卡片高度就跟着渲染内容走，矮小票出矮卡，长装饰出长卡。
+ */
+function HalfScale({ children }: { children: ReactNode }) {
+    const innerRef = useRef<HTMLDivElement | null>(null);
+    const [height, setHeight] = useState(120);
+    useEffect(() => {
+        const el = innerRef.current;
+        if (!el || typeof ResizeObserver === "undefined") return;
+        const ro = new ResizeObserver(() => setHeight(Math.max(60, Math.ceil(el.offsetHeight / 2))));
+        ro.observe(el);
+        return () => ro.disconnect();
+    }, []);
+    return (
+        <div style={{ position: "relative", height, overflow: "hidden" }}>
+            <div ref={innerRef} style={{ position: "absolute", top: 0, left: 0, width: "200%", transform: "scale(0.5)", transformOrigin: "0 0" }}>
+                {children}
+            </div>
+        </div>
+    );
+}
+
+/**
+ * 瀑布卡的自动封面：没配封面的小票/装饰/尾调，用自己的渲染效果缩样当海报——
+ * 这几类材料"长什么样"本来就该由渲染代码说话，不必再让作者传一张图。
+ * 卡片高度跟随缩样实际高度（HalfScale 量高）；渲染不出来（缺示例数据、
+ * 缺代码）时返回 null。角色卡除外：它的封面是人物立绘，画布缩样代替不了。
+ */
+/** 这件材料能不能渲染出自动封面：MatCard 据此决定走缩样流还是占位纹 */
+export function mixMatHasAutoCover(material: MixMaterial): boolean {
+    if (material.kind === "ticket") return Boolean(material.renderHtml?.trim() && material.previewRaw?.trim());
+    if (material.kind === "encore") {
+        if (!mixEncoreRenderHtml(material).trim()) return false;
+        return !(material.contract?.trim() && !material.previewRaw?.trim());
+    }
+    if (material.kind === "garnish") return Boolean(material.css.trim());
+    return false;
+}
+
+export function MixMatAutoCover({ material }: { material: MixMaterial }) {
+    if (material.kind === "ticket") {
+        const html = material.renderHtml?.trim() ?? "";
+        const raw = material.previewRaw?.trim() ?? "";
+        if (!html || !raw) return null;
+        return <HalfScale><MixTicketFrame html={html} raw={raw} /></HalfScale>;
+    }
+    if (material.kind === "encore") {
+        const html = mixEncoreRenderHtml(material).trim();
+        if (!html) return null;
+        const raw = material.previewRaw?.trim() ?? "";
+        // AI 供稿型没留示例数据就渲染不出内容，别摆一张空壳
+        if (material.contract?.trim() && !raw) return null;
+        return <HalfScale><MixTicketFrame html={html} raw={raw} /></HalfScale>;
+    }
+    if (material.kind === "garnish") {
+        if (!material.css.trim()) return null;
+        return (
+            <HalfScale>
+                <div className="mix-garnish-stage mix-garnish-scope" style={{ margin: 0, border: "none", borderRadius: 0 }}>
+                    <style>{scopeMixCss(material.css)}</style>
+                    <MixProseView text={GARNISH_SAMPLE} />
+                </div>
+            </HalfScale>
+        );
+    }
+    return null;
 }

@@ -1597,6 +1597,38 @@
   animation: chat-generated-image-spin 0.8s linear infinite;
 }
 
+/* 重新生成中的角标：状态落库在消息上（pending），滚走再回来角标还在 */
+.chat-generated-image-regen-wrap {
+  position: relative;
+}
+
+.chat-generated-image-regen-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: calc(10.8px*var(--app-text-scale,1));
+  line-height: 1;
+  pointer-events: none;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.chat-generated-image-regen-spinner {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  border: 1.5px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  animation: chat-generated-image-spin 0.8s linear infinite;
+}
+
 .chat-generated-image-retry-error,
 .feed-post-photo-retry-error {
   max-width: 240px;
@@ -1604,24 +1636,6 @@
   font-size: calc(11px*var(--app-text-scale,1));
   line-height: 1.45;
   overflow-wrap: anywhere;
-}
-
-/* 生图失败提示的忽略按钮：点掉即清状态落库，不再提示 */
-.feed-post-photo-error-dismiss {
-  margin-left: 6px;
-  padding: 0 4px;
-  border: none;
-  background: none;
-  color: inherit;
-  opacity: 0.65;
-  font-size: inherit;
-  line-height: 1;
-  cursor: pointer;
-  vertical-align: baseline;
-}
-
-.feed-post-photo-error-dismiss:active {
-  opacity: 1;
 }
 
 /* 文字描述占位块要铺满整行：三层默认都是收缩到内容宽（stack 的 flex-start、
@@ -1653,6 +1667,19 @@
   position: absolute;
   right: 8px;
   bottom: 8px;
+}
+
+/* 生图失败弹窗：一次性提示，关掉就没了，不在气泡下留红字 */
+.chat-generated-image-error-dialog {
+  width: 82%;
+  max-width: 320px;
+}
+
+.chat-generated-image-error-text {
+  color: var(--c-text);
+  font-size: calc(13px*var(--app-text-scale,1));
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .chat-generated-image-prompt-dialog,

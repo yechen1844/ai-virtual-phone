@@ -23,7 +23,9 @@ const AUTO_REPLY_LOCK_TTL_MS = 3 * 60 * 1000;
 
 // 待回复标志与真实状态可能脱钩（函数中途被墙钟掐掉、标志写入失败等），
 // 空闲时每隔这么久做一次全量扫描自愈；期间新消息仍由入库路径实时置位标志。
-const PENDING_RECONCILE_INTERVAL_MS = 5 * 60 * 1000;
+// 全量扫描一次要 list + 最多 200 个对象逐个 GET，是空闲期 Storage 流量大头，
+// 30 分钟一次足够兜底（标志丢失的最坏后果是回复晚一个扫描周期）。
+const PENDING_RECONCILE_INTERVAL_MS = 30 * 60 * 1000;
 
 // 运行包体积可达 MB 级（含提示词模板、贴纸与参考图 base64），不能每轮全量
 // 下载。索引条目的 updatedAt 随小手机每次同步更新，作为缓存失效依据；TTL 兜底。

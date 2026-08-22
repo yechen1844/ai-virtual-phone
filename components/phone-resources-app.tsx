@@ -20,6 +20,7 @@ const RESOURCE_MENU: Omit<FeaturedCardItem, "onClick">[] = [
         label: "记忆库",
         desc: "角色记忆档案",
         iconColor: BINDING_ACCENTS.memory,
+        glassIcon: "memory",
     },
     {
         id: "complex_memory",
@@ -34,6 +35,7 @@ const RESOURCE_MENU: Omit<FeaturedCardItem, "onClick">[] = [
         label: "漫卷资源",
         desc: "场景与角色立绘",
         iconColor: CONTENT_APP_ACCENTS.vn,
+        glassIcon: "vn-assets",
     },
 ];
 

@@ -312,6 +312,29 @@
     color: var(--mix-gold);
 }
 
+.mix-feed-seg {
+    display: flex;
+    gap: 6px;
+}
+
+.mix-feed-seg button {
+    border: 1px solid var(--mix-line);
+    border-radius: 999px;
+    padding: 6px 12px;
+    font-size: 11px;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--mix-faint);
+}
+
+.mix-feed-seg button[data-on="true"] {
+    border-color: rgba(141, 123, 245, 0.55);
+    background: rgba(141, 123, 245, 0.2);
+    color: var(--mix-violet);
+}
+
 .mix-filter-rule-bad {
     font-size: 10.5px;
     color: #e2a3a3;
@@ -435,11 +458,20 @@
     transform: scale(0.92);
 }
 
-/* ── 双列瀑布（CSS columns） ── */
+/* ── 双列卡墙 ──
+   曾用 CSS columns 做瀑布：卡片高度一变（缩样 iframe 量高）columns 就重排，
+   WebKit 里元素跨列搬家会把 iframe 整个重载→高度归零→再量高→再搬家，
+   列数肉眼可见地来回闪。改成两列 grid：元素永远不跨列移动，iframe 稳定。 */
 .mix-waterfall {
-    column-count: 2;
-    column-gap: 10px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    align-items: start;
     padding-top: 10px;
+}
+
+.mix-waterfall .mix-mat-card {
+    margin-bottom: 0;
 }
 
 .mix-mat-card {
@@ -846,6 +878,9 @@
 /* ── 就地预览：按钮下方直接铺开，不弹窗 ── */
 .mix-preview-inline {
     margin-top: 10px;
+    /* 详情页里它插在字段之间：字段的间距都靠各自的 margin-bottom 拉开，
+       这里不补一份，按钮就会贴住下一个字段的标题 */
+    margin-bottom: 12px;
 }
 
 .mix-preview-inline > .mix-pill-btn[data-open="true"] {
@@ -1131,13 +1166,29 @@
     inset: 0;
     background-size: cover;
     background-position: center 20%;
+    /* 观感微调（对局右上角亮度按钮）：模糊只作用于封面层；
+       scale 略放大盖掉 blur 的透明毛边 */
+    filter: blur(var(--mix-bg-blur, 0px));
+    transform: scale(1.03);
 }
 
-/* 三段蒙版：顶部压暗保标题、中段轻纱、底部沉底保正文 */
+/* 负亮度的追加压暗层：蒙版全开之外再匀压一层黑（--mix-bg-dim 0~0.4），
+   给"默认还不够暗"的亮封面用；在 ::after 之下叠加，互不干扰 */
+.mix-game-bg::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: rgb(11, 11, 16);
+    opacity: var(--mix-bg-dim, 0);
+}
+
+/* 三段蒙版：顶部压暗保标题、中段轻纱、底部沉底保正文；
+   --mix-bg-mask 是提亮系数（1=原样，0=无蒙版），来自观感微调 */
 .mix-game-bg::after {
     content: "";
     position: absolute;
     inset: 0;
+    opacity: var(--mix-bg-mask, 1);
     background: linear-gradient(
         180deg,
         rgba(11, 11, 16, 0.82) 0%,
@@ -1145,6 +1196,57 @@
         rgba(11, 11, 16, 0.72) 55%,
         rgba(11, 11, 16, 0.94) 100%
     );
+}
+
+/* ── 背景观感微调弹层（亮度按钮） ── */
+.mix-bgtune-mask {
+    position: absolute;
+    inset: 0;
+    z-index: 30;
+}
+
+.mix-bgtune {
+    position: absolute;
+    top: 52px;
+    right: 10px;
+    z-index: 31;
+    width: 230px;
+    padding: 14px 14px 12px;
+    border-radius: 14px;
+    background: rgba(18, 17, 26, 0.96);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(10px);
+}
+
+.mix-bgtune-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.mix-bgtune-row span {
+    flex: 0 0 auto;
+    font-size: 12px;
+    color: rgba(242, 240, 247, 0.75);
+}
+
+.mix-bgtune-row input[type="range"] {
+    flex: 1;
+    min-width: 0;
+    accent-color: var(--mix-violet);
+}
+
+.mix-bgtune-reset {
+    display: block;
+    width: 100%;
+    padding: 7px 0;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 9px;
+    background: transparent;
+    color: rgba(242, 240, 247, 0.7);
+    font-size: 12px;
 }
 
 .mix-game-header {
@@ -1177,6 +1279,14 @@
     overflow-y: auto;
     overflow-x: hidden;
     padding: 6px 18px 0;
+    transition: opacity 0.18s ease;
+}
+
+/* 入场幕布：头几百毫秒里沙盒 iframe 连着报高、内容反复长高，
+   这段时间不给看——每次报高都在幕后重新钉底，揭幕时已停在正确落点 */
+.mix-game-scroll[data-entering="true"] {
+    opacity: 0;
+    transition: none;
 }
 
 .mix-game-scroll::after {
@@ -1621,6 +1731,10 @@
     border-radius: 14px;
     background: linear-gradient(180deg, rgba(11, 11, 16, 0.55), rgba(11, 11, 16, 0.94)), var(--mix-panel-2);
     border: 1px solid var(--mix-line);
+    /* 保命护栏会往作用域根钉 display:flex（对局根 .mix-game 是 flex column）；
+       舞台不写方向会落到默认 row，整台内容被挤成一字一列——跟对局根保持同构 */
+    display: flex;
+    flex-direction: column;
 }
 
 .mix-garnish-stage .mix-prose {
@@ -1658,31 +1772,86 @@
     color: var(--mix-faint);
 }
 
-.mix-guide-link {
-    margin-top: 9px;
-    /*
-     * 图标和文字必须待在同一行：按 <button> 的默认排版，图标是行内元素，
-     * 一旦壳的默认样式（iOS Safari 的原生按钮外观）掺一脚就可能把它挤到上一行去。
-     * 用 inline-flex 把这一行的排布自己接管过来，间距交给 gap，再关掉原生外观。
-     */
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    white-space: nowrap;
-    -webkit-appearance: none;
-    appearance: none;
-    border: none;
-    background: none;
-    padding: 0;
-    color: var(--mix-violet);
-    font-size: 11.5px;
-    text-align: left;
-    cursor: pointer;
+/* 指引卡底部的一排两个动作：等宽、占满整行 */
+.mix-guide-actions {
+    margin-top: 11px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
 }
 
-/* 图标不参与压缩：行宽不够时也不许它被挤扁 */
-.mix-guide-link svg {
+.mix-guide-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    white-space: nowrap;
+    /* 两列等宽，右边那颗字多：允许收缩、少给内边距，窄屏上才不溢出 */
+    min-width: 0;
+    -webkit-appearance: none;
+    appearance: none;
+    padding: 9px 6px;
+    border-radius: 10px;
+    border: 1px solid rgba(141, 123, 245, 0.32);
+    background: linear-gradient(180deg, rgba(141, 123, 245, 0.16), rgba(141, 123, 245, 0.08));
+    color: var(--mix-violet);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    transition: background 0.18s, border-color 0.18s, transform 0.1s;
+}
+
+.mix-guide-btn:active {
+    transform: scale(0.97);
+    background: rgba(141, 123, 245, 0.24);
+    border-color: rgba(141, 123, 245, 0.5);
+}
+
+.mix-guide-btn svg {
     flex: 0 0 auto;
+}
+
+/* 制作说明弹层：复制按钮 + 委托词原文 */
+.mix-craft-copy {
+    margin-top: 12px;
+    width: 100%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    -webkit-appearance: none;
+    appearance: none;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid rgba(141, 123, 245, 0.4);
+    background: rgba(141, 123, 245, 0.2);
+    color: var(--mix-violet);
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.18s, color 0.18s;
+}
+
+.mix-craft-copy[data-done="true"] {
+    background: rgba(126, 217, 154, 0.16);
+    border-color: rgba(126, 217, 154, 0.4);
+    color: #7ed99a;
+}
+
+.mix-craft-text {
+    margin-top: 12px;
+    padding: 12px 13px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    font-size: 12px;
+    line-height: 1.8;
+    color: var(--mix-dim);
+    white-space: pre-wrap;
+    word-break: break-word;
+    user-select: text;
+    -webkit-user-select: text;
 }
 
 .mix-struct-note {
@@ -2134,6 +2303,20 @@
 }
 
 /* 角色卡缺图时的占位面：和封面同尺寸，保证同一类卡片等高 */
+/* 自动封面：没配封面的小票/装饰/尾调用自己的渲染缩样当海报——
+   缩样走文档流（HalfScale 已把高度量成实际渲染高度的一半），
+   卡片高度跟着内容走；pointer-events 关掉免得 iframe 抢卡片的点击 */
+.mix-poster-flow {
+    position: relative;
+    pointer-events: none;
+}
+
+/* 有缩样的海报卡：放开固定比例，高度由缩样决定；给个下限护住底部文案区 */
+.mix-mat-card[data-poster="true"][data-live="true"] {
+    aspect-ratio: auto;
+    min-height: 96px;
+}
+
 .mix-poster-blank {
     position: absolute;
     inset: 0;

@@ -35,7 +35,7 @@ type HallListRow = {
 
 const PUBLIC_CACHE_HEADERS = {
   "Cache-Control": "public, max-age=0, must-revalidate",
-  "Netlify-CDN-Cache-Control": "public, s-maxage=120, stale-while-revalidate=600",
+  "Netlify-CDN-Cache-Control": "public, durable, s-maxage=120, stale-while-revalidate=600",
   "Netlify-Vary": "query",
 } as const;
 

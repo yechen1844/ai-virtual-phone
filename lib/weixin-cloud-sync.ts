@@ -376,24 +376,32 @@ export async function ensureWeixinCloudCronSecret(): Promise<string> {
 /** 生成已填好用户项目 URL 和密钥的定时任务 SQL，粘贴到 Supabase SQL Editor 即可。 */
 export function buildWeixinCloudAssistantCronSql(token: string, config: CloudBackupConfig = loadCloudBackupConfig()): string {
   const functionUrl = buildWeixinCloudAssistantFunctionUrl(config);
-  return `-- AI Phone 微信云端助手定时任务：每 10 秒轮询一次微信消息并自动回复。
+  return `-- AI Phone 微信云端助手定时任务：每分钟触发一次，云函数内部每 ~12 秒子轮询微信消息并自动回复。
+-- 回复速度与旧的 10 秒定时基本一致，但 Edge Function 调用次数降到 1/6（约 4.3 万次/月）。
 -- 在 Supabase Dashboard → SQL Editor 里整段执行；重复执行会覆盖同名任务，可安全重跑。
 -- 前提：已在 Edge Functions 里部署名为 ${WEIXIN_CLOUD_FUNCTION_SLUG} 的云函数，并关闭其 JWT 校验。
 
 create extension if not exists pg_cron;
 create extension if not exists pg_net;
 
-select cron.schedule('${WEIXIN_CLOUD_CRON_JOB_NAME}', '10 seconds', $CRON$
+select cron.schedule('${WEIXIN_CLOUD_CRON_JOB_NAME}', '1 minute', $CRON$
   select net.http_post(
     url     := '${functionUrl}',
     headers := jsonb_build_object('Content-Type', 'application/json'),
-    body    := jsonb_build_object('token', '${token}', 'bucket', '${CLOUD_BACKUP_BUCKET}'),
+    body    := jsonb_build_object('token', '${token}', 'bucket', '${CLOUD_BACKUP_BUCKET}', 'mode', 'loop'),
     timeout_milliseconds := 8000
   );
 $CRON$);
 
+-- pg_cron 每次运行都会往 cron.job_run_details 记一行，长期不清会蚕食数据库容量；
+-- 挂一个每天清理的任务，只保留最近 3 天。
+select cron.schedule('${WEIXIN_CLOUD_CRON_JOB_NAME}-cleanup', '0 3 * * *', $CRON$
+  delete from cron.job_run_details where end_time < now() - interval '3 days';
+$CRON$);
+
 -- 停用云端助手时执行：
 -- select cron.unschedule('${WEIXIN_CLOUD_CRON_JOB_NAME}');
+-- select cron.unschedule('${WEIXIN_CLOUD_CRON_JOB_NAME}-cleanup');
 `;
 }
 

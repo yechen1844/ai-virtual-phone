@@ -8,8 +8,8 @@ import { ChatEngineError, sendLLMRequest, sendLLMStreamRequest } from "../chat-e
 import type { LLMMessage } from "../llm-prompt-assembler";
 import { loadApiConfigs, loadBindingConfig } from "../settings-storage";
 import type { ApiConfig } from "../settings-types";
-import { applyMixMacros, assembleMixPrompt, MIX_DEFAULT_USER_NAME, MIX_ENCORE_CLOSE, MIX_ENCORE_OPEN, MIX_TICKET_CLOSE, MIX_TICKET_OPEN, type MixAssembledPrompt } from "./assembler";
-import { applyMixFilterRules, extractMixBlocks } from "./prose";
+import { applyMixMacros, assembleMixPrompt, MIX_DEFAULT_USER_NAME, MIX_ENCORE_CLOSE, MIX_ENCORE_OPEN, MIX_TICKET_CLOSE, MIX_TICKET_OPEN, mixNamedOpen, type MixAssembledPrompt } from "./assembler";
+import { applyMixFilterRules, extractMixBlocks, type MixExtractedBlock } from "./prose";
 import {
     getMixMaterial,
     getMixSession,
@@ -18,11 +18,12 @@ import {
 } from "./storage";
 import {
     createMixId,
-    MIX_SLOT_ORDER,
-    MIX_SLOT_STACK,
-    mixKindAllowsCondition,
+    mixSlotEntries,
     mixSlotFirstId,
+    mixTurnEncoreBlocks,
+    mixTurnTicketBlocks,
     type MixCharacterCard,
+    type MixEncoreMaterial,
     type MixMaterial,
     type MixMechanismMaterial,
     type MixState,
@@ -31,6 +32,7 @@ import {
     type MixSession,
     type MixTicketMaterial,
     type MixTurn,
+    type MixTurnBlock,
 } from "./types";
 import {
     advanceMixState,
@@ -60,7 +62,9 @@ export function resolveMixApiConfig(): ApiConfig | null {
 /** 从方案快照装配提示词（材料从酒柜按 id 现取；角色卡被删则报错） */
 function assembleFromSession(session: MixSession): {
     prompt: MixAssembledPrompt;
-    ticket?: MixTicketMaterial;
+    /** 本轮生效的小票/尾调（条件筛过、按槽位顺序）——每件各自成块 */
+    tickets: MixTicketMaterial[];
+    encores: MixEncoreMaterial[];
     active: Partial<Record<MixMaterialKind, MixMaterial[]>>;
 } {
     const { entries } = resolveMixRecipeMaterials(session.recipe);
@@ -76,9 +80,18 @@ function assembleFromSession(session: MixSession): {
         openingIndex: session.openingIndex,
         state: session.state,
     });
-    const ticketMat = active.ticket?.[0];
-    const ticket = ticketMat?.kind === "ticket" ? (ticketMat as MixTicketMaterial) : undefined;
-    return { prompt, ticket, active };
+    const tickets = (active.ticket ?? []).filter((m): m is MixTicketMaterial => m.kind === "ticket");
+    const encores = (active.encore ?? []).filter((m): m is MixEncoreMaterial => m.kind === "encore");
+    return { prompt, tickets, encores, active };
+}
+
+/**
+ * 一块壳内原文还原成带标记的整块。named = 这一轮不止一块，开标签要带名字
+ * （名字按块的供稿材料 id 现取；材料被删就退回不具名的壳）。
+ */
+function blockText(open: string, close: string, block: MixTurnBlock, named: boolean): string {
+    const name = named && block.id ? getMixMaterial(block.id)?.name?.trim() : undefined;
+    return `${name ? mixNamedOpen(open, name) : open}\n${block.raw}\n${close}`;
 }
 
 /**
@@ -88,30 +101,59 @@ function assembleFromSession(session: MixSession): {
 export function mixTurnRawText(turn: MixTurn): string {
     if (turn.role !== "assistant") return turn.text;
     // 顺序与输出要求一致：状态栏在正文前、小剧场在正文后——历史回放就是模型的"输出习惯"示范
-    const parts = [];
-    if (turn.ticketRaw) parts.push(`${MIX_TICKET_OPEN}\n${turn.ticketRaw}\n${MIX_TICKET_CLOSE}`);
-    parts.push(turn.text);
-    if (turn.encoreRaw) parts.push(`${MIX_ENCORE_OPEN}\n${turn.encoreRaw}\n${MIX_ENCORE_CLOSE}`);
-    return parts.filter(Boolean).join("\n\n");
+    const tickets = mixTurnTicketBlocks(turn);
+    const encores = mixTurnEncoreBlocks(turn);
+    return [
+        ...tickets.map((b) => blockText(MIX_TICKET_OPEN, MIX_TICKET_CLOSE, b, tickets.length > 1)),
+        turn.text,
+        ...encores.map((b) => blockText(MIX_ENCORE_OPEN, MIX_ENCORE_CLOSE, b, encores.length > 1)),
+    ].filter(Boolean).join("\n\n");
 }
 
-/** 历史回放时给 assistant 消息补回状态栏/小剧场块，让模型看得到自己之前的输出习惯 */
-function turnToHistoryContent(turn: MixTurn): string {
-    return mixTurnRawText(turn);
+/** 历史回传裁决：这一块的壳内原文要不要回传给模型（按块的供稿材料各自定） */
+type MixFeedResolver = (kind: "ticket" | "encore", materialId: string | undefined) => "latest" | "all" | "none";
+
+/**
+ * 历史回放：默认只有最近一条 assistant 轮补回状态栏/小剧场块。
+ * 模型需要的只有两样——最新状态的接续（契约的变化规则只依赖上一轮的值）
+ * 和一份格式示范（防掉格式），最后一块两者都够；更旧的块随轮数线性膨胀，
+ * 是纯 token 负担（按信息量基准每轮各两三百字，长局能省上万字符）。
+ * 材料自己可改档（按块裁决，多块互不牵连）：all = 它的往期块逐轮回传；
+ * none = 连最近一轮都不回传，一个字不占。存储不动：块原文原样留着，
+ * 界面回放与编辑不受影响。
+ */
+function turnToHistoryContent(turn: MixTurn, isLast: boolean, feedOf?: MixFeedResolver): string {
+    if (turn.role !== "assistant") return turn.text;
+    const tickets = mixTurnTicketBlocks(turn);
+    const encores = mixTurnEncoreBlocks(turn);
+    const keep = (kind: "ticket" | "encore") => (b: MixTurnBlock) => {
+        const feed = feedOf?.(kind, b.id) ?? "latest";
+        return feed === "all" || (isLast && feed !== "none");
+    };
+    return [
+        ...tickets.filter(keep("ticket")).map((b) => blockText(MIX_TICKET_OPEN, MIX_TICKET_CLOSE, b, tickets.length > 1)),
+        turn.text,
+        ...encores.filter(keep("encore")).map((b) => blockText(MIX_ENCORE_OPEN, MIX_ENCORE_CLOSE, b, encores.length > 1)),
+    ].filter(Boolean).join("\n\n");
 }
 
 function buildMixMessages(
     session: MixSession,
     assembled: MixAssembledPrompt,
     extraUserNudge?: string,
+    feedOf?: MixFeedResolver,
 ): LLMMessage[] {
     const messages: LLMMessage[] = [
         { role: "system", content: assembled.system, _debugMeta: { marker: "mixology_system" } },
     ];
-    for (const turn of session.turns) {
+    let lastAssistantIdx = -1;
+    for (let i = session.turns.length - 1; i >= 0; i -= 1) {
+        if (session.turns[i].role === "assistant") { lastAssistantIdx = i; break; }
+    }
+    for (const [i, turn] of session.turns.entries()) {
         messages.push({
             role: turn.role,
-            content: turnToHistoryContent(turn),
+            content: turnToHistoryContent(turn, i === lastAssistantIdx, feedOf),
             _debugMeta: { marker: "mixology_history", _fromHistory: true },
         });
     }
@@ -147,9 +189,10 @@ export function startMixSession(
     const personaMat = personaId ? getMixMaterial(personaId) : null;
     const personaUserName = personaMat?.kind === "persona" ? personaMat.userName?.trim() : undefined;
     const openingIndex = options?.openingIndex ?? 0;
-    // 记住的值的开局初值：小票里声明过初始值的项
-    const ticketId = mixSlotFirstId(recipe.slots, "ticket");
-    const ticketMat = ticketId ? getMixMaterial(ticketId) : null;
+    // 记住的值的开局初值：全部小票里声明过初始值的项（同名先声明的优先）
+    const ticketMats = mixSlotEntries(recipe.slots, "ticket")
+        .map((entry) => getMixMaterial(entry.materialId))
+        .filter((m): m is MixTicketMaterial => m?.kind === "ticket");
     const session: MixSession = {
         id: createMixId("mixsess"),
         recipe: { ...recipe, slots: { ...recipe.slots } },
@@ -157,7 +200,7 @@ export function startMixSession(
         userName: options?.userName?.trim() || personaUserName || undefined,
         openingIndex,
         turns: [],
-        state: initialMixState(ticketMat?.kind === "ticket" ? ticketMat : undefined),
+        state: initialMixState(ticketMats),
         createdAt: Date.now(),
         updatedAt: Date.now(),
     };
@@ -282,7 +325,7 @@ async function repairMixTicket(
 async function runMechanismHooks(
     session: MixSession,
     hook: MixHook,
-    input: { text?: string; ticketRaw?: string; encoreRaw?: string },
+    input: { text?: string; ticketRaws?: string[]; encoreRaws?: string[] },
 ): Promise<{ text?: string; notes: string[]; state: MixState; store: Record<string, Record<string, string>> }> {
     const { entries } = resolveMixRecipeMaterials(session.recipe);
     const active = pickActiveMixMaterials(entries, buildMixConditionContext(session));
@@ -302,8 +345,11 @@ async function runMechanismHooks(
             charName: session.charName,
             userName: session.userName || MIX_DEFAULT_USER_NAME,
             text: out.text,
-            ticketRaw: input.ticketRaw,
-            encoreRaw: input.encoreRaw,
+            // 单块字段留给老机括脚本（多块时给第一块），全量走 ticketRaws/encoreRaws
+            ticketRaw: input.ticketRaws?.[0],
+            encoreRaw: input.encoreRaws?.[0],
+            ticketRaws: input.ticketRaws,
+            encoreRaws: input.encoreRaws,
         };
         const result = await runMixHook(session.id, material.id, script, hook, payload);
         if (typeof result.text === "string") out.text = result.text;
@@ -323,6 +369,81 @@ async function runBeforeSendHooks(session: MixSession, text?: string): Promise<{
         mechanismStore: result.store,
     };
     return { session: next, text: result.text, note: result.notes.join("\n") || undefined };
+}
+
+/**
+ * 剥出来的块对号入座：先按开标签里的名字精确对（多块输出的正道），
+ * 没名字/对不上名的按顺序补进还空着的位置（单块老格式、模型忘写名字）。
+ * 块保持原文顺序返回；实在多出来的块不丢，只是没有归属（渲染退回第一件的皮）。
+ */
+function matchMixBlocks(blocks: MixExtractedBlock[], mats: { id: string; name: string }[]): MixTurnBlock[] {
+    const used = new Set<number>();
+    const assigned: (string | undefined)[] = new Array(blocks.length).fill(undefined);
+    blocks.forEach((block, i) => {
+        const name = block.name?.trim();
+        if (!name) return;
+        const at = mats.findIndex((m, j) => !used.has(j) && m.name.trim() === name);
+        if (at >= 0) { used.add(at); assigned[i] = mats[at].id; }
+    });
+    blocks.forEach((_, i) => {
+        if (assigned[i]) return;
+        const at = mats.findIndex((_, j) => !used.has(j));
+        if (at >= 0) { used.add(at); assigned[i] = mats[at].id; }
+    });
+    return blocks.map((block, i) => (assigned[i] ? { id: assigned[i], raw: block.raw } : { raw: block.raw }));
+}
+
+/** 落库前按槽位顺序归位（模型偶尔乱序）；没归属的块保持相对顺序垫在后面 */
+function orderMixBlocks(blocks: MixTurnBlock[], mats: { id: string }[]): MixTurnBlock[] {
+    if (blocks.length < 2) return blocks;
+    const ordered: MixTurnBlock[] = [];
+    for (const mat of mats) {
+        const found = blocks.find((b) => b.id === mat.id);
+        if (found) ordered.push(found);
+    }
+    for (const block of blocks) {
+        if (!ordered.includes(block)) ordered.push(block);
+    }
+    return ordered;
+}
+
+/**
+ * 用这一轮的块推进记住的值：每张小票只认自己那块的原文。
+ * 单张小票时没归属的块也算它的（老格式输出没有名字）。
+ */
+function advanceMixStateWithBlocks(
+    prev: MixState | undefined,
+    tickets: MixTicketMaterial[],
+    blocks: MixTurnBlock[],
+): MixState {
+    let state: MixState = { ...(prev ?? {}) };
+    for (const ticket of tickets) {
+        // 只有一张小票时不挑归属：块是谁供的稿都拿来抽值（老格式、退役皮的块照样认）
+        const block = blocks.find((b) => b.id === ticket.id)
+            ?? (tickets.length === 1 ? blocks[0] : undefined);
+        state = advanceMixState(state, ticket, block?.raw);
+    }
+    return state;
+}
+
+/**
+ * 历史回传裁决器：按块的供稿材料查它的 historyFeed 设置。
+ * 材料从方案槽位全量收（不只本轮生效的）——往期块的供稿材料这一轮可能条件不满足，
+ * 它的设置照样要认。没归属的块跟第一件生效材料走（老格式单块的老行为）。
+ */
+function buildFeedResolver(session: MixSession, tickets: MixTicketMaterial[], encores: MixEncoreMaterial[]): MixFeedResolver {
+    const byId = new Map<string, "latest" | "all" | "none">();
+    for (const kind of ["ticket", "encore"] as const) {
+        for (const entry of mixSlotEntries(session.recipe.slots, kind)) {
+            const mat = getMixMaterial(entry.materialId);
+            if (mat?.kind === kind && mat.historyFeed && mat.historyFeed !== "latest") byId.set(mat.id, mat.historyFeed);
+        }
+    }
+    const fallback: Record<"ticket" | "encore", "latest" | "all" | "none"> = {
+        ticket: tickets[0]?.historyFeed ?? "latest",
+        encore: encores.find((e) => e.contract?.trim())?.historyFeed ?? "latest",
+    };
+    return (kind, materialId) => (materialId ? byId.get(materialId) ?? "latest" : fallback[kind]);
 }
 
 /**
@@ -352,8 +473,8 @@ async function runMixGeneration(
         if (working !== session) saveMixSession(working);
     }
     const combinedNudge = [nudge, extraNote].filter(Boolean).join("\n\n") || undefined;
-    const { prompt: assembled, ticket, active } = assembleFromSession(working);
-    const messages = buildMixMessages(working, assembled, combinedNudge);
+    const { prompt: assembled, tickets, encores, active } = assembleFromSession(working);
+    const messages = buildMixMessages(working, assembled, combinedNudge, buildFeedResolver(working, tickets, encores));
     const meta = { characterName: working.charName, userName: working.userName || "你" };
     const llmOptions = { appId: MIX_PROMPT_APP_ID, appTags: MIX_PROMPT_TAGS, skipOutputRegex: true, signal };
     let raw: string;
@@ -374,37 +495,57 @@ async function runMixGeneration(
         raw = await sendLLMRequest(apiConfig, null, messages, [], meta, llmOptions);
     }
     const extracted = extractMixBlocks(raw);
-    const { encoreRaw } = extracted;
-    let { ticketRaw } = extracted;
+    // 块对号入座：有契约的小票/尾调才是块的候选归属（纯静态小品不收块）
+    const contractTickets = tickets.filter((t) => t.contract.trim());
+    const contractEncores = encores.filter((e) => e.contract?.trim());
+    let ticketBlocks = matchMixBlocks(extracted.tickets, contractTickets);
+    let encoreBlocks = matchMixBlocks(extracted.encores, contractEncores);
     // 滤网「进上下文」模式：拆完块后清洗正文再入库，历史发回模型的就是洗过的。
     // 这一格是累加型，条件命中的几张滤网按顺序串联清洗。
     const filterRules = (active.filter ?? [])
         .flatMap((m) => (m.kind === "filter" ? m.rules : []));
     const text = applyMixFilterRules(extracted.text, filterRules.length ? filterRules : undefined, "context");
-    if (!text && !ticketRaw) {
+    if (!text && !ticketBlocks.length) {
         throw new ChatEngineError("模型没有给出内容，请再试一次。");
     }
-    if (assembled.hasTicket && !ticketRaw && ticket && text) {
-        ticketRaw = await repairMixTicket(apiConfig, working, ticket, text, signal);
+    // 状态栏补写：逐张核对，漏了哪张就单独把哪张要回来
+    if (text) {
+        for (const ticket of contractTickets) {
+            if (!ticket.renderHtml.trim()) continue;
+            if (ticketBlocks.some((b) => b.id === ticket.id)) continue;
+            const repaired = await repairMixTicket(apiConfig, working, ticket, text, signal);
+            if (repaired) ticketBlocks.push({ id: ticket.id, raw: repaired });
+        }
     }
-    // 记住的值：用这一轮的小票原文更新，抽不到的保留上一轮；顺带把结果快照在这一轮上，
+    ticketBlocks = orderMixBlocks(ticketBlocks, contractTickets);
+    encoreBlocks = orderMixBlocks(encoreBlocks, contractEncores);
+    // 记住的值：用这一轮各张小票自己的块更新，抽不到的保留上一轮；顺带把结果快照在这一轮上，
     // 回溯/重说/编辑时直接取剩下最后一轮的快照还原。
-    const stateFromTicket = advanceMixState(working.state, ticket, ticketRaw);
+    const stateFromTicket = advanceMixStateWithBlocks(working.state, contractTickets, ticketBlocks);
     // 出杯后：机括能改正文、能写记住的值。放在小票抽值之后——机括是最后一道，
     // 它写的值压得过小票抽出来的
     const afterHook = await runMechanismHooks(
         { ...working, state: stateFromTicket },
         "afterReply",
-        { text, ticketRaw, encoreRaw },
+        {
+            text,
+            ticketRaws: ticketBlocks.length ? ticketBlocks.map((b) => b.raw) : undefined,
+            encoreRaws: encoreBlocks.length ? encoreBlocks.map((b) => b.raw) : undefined,
+        },
     );
     const finalText = typeof afterHook.text === "string" ? afterHook.text : text;
     const nextState = mergeHookState(stateFromTicket, afterHook.state);
+    const keptTickets = assembled.hasTicket ? ticketBlocks : [];
+    const keptEncores = assembled.hasEncore ? encoreBlocks : [];
     const turn: MixTurn = {
         id: createMixId("mixturn"),
         role: "assistant",
         text: finalText,
-        ticketRaw: assembled.hasTicket ? ticketRaw : undefined,
-        encoreRaw: assembled.hasEncore ? encoreRaw : undefined,
+        // 单块字段冗余存第一块：老读取路径与跨版本数据都还认得
+        ticketRaw: keptTickets[0]?.raw,
+        encoreRaw: keptEncores[0]?.raw,
+        ticketRaws: keptTickets.length ? keptTickets : undefined,
+        encoreRaws: keptEncores.length ? keptEncores : undefined,
         state: nextState,
         createdAt: Date.now(),
     };
@@ -449,11 +590,18 @@ export async function generateMixReply(
     return runMixGeneration(withUser, before.note, signal, true, onDelta);
 }
 
-/** 本局小票材料（记住的值的声明来源）；一格叠了多张时以第一张为准 */
-function sessionTicket(session: MixSession): MixTicketMaterial | undefined {
-    const ticketId = mixSlotFirstId(session.recipe.slots, "ticket");
-    const found = ticketId ? getMixMaterial(ticketId) : null;
-    return found?.kind === "ticket" ? found : undefined;
+/** 本局全部小票材料（记住的值的声明来源），按槽位顺序 */
+function sessionTickets(session: MixSession): MixTicketMaterial[] {
+    return mixSlotEntries(session.recipe.slots, "ticket")
+        .map((entry) => getMixMaterial(entry.materialId))
+        .filter((m): m is MixTicketMaterial => m?.kind === "ticket");
+}
+
+/** 本局全部尾调材料，按槽位顺序 */
+function sessionEncores(session: MixSession): MixEncoreMaterial[] {
+    return mixSlotEntries(session.recipe.slots, "encore")
+        .map((entry) => getMixMaterial(entry.materialId))
+        .filter((m): m is MixEncoreMaterial => m?.kind === "encore");
 }
 
 /**
@@ -461,7 +609,7 @@ function sessionTicket(session: MixSession): MixTicketMaterial | undefined {
  * 不做这一步的话，回溯三轮重打，好感度还停在被丢掉的那个未来上。
  */
 function withRolledBackState(session: MixSession, turns: MixTurn[]): MixSession {
-    const initial = initialMixState(sessionTicket(session));
+    const initial = initialMixState(sessionTickets(session));
     return { ...session, turns, state: rollbackMixState(turns, initial) };
 }
 
@@ -548,15 +696,37 @@ export function editMixTurn(sessionId: string, turnId: string, newText: string):
     const kept = current.turns.slice(0, idx);
     let edited: MixTurn;
     if (current.turns[idx].role === "assistant") {
-        const { text, ticketRaw, encoreRaw } = extractMixBlocks(trimmed);
+        const parsed = extractMixBlocks(trimmed);
+        // 块归属候选：这一轮原本的供稿材料在前（换过装的旧轮编辑后皮不跑偏），
+        // 再补当前槽位里的材料（编辑时条件现场已不可考，名字对得上就认）
+        const tickets = sessionTickets(current).filter((t) => t.contract.trim());
+        const encores = sessionEncores(current).filter((e) => e.contract?.trim());
+        const withPrior = (prior: { id?: string }[], mats: { id: string; name: string }[]) => {
+            const pool: { id: string; name: string }[] = [];
+            for (const block of prior) {
+                if (!block.id || pool.some((p) => p.id === block.id)) continue;
+                pool.push({ id: block.id, name: getMixMaterial(block.id)?.name ?? "" });
+            }
+            for (const mat of mats) {
+                if (!pool.some((p) => p.id === mat.id)) pool.push(mat);
+            }
+            return pool;
+        };
+        const ticketBlocks = matchMixBlocks(parsed.tickets, withPrior(mixTurnTicketBlocks(current.turns[idx]), tickets));
+        const encoreBlocks = matchMixBlocks(parsed.encores, withPrior(mixTurnEncoreBlocks(current.turns[idx]), encores));
         // 状态栏被手工改过，这一轮的快照要按新原文重算，否则数字和界面对不上
         const before = withRolledBackState(current, kept).state;
         edited = {
             ...current.turns[idx],
-            text,
-            ticketRaw,
-            encoreRaw,
-            state: advanceMixState(before, sessionTicket(current), ticketRaw),
+            text: parsed.text,
+            ticketRaw: ticketBlocks[0]?.raw,
+            encoreRaw: encoreBlocks[0]?.raw,
+            ticketRaws: ticketBlocks.length ? ticketBlocks : undefined,
+            encoreRaws: encoreBlocks.length ? encoreBlocks : undefined,
+            // 换装戳作废：编辑后的块自带归属，旧戳留着会把渲染指错皮
+            ticketId: undefined,
+            encoreId: undefined,
+            state: advanceMixStateWithBlocks(before, tickets, ticketBlocks),
         };
     } else {
         edited = { ...current.turns[idx], text: trimmed };

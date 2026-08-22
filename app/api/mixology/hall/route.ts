@@ -37,7 +37,7 @@ const TABLES: Record<HallType, string> = {
  */
 const CDN_LIST_CACHE_HEADERS = {
   "Cache-Control": "public, max-age=0, must-revalidate",
-  "Netlify-CDN-Cache-Control": "public, s-maxage=60, stale-while-revalidate=300",
+  "Netlify-CDN-Cache-Control": "public, durable, s-maxage=60, stale-while-revalidate=300",
   // 必须显式让缓存键包含查询参数：Netlify 对函数响应默认忽略 query，
   // 不加这行，第一份缓存会顶掉所有 type/kind/mine/id 组合的响应
   "Netlify-Vary": "query",

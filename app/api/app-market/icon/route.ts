@@ -36,7 +36,7 @@ export async function GET(request: Request) {
     const headers: Record<string, string> = { "Content-Type": decoded.mime, "Content-Length": String(decoded.bytes.length), "X-Content-Type-Options": "nosniff" };
     if (isPublic) {
       headers["Cache-Control"] = "public, max-age=31536000, immutable";
-      headers["Netlify-CDN-Cache-Control"] = "public, s-maxage=31536000, immutable";
+      headers["Netlify-CDN-Cache-Control"] = "public, durable, s-maxage=31536000, immutable";
       headers["Netlify-Vary"] = "query";
     } else headers["Cache-Control"] = "private, max-age=300";
     return new Response(decoded.bytes, { status: 200, headers });

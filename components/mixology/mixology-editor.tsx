@@ -3,8 +3,9 @@
 // 独家特调 · 材料编辑器：八类材料的自建/编辑表单（底部弹层里渲染）。
 // Phase ③ 先给够用的表单闭环，创作工坊阶段再上专业编辑体验。
 
-import { useMemo, useRef, useState, type ReactNode } from "react";
-import { FileText, Plus, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { BookOpen, FileText, Plus, Trash2 } from "lucide-react";
 import type {
     MixCharacterCard,
     MixFilterRule,
@@ -13,9 +14,9 @@ import type {
     MixTextMaterial,
     MixTicketVar,
 } from "@/lib/mixology/types";
-import { createMixId, formatMixTags, MIX_KIND_LABELS, MIX_PANEL_DEFAULT_LAYOUT, MIX_TAG_MAX, mixKindHasCover, mixPanelLayoutOf, parseMixTags } from "@/lib/mixology/types";
+import { createMixId, formatMixTags, MIX_KIND_LABELS, MIX_PANEL_DEFAULT_LAYOUT, MIX_TAG_MAX, mixPanelLayoutOf, parseMixTags } from "@/lib/mixology/types";
 import { applyMixFilterRules } from "@/lib/mixology/prose";
-import { MixPreviewInline, MixStructureSheet } from "./mixology-preview";
+import { MixCraftSheet, MixPreviewInline, MixStructureSheet } from "./mixology-preview";
 
 const OPENING_SEPARATOR = "\n---\n";
 
@@ -170,6 +171,10 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
     const [renderHtml, setRenderHtml] = useState(initial?.kind === "ticket" ? initial.renderHtml : "");
     const [previewRaw, setPreviewRaw] = useState(initial?.kind === "ticket" ? initial.previewRaw ?? "" : "");
     const [vars, setVars] = useState<MixTicketVar[]>(initial?.kind === "ticket" ? initial.vars ?? [] : []);
+    // 历史回传（小票/尾调共用）：往期轮次的壳内原文要不要回传给模型
+    const [historyFeed, setHistoryFeed] = useState<"latest" | "all" | "none">(
+        (initial?.kind === "ticket" || initial?.kind === "encore") ? initial.historyFeed ?? "latest" : "latest",
+    );
     const [script, setScript] = useState(initial?.kind === "mechanism" ? initial.script ?? "" : "");
     // 摆放不进表单：界面代码里用 mix.move / mix.size / mix.chrome … 自己定。
     // 老材料带着的那份原样保留，免得改一次名字就把人家摆好的位置抹了。
@@ -215,6 +220,13 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
     }, [rules, filterSample]);
     const [error, setError] = useState("");
     const [structureOpen, setStructureOpen] = useState(false);
+    const [craftOpen, setCraftOpen] = useState(false);
+    // 弹层宿主：编辑器自己就在一个可滚动的底部弹层里，mask 的 absolute/inset:0
+    // 若就地渲染会锚到滚动内容上——往下拉能把编辑器的输入栏一起拉出来。
+    // 与大厅同一个做法：portal 到应用根层去铺满整个画面。
+    const [overlayHost, setOverlayHost] = useState<HTMLElement | null>(null);
+    useEffect(() => { setOverlayHost(document.querySelector<HTMLElement>(".mixology-app")); }, []);
+    const inOverlay = (node: ReactNode) => (overlayHost ? createPortal(node, overlayHost) : null);
     const fileRef = useRef<HTMLInputElement | null>(null);
 
     // 标签：输入的时候就按最终口径拆好给作者看，免得存下来才发现被掐了
@@ -245,7 +257,8 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
             hook: hook.trim() || undefined,
             author: initial?.author,
             tags: tags.length ? tags : undefined,
-            cover: cover || undefined,
+            // 只有角色卡收封面：其余种类连老材料残留的 cover 也在这一步洗掉
+            cover: isCharacter ? cover || undefined : undefined,
             createdAt: initial?.createdAt ?? Date.now(),
             updatedAt: Date.now(),
         };
@@ -287,7 +300,7 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
             const cleanVars = vars
                 .map((v) => ({ name: v.name.trim(), initial: v.initial?.trim() || undefined }))
                 .filter((v, i, all) => v.name && all.findIndex((x) => x.name === v.name) === i);
-            onSave({ ...meta, kind: "ticket", contract: contract.trim(), renderHtml, previewRaw: previewRaw.trim() || undefined, vars: cleanVars.length ? cleanVars : undefined });
+            onSave({ ...meta, kind: "ticket", contract: contract.trim(), renderHtml, previewRaw: previewRaw.trim() || undefined, vars: cleanVars.length ? cleanVars : undefined, historyFeed: historyFeed !== "latest" ? historyFeed : undefined });
             return;
         }
         if (kind === "mechanism") {
@@ -320,6 +333,7 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
                 contract: encoreContract.trim() || undefined,
                 renderHtml: html,
                 previewRaw: encorePreviewRaw.trim() || undefined,
+                historyFeed: historyFeed !== "latest" ? historyFeed : undefined,
             });
             return;
         }
@@ -362,10 +376,17 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
                 <div className="mix-guide-what">{guide.what}</div>
                 <div className="mix-guide-where">{guide.where}</div>
                 {HEADING_NOTE_KINDS.includes(kind) ? <div className="mix-guide-level">{HEADING_NOTE}</div> : null}
-                <button type="button" className="mix-guide-link" onClick={() => setStructureOpen(true)}>
-                    <FileText size={12} />
-                    <span>看看完整提示词结构</span>
-                </button>
+                {/* 两个等宽按钮占满一排：左边看结构（写的东西落在哪），右边看做法（怎么让 AI 代工） */}
+                <div className="mix-guide-actions">
+                    <button type="button" className="mix-guide-btn" onClick={() => setStructureOpen(true)}>
+                        <FileText size={14} />
+                        <span>提示词结构</span>
+                    </button>
+                    <button type="button" className="mix-guide-btn" onClick={() => setCraftOpen(true)}>
+                        <BookOpen size={14} />
+                        <span>发给 AI 的制作说明</span>
+                    </button>
+                </div>
             </div>
             <Field label={isCharacter ? "角色名" : "名称"} hint="必填">
                 <input className="mix-input" value={name} onChange={(e) => setName(e.target.value)} placeholder={isCharacter ? "角色叫什么，就是提示词里的 {{char}}" : `给这件${MIX_KIND_LABELS[kind]}起个名，方便自己在吧台认出来`} />
@@ -391,8 +412,10 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
                     <div className="mix-form-note">超出 {MIX_TAG_MAX} 个的标签不会保存，已多写 {tagsDropped} 个。</div>
                 ) : null}
             </Field>
-            {mixKindHasCover(kind) ? (
-                <Field label="封面图" hint={isCharacter ? "对局背景，强烈建议配" : undefined}>
+            {/* 封面只有角色卡收：小票/装饰/尾调的列表封面由渲染效果自动生成，
+                材料长什么样让代码自己说，也省一趟图片上传 */}
+            {isCharacter ? (
+                <Field label="封面图" hint="对局背景，强烈建议配">
                     <div className="mix-cover-picker">
                         {cover ? (
                             // eslint-disable-next-line @next/next/no-img-element
@@ -555,6 +578,13 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
                             placeholder={"照着上面的契约编一份，例：\n好感度: 62\n心情: 嘴硬\n此刻在想: 想留你再坐一会"}
                         />
                     </Field>
+                    <Field label="历史回传" hint="往期轮次的壳内原文要不要回传给 AI；默认只回传最近一轮——状态接续和格式示范都够用，长局不费 token">
+                        <div className="mix-feed-seg">
+                            <button type="button" data-on={historyFeed === "none" ? "true" : undefined} onClick={() => setHistoryFeed("none")}>不回传</button>
+                            <button type="button" data-on={historyFeed === "latest" ? "true" : undefined} onClick={() => setHistoryFeed("latest")}>只最近一轮（默认）</button>
+                            <button type="button" data-on={historyFeed === "all" ? "true" : undefined} onClick={() => setHistoryFeed("all")}>全部轮次</button>
+                        </div>
+                    </Field>
                     <Field label="要记住的项" hint="记住的值会一路留着，可以拿来设材料的「什么时候出现」；抽不到时保留上一轮的值">
                         {contractFieldNames.length ? (
                             <div className="mix-var-suggest">
@@ -686,6 +716,13 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
                             placeholder={"告诉 AI 何时输出、写什么。例：\n仅在剧情出现明显进展或情绪转折时输出：以旁观视角（助理、监控、朋友圈动态等）写一段不超过 80 字的小剧场，第一行标注视角。平淡回合整段省略。"}
                         />
                     </Field>
+                    <Field label="历史回传" hint="往期轮次的壳内原文要不要回传给 AI；默认只回传最近一轮——格式示范够用，长局不费 token">
+                        <div className="mix-feed-seg">
+                            <button type="button" data-on={historyFeed === "none" ? "true" : undefined} onClick={() => setHistoryFeed("none")}>不回传</button>
+                            <button type="button" data-on={historyFeed === "latest" ? "true" : undefined} onClick={() => setHistoryFeed("latest")}>只最近一轮（默认）</button>
+                            <button type="button" data-on={historyFeed === "all" ? "true" : undefined} onClick={() => setHistoryFeed("all")}>全部轮次</button>
+                        </div>
+                    </Field>
                     <Field label="渲染代码" hint="必填，HTML/JS；AI 输出经 {{RAW}} 或 window.ENCORE_RAW 注入，静态小品则直接展示">
                         <textarea
                             className="mix-textarea"
@@ -771,7 +808,8 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
                     </Field>
                 </>
             ) : null}
-            {structureOpen ? <MixStructureSheet highlight={kind} onClose={() => setStructureOpen(false)} /> : null}
+            {structureOpen ? inOverlay(<MixStructureSheet highlight={kind} onClose={() => setStructureOpen(false)} />) : null}
+            {craftOpen ? inOverlay(<MixCraftSheet kind={kind} onClose={() => setCraftOpen(false)} />) : null}
             {error ? <div style={{ color: "#e2a3a3", fontSize: 12, marginTop: 12 }}>{error}</div> : null}
             <div className="mix-form-footer">
                 <button type="button" className="mix-ghost-btn" onClick={onCancel}>取消</button>
