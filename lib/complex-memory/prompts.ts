@@ -206,6 +206,7 @@ export const PROMPT_VARIABLES: PromptVariableInfo[] = [
   { name: "existingCore", templates: ["core"], description: "既有核心记忆（微调时的当前版本；bootstrap 时为空）" },
   { name: "newMaterials", templates: ["core"], description: "触发本次更新的新材料（新增日记 / 周期总结）" },
   { name: "banList", templates: ["core"], description: "消毒禁词表（读 sanitizerBanList）" },
+  { name: "feedback", templates: ["core"], description: "用户对上次核心记忆的改进意见（手动重生成时传入，可为空）" },
   { name: "candidates", templates: ["rerank"], description: "向量召回候选（编号 + 时间 + 摘要）" },
   { name: "context", templates: ["rerank"], description: "当前对话上下文摘要" },
   { name: "keepMax", templates: ["rerank"], description: "保留上限条数（读配置项）" },
