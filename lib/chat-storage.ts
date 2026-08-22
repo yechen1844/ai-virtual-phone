@@ -54,6 +54,9 @@ export type ChatSession = {
     /** 丢弃角色输出的无效表情包（名称不在角色表情包与内置表情中时直接滤除该消息） */
     discardInvalidStickers?: boolean;
     bilingualTranslationPrompt?: string;
+    /** 会话级双语投喂模式：决定把聊天记录喂给模型（短期上下文/记忆）时取哪种语言。
+     *  both=原文|译文都发（默认/不启用）；originalOnly=只发原文；translatedOnly=只发译文。不影响界面展示。 */
+    translationFeedMode?: "both" | "originalOnly" | "translatedOnly";
     offlineBilingualTranslationPrompt?: string;
     nativeExpandedToolSourceIds?: string[];
     visionImagePromptLimit?: number;

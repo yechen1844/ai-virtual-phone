@@ -42,6 +42,7 @@ import {
     resolvePromptTimeAware,
     type PromptTimestampOptions,
 } from "./prompt-time";
+import { splitBilingualText } from "./bilingual-text";
 
 function formatPhotoDirectiveForPrompt(msg: ChatMessage): string {
     const description = msg.mediaData?.label?.trim() || "图片";
@@ -378,6 +379,17 @@ export function loadNativeTimeline(
             }
 
             if (!content.trim()) continue;
+
+            // Session-bound bilingual feed mode: decide which side of `原文|译文`
+            // gets fed to the model (short-term context / memory). Affects prompt
+            // feeding only — UI display is unchanged. Default (both) keeps as-is.
+            const feedMode = session.translationFeedMode ?? "both";
+            if (feedMode !== "both") {
+                const bilingual = splitBilingualText(content);
+                if (bilingual) {
+                    content = feedMode === "originalOnly" ? bilingual.original : bilingual.translated;
+                }
+            }
 
             entries.push({
                 id: msg.id,

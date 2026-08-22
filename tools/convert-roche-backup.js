@@ -5,33 +5,81 @@
  * 用法:
  *   node tools/convert-roche-backup.js <备份.json> [输出.json]
  *
- * 说明:
- *   - 输入: Roche/Noir 应用的完整备份导出 JSON（含 conversation / messages / personas 等顶层键）
- *   - 输出: float 聊天导入包 JSON（format = "ai-phone-chat-import", version 1）
- *   - 只关心聊天记录: 消息按时间正序转成 float 原生 ChatMessage 形状
- *     (role: user/assistant, content, createdAt, status: sent)
- *   - 媒体类消息(sticker/pat/voice/video_call_notice/innerVoice/spoiler)统一文本化,
- *     保证在 float 里 100% 原生渲染(资产文件无法迁移, 文本内容完整保留)
- *   - 消息 id 保留原始值, 导入接口按 id 幂等去重(重复导入不产生重复记录)
+ * 输出: float 聊天导入包 JSON（format = "ai-phone-chat-import", version 1）
  *
- * 校验报告打印到 stderr, 转换结果写入输出文件(默认 <输入名>.float-chat.json)。
+ * 转换要点:
+ *   - 只关心聊天记录：消息按时间正序转成 float 原生 ChatMessage 形状
+ *     (role: user/assistant, content, createdAt, status: sent)
+ *   - 【翻译】Roche 用 「原文『翻译：译文』」内嵌标记；float 原生用 「原文|译文」竖线分隔，
+ *     且译文须含中文才识别为双语。这里把 Roche 标记统一转成 float 的 原文|译文 格式。
+ *   - 【富文本清洗】Roche 虚拟形象动作码 <vi s="0" v="1" d="5"/> 等 xml 标签不属于对话内容，
+ *     从原文/正文中剔除（否则会污染喂给模型的内容）。
+ *   - 【媒体文本化】备份不含实际媒体文件（无 mediaUrl/imageUrl/voiceUrl），
+ *     voice / sticker / pat / innerVoice / spoiler / video_call_notice 统一文本化并带类型标记，
+ *     确保内容完整、可辨识、且不会被 float 误渲染成缺失资源的特殊气泡。
+ *   - 消息 id 保留原始值，导入接口按 id 幂等去重(重复导入不产生重复记录)。
+ *
+ * 校验报告打印到 stderr，转换结果写入输出文件(默认 <输入名>.float-chat.json)。
  */
 
 const fs = require("fs");
 const path = require("path");
 
-// ── 消息类型 → 文本化内容（原 text 为空时的兜底，避免丢消息） ──
-function normalizeContent(m) {
-  const raw = typeof m.text === "string" ? m.text.trim() : "";
-  if (raw) return raw;
-  // 空文本兜底：pat / 占位
-  switch (m.type) {
-    case "pat": {
-      const action = m.patAction || "拍了拍";
-      return `[${action}]`;
+// ── Roche 虚拟形象动作码 / xml 标签清洗（不属于对话内容） ──
+function cleanRocheTags(text) {
+  return String(text ?? "")
+    .replace(/<vi\b[^>]*?\/?>/gi, " ")   // Roche 动作码，替换为空格
+    .replace(/<[^>]+>/g, " ")            // 其余 xml 标签兜底
+    .replace(/[ \t]+/g, " ")            // 折叠连续空格/制表符为单空格
+    .trim();
+}
+
+// ── 解析 Roche 双语：「原文『翻译：译文』」 ──
+function parseRocheBilingual(text) {
+  const m = String(text).match(/^(.*?)『\s*翻译\s*[：:]\s*(.*?)』\s*$/s);
+  if (!m) return null;
+  const original = cleanRocheTags(m[1]).replace(/\s+/g, " ").trim();
+  const translated = m[2].trim();
+  if (!original || !translated) return null;
+  // 与 float splitBilingualText 一致：译文必须含中文，否则视为不是双语
+  if (!/[\u3400-\u9fff]/.test(translated)) return null;
+  return { original, translated };
+}
+
+// ── 消息 → float 原生 content（含翻译转换 + 媒体文本化 + 富文本清洗） ──
+function buildFloatContent(m) {
+  const type = m.type || "text";
+  const raw = typeof m.text === "string" ? m.text : "";
+
+  // 1) 翻译：text / voice 且含 『翻译：…』 标记 → 原文|译文
+  if (type === "text" || type === "voice") {
+    const bilingual = parseRocheBilingual(raw);
+    if (bilingual) return `${bilingual.original}|${bilingual.translated}`;
+  }
+
+  // 2) 媒体文本化（无实际媒体文件，统一文本化 + 类型标记）
+  switch (type) {
+    case "voice":
+      return `[语音] ${cleanRocheTags(raw).replace(/\n+/g, " ")}`;
+    case "sticker": {
+      // 原始形如 [表情:月薪喵摸鱼中]，剥离外层，取名字
+      const label = (raw.match(/^[\[【]\s*表情\s*[:：]\s*(.*?)[\]】]\s*$/) || [])[1] || raw;
+      return `[表情] ${label.trim()}`;
     }
+    case "pat": {
+      const action = m.patAction && m.patAction.trim() ? m.patAction : "拍了拍";
+      const target = m.patTarget && m.patTarget.trim() ? m.patTarget : "";
+      return target ? `[${action}] ${target}` : `[${action}]`;
+    }
+    case "innerVoice":
+      return `[内心]\n${cleanRocheTags(raw)}`;
+    case "spoiler":
+      return `[画面描述] ${cleanRocheTags(raw)}`;
+    case "video_call_notice":
+      return cleanRocheTags(raw);
     default:
-      return "[消息]";
+      // text / 其它：清洗富文本后保留原文
+      return cleanRocheTags(raw);
   }
 }
 
@@ -42,7 +90,7 @@ function convertMessage(m, index) {
   return {
     id: typeof m.id === "string" && m.id ? m.id : `import_${index}_${Date.now()}`,
     role: m.isMe === true ? "user" : "assistant",
-    content: normalizeContent(m),
+    content: buildFloatContent(m),
     ...(createdAt ? { createdAt } : {}),
   };
 }
@@ -101,6 +149,21 @@ function main() {
   for (const m of sorted) typeCount[m.type || "text"] = (typeCount[m.type || "text"] || 0) + 1;
   const uniqueIds = new Set(converted.map((c) => c.id));
   const dupIds = converted.length - uniqueIds.size;
+  // 翻译统计：转换后 content 命中 原文|译文 的条数
+  let bilingualCount = 0;
+  for (const c of converted) {
+    if (typeof c.content === "string" && /\|/.test(c.content)) bilingualCount += 1;
+  }
+  // media 标记统计
+  const mediaMark = { voice: 0, sticker: 0, pat: 0, inner: 0, picture: 0 };
+  for (const c of converted) {
+    if (typeof c.content !== "string") continue;
+    if (c.content.startsWith("[语音]")) mediaMark.voice += 1;
+    else if (c.content.startsWith("[表情]")) mediaMark.sticker += 1;
+    else if (c.content.startsWith("[拍了拍]") || /^\[[^\]]*拍了拍/.test(c.content)) mediaMark.pat += 1;
+    else if (c.content.startsWith("[内心]")) mediaMark.inner += 1;
+    else if (c.content.startsWith("[画面描述]")) mediaMark.picture += 1;
+  }
 
   console.error("── 转换校验报告 ──");
   console.error(`输入: ${path.basename(input)}`);
@@ -108,6 +171,8 @@ function main() {
   console.error(`消息总数: ${pkg.messageCount}`);
   console.error(`user(我): ${roles.user || 0} / assistant(角色): ${roles.assistant || 0}`);
   console.error(`时间范围: ${pkg.earliest} → ${pkg.latest}`);
+  console.error(`双语(原文|译文)条数: ${bilingualCount}`);
+  console.error(`媒体文本化: 语音${mediaMark.voice} · 表情${mediaMark.sticker} · 拍一拍${mediaMark.pat} · 内心${mediaMark.inner} · 画面${mediaMark.picture}`);
   console.error(`无时间戳消息: ${noTime.length}`);
   console.error(`空/占位内容消息: ${emptyContent}`);
   console.error(`重复 id: ${dupIds}`);
@@ -115,6 +180,7 @@ function main() {
   console.error(`输出: ${output} (${(fs.statSync(output).size / 1024 / 1024).toFixed(2)} MB)`);
   if (dupIds > 0) console.error("⚠ 存在重复 id，导入接口将按 id 幂等去重");
   if (noTime.length > 0) console.error("⚠ 存在无时间戳消息，导入后排序可能异常，请检查");
+  if (emptyContent > 0) console.error("⚠ 存在空内容消息，请检查源备份");
   console.error("── 转换完成 ──");
 }
 
