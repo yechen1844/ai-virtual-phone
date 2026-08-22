@@ -18,6 +18,7 @@ import {
   deleteDaily,
 } from "./storage";
 import { distillPeriod } from "./period-distiller";
+import { dateFromTimestamp } from "./utils";
 import type { ComplexDaily, ComplexEvent, ComplexPeriod, EmotionVector } from "./types";
 
 export const CLEANUP_SNAPSHOT_PREFIX = "ai_phone_complex_memory_cleanup_";
@@ -114,7 +115,7 @@ export async function scanCleanupClusters(characterId: string): Promise<CleanupC
     ...events.map((e) => ({
       kind: "event" as const,
       id: e.id,
-      date: e.timestamp.slice(0, 10),
+      date: dateFromTimestamp(e.timestamp),
       content: e.content,
       emotion: e.emotion,
       embedding: e.embedding,

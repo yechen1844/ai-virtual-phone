@@ -9,6 +9,7 @@ import {
   filterTimelineByAllowedSources,
   type NativeTimelineEntry,
 } from "../short-term-assembler";
+import { dateFromTimestamp } from "./utils";
 
 export type SourceTimelineOptions = {
   /** 只取该时间戳之后的时间线（水位线语义） */
@@ -32,7 +33,7 @@ export function loadSourceTimeline(
   );
   const timeline = filterTimelineByAllowedSources(raw);
   if (!options?.date) return timeline;
-  return timeline.filter((e) => e.timestamp.slice(0, 10) === options.date);
+  return timeline.filter((e) => dateFromTimestamp(e.timestamp) === options.date);
 }
 
 /**
@@ -43,5 +44,5 @@ export function countSourceTimelineForDate(characterId: string, date: string): n
 }
 
 function loadSourceTimelineDate(characterId: string, date: string): NativeTimelineEntry[] {
-  return loadNativeTimeline(characterId).filter((e) => e.timestamp.slice(0, 10) === date);
+  return loadNativeTimeline(characterId).filter((e) => dateFromTimestamp(e.timestamp) === date);
 }

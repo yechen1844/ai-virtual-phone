@@ -18,6 +18,7 @@ import {
   deleteEvent,
 } from "./storage";
 import { loadMemoryEntriesByType, deleteMemoryEntry } from "../memory-storage";
+import { dateFromTimestamp } from "./utils";
 
 export type VoltageEntity = {
   voltage: number;
@@ -104,7 +105,7 @@ export async function runEraseScan(characterId: string, periodId?: string): Prom
 
     const period = await getPeriod(e.coveredByPeriod);
     if (period) {
-      const dayKey = e.timestamp.slice(0, 10);
+      const dayKey = dateFromTimestamp(e.timestamp);
       const pointer = `消磨: ${e.content.slice(0, 40)}${e.content.length > 40 ? "…" : ""}`;
       const existing = period.timelineIndex[dayKey] ?? "";
       await savePeriod({

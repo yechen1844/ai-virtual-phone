@@ -158,6 +158,7 @@ export function renderMemoryPrompt(
   characterName: string,
   userName: string,
   values: Record<string, string>,    // 模板专属变量键值对
+  replayAnchor?: Date | string | null, // 迁移回放时传入当天日期，使 {{time}}/{{weekday}} 按历史日期而非此刻
 ): string {
   let text = template;
   // ① 模板专属变量：原始替换（与 float 总结模板同模式，容忍变量名两侧空格）
@@ -166,6 +167,7 @@ export function renderMemoryPrompt(
   }
   // ② 全局宏：复用中央引擎（char/user/time/weekday/timestamp/random/var…）
   const engine = new MacroEngine(characterName, userName);
+  if (replayAnchor) engine.setReplayAnchor(replayAnchor);
   return engine.expand(text);       // 未识别宏原样保留，自定义写错不崩
 }
 

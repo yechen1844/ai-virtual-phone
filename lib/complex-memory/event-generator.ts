@@ -19,7 +19,8 @@ import { loadSourceTimeline } from "./source";
 import { renderMemoryPrompt, DEFAULT_PROMPTS } from "./prompts";
 import { saveEvent, getCurrentCoreView, loadActivePeriods, getDaily } from "./storage";
 import { mirrorEventToFloat } from "./mirror";
-import { getUserName, capSourceMaterials, dateString } from "./utils";
+import { pushFeedAudit } from "./feed-audit";
+import { getUserName, capSourceMaterials, dateString, dateFromTimestamp, formatLocalDateTime } from "./utils";
 import type { ComplexEvent, EmotionVector } from "./types";
 
 function clampNum(v: unknown, min: number, max: number, fallback: number): number {
@@ -86,7 +87,8 @@ export async function runEventGeneration(
 
     // 分窗生成：超过窗口上限按窗切分，逐窗生成一条事件、逐窗推进水位线。
     // 整段在互斥锁内串行执行，避免中途被打断造成窗口漏读。
-    const windowSize = Math.max(20, config.eventWindowMaxEntries);
+    // 窗口条数 = 配置 eventWindowMaxEntries（加载时已钳制到 [20, 5000]，此处直接用配置值）。
+    const windowSize = config.eventWindowMaxEntries;
     const windows = sliceWindows(allEntries, windowSize);
     let generated = 0;
 
@@ -168,10 +170,13 @@ async function generateEventForWindow(
   const yesterdayDaily = await getDaily(characterId, opts?.contextDate ? prevDateStr(opts.contextDate) : dateString(-1));
 
   const { eventsText, earliest, latest } = formatted;
+  // 给模型看本地时间而非 UTC 尾缀 Z，避免模型把时间跨度写错/换算错位
+  const localEarliest = formatLocalDateTime(earliest);
+  const localLatest = formatLocalDateTime(latest);
   const template = config.prompts.event?.trim() || DEFAULT_PROMPTS.event;
   const prompt = renderMemoryPrompt(template, characterName, getUserName(characterId), {
-    earliest,
-    latest,
+    earliest: localEarliest,
+    latest: localLatest,
     eventCount: String(formatted.count),
     length: String(targetLength),
     events: eventsText,
@@ -183,7 +188,7 @@ async function generateEventForWindow(
     coreMemory: coreText,
     activePeriods: periodsText,
     yesterdayDaily: yesterdayDaily?.content ?? "",
-  });
+  }, opts?.contextDate);
 
   const apiConfig = resolveAuxiliaryApiConfig("complexMemoryApiConfigId");
   if (!apiConfig) return null;
@@ -193,6 +198,16 @@ async function generateEventForWindow(
     [{ role: "user", content: prompt }],
     { temperature: 0.3, label: `复杂记忆·事件·${characterName}` },
   );
+  // 投喂审计：记录本次事件生成实际发给模型的完整 prompt
+  pushFeedAudit({
+    characterId,
+    characterName,
+    kind: "event",
+    date: opts?.contextDate ? dateFromTimestamp(opts.contextDate) : undefined,
+    prompt,
+    response: result.content ?? (result.error ?? ""),
+    model: apiConfig.defaultModel,
+  });
   if (!result.content) {
     console.warn("[ComplexMemory] 事件生成 LLM 返回空:", result.error);
     return null;
@@ -216,10 +231,15 @@ async function generateEventForWindow(
   }
 
   const now = new Date().toISOString();
+  // 事件时间戳归属：优先用窗口所属日期（迁移按日回放时为当天），否则取窗口最早素材日期。
+  // 归一为本地日历日期（YYYY-MM-DD），避免 UTC 尾缀在 UI/过滤里错一天。
+  const eventTimestamp = opts?.contextDate
+    ? dateFromTimestamp(opts.contextDate)
+    : dateFromTimestamp(earliest);
   const event: ComplexEvent = {
     id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     characterId,
-    timestamp: latest,
+    timestamp: eventTimestamp,
     content: parsed.content,
     emotion: parsed.emotion,
     periodsRef: [],
@@ -250,7 +270,7 @@ export async function generateEventWindow(
   characterId: string,
   characterName: string,
   windowIndex: number,
-  opts?: { migrated?: boolean },
+  opts?: { migrated?: boolean; date?: string },
 ): Promise<{
   success: boolean;
   error?: string;
@@ -259,17 +279,20 @@ export async function generateEventWindow(
   done: boolean;
 }> {
   const config = loadComplexMemoryConfig();
-  const allEntries = loadSourceTimeline(characterId, {});
+  // 迁移按日回放：date 限定只读当天素材，杜绝跨日期窗口（7/21 内容被 8/15 污染）。
+  // 正常增量生成（无 date）仍读水位线之后的全量，但窗口切分不受影响。
+  const allEntries = loadSourceTimeline(characterId, opts?.date ? { date: opts.date } : {});
   if (allEntries.length < 4) {
     return { success: false, error: "事件不足 4 条", totalWindows: 0, nextIndex: windowIndex, done: true };
   }
 
-  const windowSize = Math.max(20, config.eventWindowMaxEntries);
+  const windowSize = config.eventWindowMaxEntries;
   const windows = sliceWindows(allEntries, windowSize);
   if (windowIndex >= windows.length) {
     return { success: true, totalWindows: windows.length, nextIndex: windows.length, done: true };
   }
 
+  const contextDate = opts?.date ?? dateFromTimestamp(windows[windowIndex][windows[windowIndex].length - 1]?.timestamp);
   const event = await generateEventForWindow(
     characterId,
     characterName,
@@ -278,8 +301,7 @@ export async function generateEventWindow(
     {
       suppressMirror: true,
       migrated: opts?.migrated === true,
-      // 昨日日记注入时间点：该窗口最后一条消息所在日期（迁移回放时保持「当时」语义）
-      contextDate: windows[windowIndex][windows[windowIndex].length - 1]?.timestamp.slice(0, 10),
+      contextDate,
     },
   );
   if (!event) {

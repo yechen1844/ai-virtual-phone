@@ -89,6 +89,7 @@ import {
   pauseMigration,
   resumeMigration,
   resetMigration,
+  hardResetCharacterMemory,
   runMigrationStep,
   driveMigration,
   estimateMigration,
@@ -117,10 +118,11 @@ import type {
   MemoryPromptKey,
   MigrationState,
 } from "@/lib/complex-memory/types";
+import { getFeedAudit, clearFeedAudit, type FeedAuditEntry, type FeedAuditKind } from "@/lib/complex-memory/feed-audit";
 
 const ACCENT = "#2F9E97";
 
-type TabId = "core" | "daily" | "period" | "event" | "emotion" | "cleanup" | "native" | "migration" | "config";
+type TabId = "core" | "daily" | "period" | "event" | "emotion" | "cleanup" | "native" | "migration" | "config" | "feed";
 
 const TABS: Array<{ id: TabId; label: string; icon: typeof Brain }> = [
   { id: "core", label: "核心记忆", icon: Brain },
@@ -132,6 +134,7 @@ const TABS: Array<{ id: TabId; label: string; icon: typeof Brain }> = [
   { id: "native", label: "原生记忆", icon: Layers },
   { id: "migration", label: "迁移", icon: Download },
   { id: "config", label: "配置", icon: Settings2 },
+  { id: "feed", label: "投喂审计", icon: Activity },
 ];
 
 type Notice = { kind: "ok" | "err"; text: string };
@@ -253,6 +256,7 @@ export function ComplexMemoryExplorer() {
           {tab === "native" && <NativeMemoryTab characterId={selected.id} />}
           {tab === "migration" && <MigrationTab characterId={selected.id} characterName={selected.name} notify={notify} />}
           {tab === "config" && <ConfigTab characterId={selected.id} notify={notify} />}
+          {tab === "feed" && <FeedAuditTab />}
         </div>
       )}
     </div>
@@ -1086,6 +1090,8 @@ function EventTab({ characterId, characterName, notify, refresh }: {
   const [events, setEvents] = useState<ComplexEvent[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
 
   const load = useCallback(async () => {
     setEvents(await loadEvents(characterId));
@@ -1115,6 +1121,21 @@ function EventTab({ characterId, characterName, notify, refresh }: {
     const boosted = boostedVoltage(e, config.voltageRecallBoost, { kind: "event" });
     await saveEvent({ ...e, voltage: boosted.voltage, lastAccessedAt: boosted.lastAccessedAt });
     notify({ kind: "ok", text: "电压已充能" });
+    await load();
+  };
+
+  const handleSaveEdit = async (e: ComplexEvent) => {
+    setBusy(true);
+    await saveEvent({ ...e, content: draft.trim() || e.content });
+    setBusy(false);
+    setEditingId(null);
+    notify({ kind: "ok", text: "事件已更新" });
+    await load();
+  };
+
+  const handleDelete = async (e: ComplexEvent) => {
+    await deleteEvent(e.id);
+    notify({ kind: "ok", text: "事件已删除" });
     await load();
   };
 
@@ -1151,18 +1172,35 @@ function EventTab({ characterId, characterName, notify, refresh }: {
                 </button>
                 {expandedId === e.id && (
                   <div className="cm-event-body">
-                    <div className="cm-event-content">{e.content}</div>
-                    <SourceMaterialsView materials={e.sourceMaterials} />
-                    <div className="cm-card-actions">
-                      <span className="cm-meta-text">情绪 {e.emotion.valence.toFixed(2)} / {e.emotion.arousal.toFixed(2)}</span>
-                      <span className="cm-spacer" />
-                      <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => void handleBoost(e)}>
-                        <Zap size={14} /> 充能
-                      </button>
-                      <button type="button" className="ui-btn ui-btn-danger ts-12" onClick={async () => { await deleteEvent(e.id); notify({ kind: "ok", text: "事件已删除" }); await load(); }}>
-                        <Trash2 size={14} /> 删除
-                      </button>
-                    </div>
+                    {editingId === e.id ? (
+                      <>
+                        <Textarea className="cm-core-editor" rows={6} value={draft} onChange={(ev) => setDraft(ev.target.value)} />
+                        <div className="cm-card-actions">
+                          <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => setEditingId(null)}>取消</button>
+                          <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={() => void handleSaveEdit(e)} disabled={busy}>
+                            <Save size={14} /> 保存
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="cm-event-content">{e.content}</div>
+                        <SourceMaterialsView materials={e.sourceMaterials} />
+                        <div className="cm-card-actions">
+                          <span className="cm-meta-text">情绪 {e.emotion.valence.toFixed(2)} / {e.emotion.arousal.toFixed(2)}</span>
+                          <span className="cm-spacer" />
+                          <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => void handleBoost(e)}>
+                            <Zap size={14} /> 充能
+                          </button>
+                          <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => { setEditingId(e.id); setDraft(e.content); }}>
+                            <Edit3 size={14} /> 编辑
+                          </button>
+                          <button type="button" className="ui-btn ui-btn-danger ts-12" onClick={() => void handleDelete(e)}>
+                            <Trash2 size={14} /> 删除
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
               </div>
@@ -1328,6 +1366,72 @@ function NativeMemoryTab({ characterId }: { characterId: string }) {
   );
 }
 
+// ── 投喂审计页（查看发给模型的完整记录） ──
+function FeedAuditTab() {
+  const [entries, setEntries] = useState<FeedAuditEntry[]>([]);
+  const [kindFilter, setKindFilter] = useState<FeedAuditKind | "all">("all");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const load = useCallback(() => setEntries(getFeedAudit()), []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const sorted = useMemo(() => entries.filter((e) => kindFilter === "all" || e.kind === kindFilter), [entries, kindFilter]);
+  const KIND_LABEL: Record<FeedAuditKind, string> = { event: "事件", daily: "日记", period: "周期", core: "核心" };
+
+  return (
+    <div className="cm-section">
+      <div className="cm-section-head">
+        <span className="cm-section-title">投喂审计 · 共 {entries.length} 条</span>
+        <div className="cm-actions">
+          <div className="cm-view-toggle" role="group" aria-label="按类型筛选">
+            {(["all", "event", "daily", "period", "core"] as Array<FeedAuditKind | "all">).map((k) => (
+              <button key={k} type="button" className={`cm-view-btn ${kindFilter === k ? "is-active" : ""}`} onClick={() => setKindFilter(k)}>
+                {k === "all" ? "全部" : KIND_LABEL[k]}
+              </button>
+            ))}
+          </div>
+          <button type="button" className="ui-btn ui-btn-danger ts-12" onClick={() => { clearFeedAudit(); setEntries([]); }}>
+            <Trash2 size={14} /> 清空
+          </button>
+        </div>
+      </div>
+      <p className="cm-muted">这里记录复杂记忆每次生成「实际发给模型」的完整提示词（不截断）。用于定位时间/内容污染。底层调用日志只保留 4000 字摘要，此处为全文。</p>
+      {sorted.length === 0 ? (
+        <div className="cm-empty-inline cm-card"><p className="cm-muted">暂无投喂记录。生成事件/日记/周期/核心后会自动记录。</p></div>
+      ) : (
+        <div className="cm-event-list">
+          {sorted.map((e) => (
+            <div key={e.id} className="cm-card cm-event-item">
+              <button type="button" className="cm-event-head" onClick={() => setExpandedId(expandedId === e.id ? null : e.id)}>
+                <span className={`cm-badge ${kindFilter === "all" ? "cm-badge-soft" : ""}`}>{KIND_LABEL[e.kind]}</span>
+                <span className="cm-event-time">{e.date ?? "—"}</span>
+                <span className="cm-event-importance">{e.characterName}</span>
+                <span className="cm-event-voltage">{fmtTime(e.timestamp)}</span>
+                {expandedId === e.id ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+              </button>
+              {expandedId === e.id && (
+                <div className="cm-event-body">
+                  <div className="cm-audit-prompt">
+                    <div className="cm-audit-label">发给模型的完整 prompt（{e.prompt.length} 字符）</div>
+                    <pre className="cm-audit-pre">{e.prompt}</pre>
+                  </div>
+                  <div className="cm-audit-prompt">
+                    <div className="cm-audit-label">模型返回</div>
+                    <pre className="cm-audit-pre">{e.response}</pre>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── 记忆清洗页（M6） ──
 function CleanupTab({ characterId, characterName, notify, refresh }: {
   characterId: string;
@@ -1468,7 +1572,7 @@ const MIGRATION_DAY_OPTIONS = [
 ];
 
 const PHASE_LABEL: Record<MigrationState["phase"], string> = {
-  stream: "时间正序回放",
+  stream: "按日回放",
   legacy: "压缩旧记忆",
   done: "已完成",
 };
@@ -1553,6 +1657,22 @@ function MigrationTab({ characterId, characterName, notify }: {
     notify({ kind: "ok", text: "迁移记录已重置" });
   };
 
+  const handleHardReset = () => {
+    stopAuto();
+    // 彻底重置：删除全部长期记忆（事件/日记/周期/核心/快照），保留短期记忆。不可逆，二次确认。
+    const ok = window.confirm("确定要彻底重置所有长期记忆吗？\n\n将删除：事件记忆、每日日记、周期、核心记忆、核心快照。\n保留：短期聊天上下文。\n\n此操作不可逆，建议先「导出到 float」备份。");
+    if (!ok) return;
+    setBusy(true);
+    void hardResetCharacterMemory(characterId)
+      .then(() => {
+        setState(null);
+        void loadCounts();
+        notify({ kind: "ok", text: "长期记忆已彻底重置，短期记忆保留" });
+      })
+      .catch((err) => notify({ kind: "err", text: `重置失败：${err instanceof Error ? err.message : String(err)}` }))
+      .finally(() => setBusy(false));
+  };
+
   const handleEstimate = () => {
     setEstimate(estimateMigration(characterId, days));
   };
@@ -1583,8 +1703,9 @@ function MigrationTab({ characterId, characterName, notify }: {
   const running = state?.status === "running";
   const paused = state?.status === "paused";
   const done = state?.status === "done";
-  // 综合进度：事件窗推进 60% + 日记完成 40%（事件窗驱动日记产生）
-  const eventPct = state && state.totalWindows > 0 ? state.windowIndex / state.totalWindows : 0;
+  // 综合进度：按日期逐日回放，dayIndex 反映已开始推进的日期（含当天事件+日记），doneDays 为已完成日期
+  const dayNow = state?.dayIndex ?? (state ? state.doneDays : 0);
+  const eventPct = state && state.totalDays > 0 ? Math.min(1, dayNow / state.totalDays) : 0;
   const dailyPct = state && state.totalDays > 0 ? state.doneDays / state.totalDays : 0;
   const progress = state ? Math.min(100, Math.round((eventPct * 0.6 + dailyPct * 0.4) * 100)) : 0;
 
@@ -1654,7 +1775,7 @@ function MigrationTab({ characterId, characterName, notify }: {
                 ? "压缩旧 float 记忆…"
                 : state.phase === "done"
                   ? `${state.doneDays} / ${state.totalDays} 天`
-                  : `事件窗 ${state.windowIndex}/${state.totalWindows} · 日记 ${state.doneDays}/${state.totalDays} 天 · ${state.currentDate ?? "准备中…"}`}
+                  : `逐日回放 · 事件 ${state.doneDays}/${state.totalDays} 天 · 日记 ${state.doneDays}/${state.totalDays} 天 · ${state.currentDate ?? "准备中…"}`}
             </span>
           </div>
           <div className="cm-mig-progress" role="progressbar" aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100}>
@@ -1710,6 +1831,9 @@ function MigrationTab({ characterId, characterName, notify }: {
             <span className="cm-spacer" />
             <button type="button" className="ui-btn ui-btn-danger ts-12" onClick={handleReset}>
               <Trash2 size={14} /> 重置
+            </button>
+            <button type="button" className="ui-btn ui-btn-danger ts-12" onClick={handleHardReset} disabled={busy}>
+              <RefreshCw size={14} /> 彻底重置记忆
             </button>
           </div>
         </div>
@@ -1797,6 +1921,7 @@ function ConfigTab({ characterId, notify }: { characterId: string; notify: (n: N
       <div className="cm-card cm-config-grid">
         {numField("ringBufferMaxEntries", "L1 活跃窗口条数", "建议 100-200")}
         {numField("eventTriggerCount", "事件压缩触发数")}
+        {numField("eventWindowMaxEntries", "事件分窗素材上限（条/窗）", "单窗素材上限，超限分窗生成；建议 50-500")}
         {numField("eventTargetLength", "事件篇幅目标（字）")}
         {numField("dailyTargetLength", "日记篇幅目标（字）")}
         {numField("dailyQuietMinutes", "日记静默判定（分钟）", "仅约束当天日记")}

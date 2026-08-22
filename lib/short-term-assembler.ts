@@ -4,6 +4,7 @@
 // Used by: memory-bank-page (UI display), memory-summarizer (summarization input).
 
 import { isReadingDiscussMessage, isSystemInstructionMessage, loadChatSessions, loadChatMessages, type ChatMessage } from "./chat-storage";
+import { splitBilingualText } from "./bilingual-text";
 import { buildGroupAdminBracketText } from "./group-admin";
 import { loadMomentPosts, loadMomentComments } from "./moments-storage";
 import { loadCharacters } from "./character-storage";
@@ -42,7 +43,6 @@ import {
     resolvePromptTimeAware,
     type PromptTimestampOptions,
 } from "./prompt-time";
-import { splitBilingualText } from "./bilingual-text";
 
 function formatPhotoDirectiveForPrompt(msg: ChatMessage): string {
     const description = msg.mediaData?.label?.trim() || "图片";
@@ -153,6 +153,20 @@ function formatDiaryEntryForTimeline(entry: DiaryEntry, timeAware: boolean, time
 }
 
 /**
+ * 按会话的翻译投喂模式过滤双语内容。
+ * both=双语原样（默认）；originalOnly=只喂原文；translatedOnly=只喂译文（中文）。
+ * 仅处理 `原文|译文` 格式的双语文本；非双语/无法拆分时原样返回。
+ */
+function applyTranslationFeedMode(content: string, mode?: "both" | "originalOnly" | "translatedOnly"): string {
+    if (!mode || mode === "both") return content;
+    const split = splitBilingualText(content);
+    if (!split) return content;
+    if (mode === "originalOnly") return split.original;
+    if (mode === "translatedOnly") return split.translated;
+    return content;
+}
+
+/**
  * Load a unified timeline of native app data for a character.
  * Aggregates chat messages and moments interactions into a single sorted list.
  *
@@ -182,6 +196,8 @@ export function loadNativeTimeline(
     // Include direct chat session AND group sessions where this character participates
     const session = sessions.find(s => !s.isGroup && s.contactId === characterId);
     const groupSessions = sessions.filter(s => s.isGroup && s.participantIds?.includes(characterId));
+    // 翻译投喂模式：仅作用于直接私聊内容（群聊/其他来源不受影响）
+    const translationMode = session?.translationFeedMode ?? "both";
 
     // Process group sessions
     for (const gs of groupSessions) {
@@ -380,23 +396,17 @@ export function loadNativeTimeline(
 
             if (!content.trim()) continue;
 
-            // Session-bound bilingual feed mode: decide which side of `原文|译文`
-            // gets fed to the model (short-term context / memory). Affects prompt
-            // feeding only — UI display is unchanged. Default (both) keeps as-is.
-            const feedMode = session.translationFeedMode ?? "both";
-            if (feedMode !== "both") {
-                const bilingual = splitBilingualText(content);
-                if (bilingual) {
-                    content = feedMode === "originalOnly" ? bilingual.original : bilingual.translated;
-                }
-            }
+            // 翻译投喂模式：仅作用于直接私聊内容（群聊/系统/媒体消息不受影响）。
+            // both=双语原样；originalOnly=只喂原文；translatedOnly=只喂译文（中文）。
+            const feedContent = applyTranslationFeedMode(content.trim(), translationMode);
+            if (!feedContent.trim()) continue;
 
             entries.push({
                 id: msg.id,
                 sourceApp: "chat",
                 sourceDetail: "direct",
                 timestamp: msg.createdAt,
-                content: `${msgLabel} ${sender}: ${content}`,
+                content: `${msgLabel} ${sender}: ${feedContent}`,
             });
         }
     }

@@ -102,6 +102,25 @@ export class MacroEngine {
         this.userName = userName;
     }
 
+    /** Optional replay-time anchor (Date or YYYY-MM-DD). When set, {{time}}/{{weekday}}
+     *  resolve against this instead of the real "now". Used by migration replay so that
+     *  historical dates are not written with today's clock/time. */
+    replayAnchor: Date | null = null;
+
+    setReplayAnchor(anchor: Date | string | null): void {
+        if (!anchor) { this.replayAnchor = null; return; }
+        if (typeof anchor === "string") {
+            const dt = new Date(anchor);
+            if (!Number.isNaN(dt.getTime())) { this.replayAnchor = dt; return; }
+            // YYYY-MM-DD only → parse as local midday to avoid tz drift
+            const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(anchor);
+            if (m) { this.replayAnchor = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12); return; }
+            this.replayAnchor = null;
+            return;
+        }
+        this.replayAnchor = anchor;
+    }
+
     /** Main entry: iteratively expand all macros (innermost first). */
     expand(text: string): string {
         const MAX_ITERATIONS = 50;
@@ -248,13 +267,13 @@ export class MacroEngine {
 
         // time — shortcut for current datetime like "2026年3月2日15:40"
         if (body === "time") {
-            const now = new Date();
+            const now = this.replayAnchor ?? new Date();
             return `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
         }
 
         if (body === "weekday") {
             const weekdays = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"];
-            return weekdays[new Date().getDay()];
+            return weekdays[(this.replayAnchor ?? new Date()).getDay()];
         }
 
         // uuid
@@ -326,10 +345,10 @@ export class MacroEngine {
         // timestamp:FORMAT
         if (body.startsWith("timestamp:")) {
             const format = body.substring(10).trim();
-            return formatTimestamp(format);
+            return formatTimestamp(format, this.replayAnchor ?? new Date());
         }
         if (body === "timestamp") {
-            return new Date().toISOString();
+            return (this.replayAnchor ?? new Date()).toISOString();
         }
 
         // Unrecognized macro — leave as-is (return with braces so it doesn't loop)
@@ -390,8 +409,8 @@ export const STATIC_MACRO_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 /** Simple timestamp formatter. Supports common tokens: YYYY, MM, DD, HH, mm, ss, etc. */
-function formatTimestamp(format: string): string {
-    const now = new Date();
+function formatTimestamp(format: string, anchor: Date): string {
+    const now = anchor;
     const pad = (n: number, len = 2) => String(n).padStart(len, "0");
 
     return format

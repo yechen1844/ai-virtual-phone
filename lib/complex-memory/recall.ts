@@ -18,6 +18,7 @@ import {
   savePeriod,
 } from "./storage";
 import { boostedVoltage } from "./voltage";
+import { formatLocalDateTime } from "./utils";
 import type {
   ComplexDaily,
   ComplexEvent,
@@ -87,7 +88,7 @@ function dailyTimeWindowWeight(date: string, config: ComplexMemoryConfig, now = 
 }
 
 function formatEventLine(e: ComplexEvent): string {
-  return `[${e.timestamp.slice(0, 16).replace("T", " ")}] ${e.content}`;
+  return `[${formatLocalDateTime(e.timestamp)}] ${e.content}`;
 }
 
 function formatDailyLine(d: ComplexDaily): string {
@@ -101,7 +102,7 @@ function formatPeriodLine(p: ComplexPeriod): string {
 
 function formatRecallItem(item: MemoryRecallItem): string {
   const kindLabel = item.kind === "event" ? "事件" : item.kind === "daily" ? "日记" : "周期";
-  return `[${kindLabel} ${item.timestamp}] ${item.content}`;
+  return `[${kindLabel} ${formatLocalDateTime(item.timestamp)}] ${item.content}`;
 }
 
 /**

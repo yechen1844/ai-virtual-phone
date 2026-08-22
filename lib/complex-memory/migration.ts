@@ -21,12 +21,13 @@ import { loadSourceTimeline } from "./source";
 import {
   getCurrentCoreView,
   countCores,
+  deleteCharacterAll,
   loadDailies,
   loadEvents,
   loadPeriods,
   savePeriod,
 } from "./storage";
-import { dateString } from "./utils";
+import { dateFromTimestamp, dateString } from "./utils";
 import type {
   ComplexPeriod,
   ExternalImportPayload,
@@ -85,7 +86,7 @@ export function estimateMigration(characterId: string, days: number): number {
   const dates = computeDates(characterId, days);
   const timeline = loadNativeTimeline(characterId);
   const config = loadComplexMemoryConfig();
-  const windowSize = Math.max(20, config.eventWindowMaxEntries);
+  const windowSize = config.eventWindowMaxEntries;
 
   // 事件：全量时间线 ÷ 窗口上限 × 单窗输入输出均值
   const joined = timeline.map((e) => e.content ?? "").join("\n");
@@ -99,7 +100,7 @@ export function estimateMigration(characterId: string, days: number): number {
   let dailiesTokens = 0;
   for (const date of dates) {
     const dayText = timeline
-      .filter((e) => e.timestamp.slice(0, 10) === date)
+      .filter((e) => dateFromTimestamp(e.timestamp) === date)
       .map((e) => e.content ?? "")
       .join("\n");
     dailiesTokens += estimateTokens(dayText) + config.dailyTargetLength * 1.5;
@@ -136,7 +137,7 @@ export async function startMigration(
   const estimate = estimateMigration(characterId, days);
   const now = new Date().toISOString();
   const config = loadComplexMemoryConfig();
-  const windowSize = Math.max(20, config.eventWindowMaxEntries);
+  const windowSize = config.eventWindowMaxEntries;
   const state: MigrationState = {
     status: "running",
     phase: "stream",
@@ -149,6 +150,7 @@ export async function startMigration(
     totalWindows: Math.max(1, Math.ceil(timeline.length / windowSize)),
     pendingDates: [],
     nextDailyIndex: 0,
+    dayIndex: 0,
     coreDailyCounter: 0,
     startedAt: now,
     updatedAt: now,
@@ -188,12 +190,23 @@ export function resetMigration(characterId: string): void {
   saveCharacterState(rest);
 }
 
+/** 彻底重置：删除该角色全部长期记忆（事件/日记/周期/核心/快照），并清空迁移断点与关键运行态。
+ *  保留短期记忆（float 原生最近聊天时间线 + ringBuffer 事件缓冲），记忆从此重新积累。
+ *  不可逆：调用方（UI）必须二次确认后触发。 */
+export async function hardResetCharacterMemory(characterId: string): Promise<void> {
+  await deleteCharacterAll(characterId);
+  const cs = loadCharacterState(characterId);
+  const { migration: _mig, ...rest } = cs;
+  void _mig;
+  saveCharacterState(rest);
+}
+
 /** 执行一步迁移：事件窗 / 单日日记（含周期链与核心链）逐步推进。失败自动重试 N 次（指数退避），
  *  全部失败才置 paused 并记录错误，用户可随时「继续」从断点续跑（重试期间状态保持 running，不落盘失败）。 */
 export async function runMigrationStep(
   characterId: string,
   characterName: string,
-): Promise<{ success: boolean; error?: string; done?: boolean; state?: MigrationState }> {
+): Promise<{ success: boolean; error?: string; done?: boolean; state?: MigrationState; aborted?: boolean }> {
   if (running) return { success: false, error: "迁移步骤执行中" };
   const state = getMigrationState(characterId);
   if (!state) return { success: false, error: "尚未启动迁移" };
@@ -209,6 +222,14 @@ export async function runMigrationStep(
     for (let attempt = 0; attempt < maxRetries; attempt += 1) {
       try {
         const next = await executeStep(characterId, characterName, state);
+        // 竞态防护：executeStep 耗时（可能几十秒）期间用户可能点了暂停/重置，甚至重置后立刻新启一次迁移。
+        // 重读最新状态校验（任务 task 与 startedAt 都须一致）：
+        //   1) 状态已非 running（被暂停）或 migration 已删（被重置）→ 丢弃本次结果，驱动循环读到 paused/null 正常退出；
+        //   2) startedAt 不同（重置后已新启另一迁移）→ 丢弃旧步骤的产物上下文，避免旧快照覆盖/污染新迁移。
+        const newest = getMigrationState(characterId);
+        if (!newest || newest.status !== "running" || newest.startedAt !== state.startedAt) {
+          return { success: false, error: "迁移上下文已变化（暂停/重置/重启），本次结果已丢弃", aborted: true };
+        }
         const cs = loadCharacterState(characterId);
         saveCharacterState({ ...cs, migration: next });
         return { success: true, done: next.status === "done", state: next };
@@ -263,12 +284,13 @@ async function executeStep(
         }
         return { ...base, phase: "stream" };
       }
-      // 1) 有待生成日记 → 先补日记（内部做核心定期重构计数）
+      // 1) 先补上一日日记：每完成一天事件即生成当日日记，保证「昨日日记」参考链完整、
+      //    周期开合与核心重构按日推进（与正常逐日累积机制一致，避免事件先全出、日记后补齐造成跨日错位）。
       if (state.pendingDates.length > 0) {
         return await stepDaily(characterId, characterName, base, state);
       }
-      // 2) 事件窗推进（时间正序，逐窗生成事件记忆）
-      if (state.windowIndex < state.totalWindows) {
+      // 2) 事件窗推进（按日期逐日回放）：当天事件全部完成会自动把该日期移交日记队列。
+      if (state.dayIndex !== undefined ? state.dayIndex < state.dates.length : state.windowIndex < state.totalWindows) {
         return await stepEventWindow(characterId, characterName, base, state);
       }
       // 3) 事件与日记全部完成：核心全程无触发点（无周期关闭、日记不足 N 篇）时 bootstrap 兜底，
@@ -295,75 +317,65 @@ async function executeStep(
   }
 }
 
-/** 推进一个事件窗：生成该窗事件记忆，并把「已完全覆盖结束」的日期移交待生成日记队列。 */
+/** 推进一个事件窗：按日期逐日回放。每天切窗生成事件，当天完成即移交日记并推进下一天。
+ *  事件素材严格限定在当天（generateEventWindow 传 date），杜绝跨日期窗口把 7/21 污染成 8/15。 */
 async function stepEventWindow(
   characterId: string,
   characterName: string,
   base: MigrationState,
   state: MigrationState,
 ): Promise<MigrationState> {
-  const config = loadComplexMemoryConfig();
-  const windowSize = Math.max(20, config.eventWindowMaxEntries);
-  const timeline = loadSourceTimeline(characterId);
+  const dates = state.dates;
+  const dayIndex = state.dayIndex ?? 0;
+  if (dayIndex >= dates.length) return { ...base, phase: "legacy" };
+  const date = dates[dayIndex];
 
-  const res = await generateEventWindow(characterId, characterName, state.windowIndex, { migrated: true });
+  const res = await generateEventWindow(characterId, characterName, state.windowIndex, {
+    migrated: true,
+    date,
+  });
   if (!res.success) {
-    if (res.error === "事件不足 4 条") return { ...base, phase: "legacy" };
+    if (res.error === "事件不足 4 条") {
+      // 当天素材不足 4 条：跳过的日期直接移交日记（空天不计），推进下一天
+      return {
+        ...base,
+        phase: "stream",
+        windowIndex: 0,
+        dayIndex: dayIndex + 1,
+        pendingDates: [...state.pendingDates, date],
+        nextDailyIndex: dayIndex + 1,
+        doneDays: state.doneDays,
+        currentDate: date,
+      };
+    }
     throw new Error(res.error ?? "事件窗口生成失败");
   }
 
-  // 该窗口最后一条的日期为 lastDate：所有日期 < lastDate 的日期已被完全覆盖（时间正序切分），
-  // 移交 pendingDates 等待生成当日日记；lastDate 当天可能跨窗口边界，留待后续窗口覆盖完再判定。
-  const windowEnd = Math.min(timeline.length, (state.windowIndex + 1) * windowSize);
-  const lastDate = windowEnd > 0 ? timeline[windowEnd - 1].timestamp.slice(0, 10) : null;
-  const { pending, nextIndex } = collectPendingDates(state, lastDate);
-
-  // 最后一个窗口：无后续窗口，lastDate 当天也已完全覆盖，补上剩余全部日期（含最后一天）
-  if (res.nextIndex >= res.totalWindows) {
-    const dates = state.dates;
-    let idx = nextIndex;
-    while (idx < dates.length) {
-      pending.push(dates[idx]);
-      idx += 1;
-    }
+  // 当天窗口未全部完成 → 继续同一天下一窗；j
+  if (res.nextIndex < res.totalWindows) {
     return {
       ...base,
       phase: "stream",
       windowIndex: res.nextIndex,
-      timelineCursor: windowEnd,
-      totalWindows: res.totalWindows,
-      pendingDates: pending,
-      nextDailyIndex: dates.length,
-      currentDate: lastDate,
+      dayIndex,
+      pendingDates: state.pendingDates,
+      nextDailyIndex: state.nextDailyIndex,
+      doneDays: state.doneDays,
+      currentDate: date,
     };
   }
 
+  // 当天全部窗口完成 → 日期移交日记队列，推进下一天
   return {
     ...base,
     phase: "stream",
-    windowIndex: res.nextIndex,
-    timelineCursor: windowEnd,
-    totalWindows: res.totalWindows,
-    pendingDates: pending,
-    nextDailyIndex: nextIndex,
-    currentDate: lastDate,
+    windowIndex: 0,
+    dayIndex: dayIndex + 1,
+    pendingDates: [...state.pendingDates, date],
+    nextDailyIndex: dayIndex + 1,
+    doneDays: state.doneDays,
+    currentDate: date,
   };
-}
-
-/** 日期移交：dates（正序）中所有 < lastDate 的日期加入待生成队列（空白天不在 dates 中，天然跳过）。 */
-function collectPendingDates(
-  state: MigrationState,
-  lastDate: string | null,
-): { pending: string[]; nextIndex: number } {
-  const dates = state.dates;
-  let nextIndex = state.nextDailyIndex;
-  const pending = [...state.pendingDates];
-  if (!lastDate) return { pending, nextIndex };
-  while (nextIndex < dates.length && dates[nextIndex] < lastDate) {
-    pending.push(dates[nextIndex]);
-    nextIndex += 1;
-  }
-  return { pending, nextIndex };
 }
 
 /** 生成一篇当日日记，并同步编排周期链（关闭即提炼 + 微调核心）与核心链（满 N 篇定期重构）。 */
@@ -517,7 +529,7 @@ function computeDates(characterId: string, days: number): string[] {
   const timeline = loadNativeTimeline(characterId);
   const byDate = new Map<string, number>();
   for (const e of timeline) {
-    const d = e.timestamp.slice(0, 10);
+    const d = dateFromTimestamp(e.timestamp);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
     if (d >= today) continue;
     const ts = new Date(e.timestamp).getTime();

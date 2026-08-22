@@ -157,6 +157,7 @@ export type MigrationState = {
   totalWindows: number;         // 事件窗总数（素材条数 ÷ 窗宽，向上取整）
   pendingDates: string[];       // 已完全处理、待生成日记的日期（正序队列）
   nextDailyIndex: number;       // dates 中已覆盖完成并移交 pendingDates 的指针
+  dayIndex?: number;            // 按日期逐日回放时，当前处理到的 dates 下标（最早起）
   coreDailyCounter: number;     // 迁移内核心定期重构日记计数
   startedAt: string | null;
   updatedAt: string | null;

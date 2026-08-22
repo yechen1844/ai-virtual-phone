@@ -19,7 +19,8 @@ import {
   saveEvent,
   savePeriod,
 } from "./storage";
-import { getUserName, dateString, extractJsonObject, capSourceMaterials } from "./utils";
+import { getUserName, dateString, dateFromTimestamp, extractJsonObject, capSourceMaterials } from "./utils";
+import { pushFeedAudit } from "./feed-audit";
 import { runEraseScan } from "./voltage";
 import { fineTuneCoreMemory } from "./core-builder";
 import type { ComplexPeriod } from "./types";
@@ -51,7 +52,7 @@ export async function distillPeriod(
     const periodEvents = events.filter((e) => e.periodsRef.includes(periodId));
 
     const dailiesText = periodDailies.map((d) => `[${d.date}] ${d.content}`).join("\n\n");
-    const eventsText = periodEvents.map((e) => `[${e.timestamp.slice(0, 10)}] ${e.content}`).join("\n\n");
+    const eventsText = periodEvents.map((e) => `[${dateFromTimestamp(e.timestamp)}] ${e.content}`).join("\n\n");
     const rollingSummary = period.rollingSummary?.trim() || "（无滚动累积，以下为关联日记与事件全文）";
     const durationDays = Math.max(1, Math.round((new Date(period.endTime ?? dateString(0)).getTime() - new Date(period.startTime).getTime()) / 86_400_000) + 1);
 
@@ -75,6 +76,16 @@ export async function distillPeriod(
       [{ role: "user", content: prompt }],
       { temperature: 0.3, label: `复杂记忆·周期·${characterName}` },
     );
+    // 投喂审计：记录本次周期提炼实际发给模型的完整 prompt
+    pushFeedAudit({
+      characterId,
+      characterName,
+      kind: "period",
+      date: period.endTime ?? undefined,
+      prompt,
+      response: result.content ?? (result.error ?? ""),
+      model: apiConfig.defaultModel,
+    });
     if (!result.content) return { success: false, error: result.error || "LLM 返回空内容" };
 
     const parsed = parsePeriodJson(result.content);

@@ -22,7 +22,8 @@ import {
   savePeriod,
   getDaily,
 } from "./storage";
-import { getUserName, dateString, extractJsonObject, clampNum, capSourceMaterials } from "./utils";
+import { getUserName, dateString, dateFromTimestamp, extractJsonObject, clampNum, capSourceMaterials } from "./utils";
+import { pushFeedAudit } from "./feed-audit";
 import { buildGenerationContext } from "./context-builder";
 import { distillPeriod } from "./period-distiller";
 import { rebuildCoreMemory } from "./core-builder";
@@ -55,7 +56,7 @@ export async function maybeGenerateDaily(
 
   const byDate = new Map<string, { lastTs: number }>();
   for (const e of timeline) {
-    const d = e.timestamp.slice(0, 10);
+    const d = dateFromTimestamp(e.timestamp);
     const rec = byDate.get(d);
     if (rec) {
       rec.lastTs = Math.max(rec.lastTs, new Date(e.timestamp).getTime());
@@ -103,8 +104,8 @@ export async function generateDaily(
     const apiConfig = resolveAuxiliaryApiConfig("complexMemoryApiConfigId");
     if (!apiConfig) return { success: false, error: "未配置复杂记忆生成 API" };
 
-    const dayTimeline = loadNativeTimeline(characterId).filter((e) => e.timestamp.slice(0, 10) === date);
-    const dayEvents = (await loadEvents(characterId)).filter((e) => e.timestamp.slice(0, 10) === date);
+    const dayTimeline = loadNativeTimeline(characterId).filter((e) => dateFromTimestamp(e.timestamp) === date);
+    const dayEvents = (await loadEvents(characterId)).filter((e) => dateFromTimestamp(e.timestamp) === date);
     const [core, activePeriods] = await Promise.all([getCurrentCoreView(characterId), loadActivePeriods(characterId)]);
 
     const timelineText = formatTimelineForSummarization(dayTimeline)?.eventsText ?? "";
@@ -131,13 +132,23 @@ export async function generateDaily(
       worldContext: ctx.worldContext,
       length: String(config.dailyTargetLength),
       rollingAppendMax: String(config.rollingAppendMax),
-    });
+    }, date);
 
     const result = await simpleLLMCall(
       apiConfig,
       [{ role: "user", content: prompt }],
       { temperature: 0.4, label: `复杂记忆·日记·${characterName}` },
     );
+    // 投喂审计：记录本次日记生成实际发给模型的完整 prompt
+    pushFeedAudit({
+      characterId,
+      characterName,
+      kind: "daily",
+      date,
+      prompt,
+      response: result.content ?? (result.error ?? ""),
+      model: apiConfig.defaultModel,
+    });
     if (!result.content) return { success: false, error: result.error || "LLM 返回空内容" };
 
     const parsed = parseDailyJson(result.content);

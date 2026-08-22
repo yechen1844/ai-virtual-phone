@@ -24,7 +24,8 @@ import {
   renderCoreEntriesText,
 } from "./storage";
 import { mirrorCoreEntriesToFloat } from "./mirror";
-import { getUserName, capSourceMaterials } from "./utils";
+import { getUserName, capSourceMaterials, dateFromTimestamp } from "./utils";
+import { pushFeedAudit } from "./feed-audit";
 import { buildGenerationContext } from "./context-builder";
 import type { ComplexCoreEntry, ComplexCoreSnapshot, CoreCategory, CoreTrigger } from "./types";
 
@@ -176,6 +177,15 @@ async function generateCoreEntries(
     temperature: 0.3,
     label: `复杂记忆·核心·${characterName}`,
   });
+  // 投喂审计：记录本次核心生成实际发给模型的完整 prompt
+  pushFeedAudit({
+    characterId,
+    characterName,
+    kind: "core",
+    prompt,
+    response: result.content ?? (result.error ?? ""),
+    model: apiConfig.defaultModel,
+  });
   if (!result.content) return { success: false, error: result.error || "LLM 返回空内容" };
   if (result.wasTruncated) return { success: false, error: "核心记忆生成疑似被截断，已取消入库" };
 
@@ -250,7 +260,7 @@ export async function bootstrapCoreMemory(
     const persona = getCharacter(characterId).persona;
     const materials: string[] = [];
     if (persona.trim()) materials.push(`[人设]\n${persona}`);
-    for (const e of events) materials.push(`[事件 ${e.timestamp.slice(0, 10)}] ${e.content}`);
+    for (const e of events) materials.push(`[事件 ${dateFromTimestamp(e.timestamp)}] ${e.content}`);
     for (const d of dailies) materials.push(`[日记 ${d.date}] ${d.content}`);
     for (const m of floatLongTerm) materials.push(`[长期记忆] ${m.content}`);
     const newMaterials = materials.slice(-40).join("\n\n");

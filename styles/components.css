@@ -3599,6 +3599,32 @@
   margin-left: auto;
 }
 
+/* 记忆投喂双语内容 · 三态（双语 / 仅原文 / 仅译文） */
+.feed-mode-seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 6px;
+  background: var(--c-bg-soft, rgba(0, 0, 0, 0.05));
+}
+.feed-mode-btn {
+  min-width: 48px;
+  padding: 3px 8px;
+  border: none;
+  border-radius: 5px;
+  font-size: calc(11px * var(--app-text-scale, 1));
+  line-height: 1.4;
+  color: var(--c-text-soft, var(--c-text));
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.feed-mode-btn.is-active {
+  background: var(--c-accent, var(--c-primary, #4a6cf7));
+  color: #fff;
+  font-weight: 600;
+}
+
 .menu-group-desc {
   margin: 0;
   padding: 8px 4px 0;
@@ -5874,6 +5900,34 @@
   color: var(--c-text);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.cm-audit-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cm-audit-label {
+  font-size: calc(11px*var(--app-text-scale,1));
+  color: var(--c-text-2, #8a8f99);
+  font-weight: 600;
+}
+
+.cm-audit-pre {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--c-panel-bg-2, #1a1d24);
+  border: 1px solid var(--c-panel-border);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: calc(12px*var(--app-text-scale,1));
+  line-height: 1.6;
+  color: var(--c-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 520px;
+  overflow: auto;
 }
 
 .cm-status-dot {

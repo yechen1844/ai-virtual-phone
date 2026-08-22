@@ -29,6 +29,32 @@ export function dateString(offsetDays: number): string {
   return `${y}-${m}-${day}`;
 }
 
+/** 从任意时间戳提取本地日历日期（YYYY-MM-DD）。
+ * 聊天消息 createdAt 为 UTC ISO（new Date().toISOString()，尾缀 Z），若直接 slice(0,10)
+ * 会把本地凌晨前后的消息归到前一个 UTC 日，导致「8月15」这类错位时间线。
+ * 统一按本地时区归日，与 dateString()/today 口径一致。 */
+export function dateFromTimestamp(timestamp: string): string {
+  const bare = /^\d{4}-\d{2}-\d{2}$/.exec(timestamp ?? "");
+  if (bare) return bare[0];
+  const dt = new Date(timestamp);
+  if (Number.isNaN(dt.getTime())) return (timestamp ?? "").slice(0, 10);
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const day = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** 把时间戳格式化为本地日期时间字符串（YYYY-MM-DD HH:mm）。
+ * 给模型展示「时间跨度 / 事件标签」时避免暴露 UTC 尾缀 Z，防止模型把日期写错或来回换算。 */
+export function formatLocalDateTime(timestamp: string): string {
+  const bare = /^\d{4}-\d{2}-\d{2}$/.exec(timestamp ?? "");
+  if (bare) return bare[0];
+  const dt = new Date(timestamp);
+  if (Number.isNaN(dt.getTime())) return (timestamp ?? "").slice(0, 16);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+}
+
 /** 提取文本中第一个 { ... } JSON 对象（容忍 markdown 代码围栏与前后说明文字）。 */
 export function extractJsonObject(text: string): string | null {
   const cleaned = text
