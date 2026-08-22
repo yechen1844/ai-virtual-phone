@@ -199,6 +199,7 @@ export type ComplexMemoryConfig = {
   // 调度器
   maxParallel: number;               // 2：全角色并行检查并发上限
   retryCount: number;                // 3：任务失败静默重试次数（指数退避）
+  autoGenerationEnabled: boolean;    // 后台自动补生成（日记/核心/周期）开关；关闭后仅手动迁移可生成。迁移进行中会强制跳过。
   // 电压
   voltageDecayFactor: number;        // 0.98（普通日记）
   voltageRecallBoost: number;        // 0.1

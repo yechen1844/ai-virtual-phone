@@ -173,6 +173,7 @@ export function ComplexMemoryExplorer() {
   const [tab, setTab] = useState<TabId>("core");
   const [refreshKey, setRefreshKey] = useState(0);
   const { notice, notify, clear } = useNotice();
+  const [resetBusy, setResetBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -209,6 +210,25 @@ export function ComplexMemoryExplorer() {
 
   const selected = characters.find((c) => c.id === selectedId) ?? null;
 
+  // 彻底重置记忆：常驻全局操作（不依赖迁移状态），删除该角色全部长期记忆、保留短期，不可逆需二次确认。
+  const handleHardReset = async () => {
+    if (!selected || resetBusy) return;
+    const ok = window.confirm(
+      "确定要彻底重置该角色的所有长期记忆吗？\n\n将删除：事件记忆、每日日记、周期、核心记忆、核心快照。\n保留：短期聊天上下文。\n\n此操作不可逆，建议先「导出到 float」备份。",
+    );
+    if (!ok) return;
+    setResetBusy(true);
+    try {
+      await hardResetCharacterMemory(selected.id);
+      notify({ kind: "ok", text: `已彻底重置「${selected.name}」的长期记忆，短期沟通上下文保留` });
+      refresh();
+    } catch (err) {
+      notify({ kind: "err", text: `重置失败：${err instanceof Error ? err.message : String(err)}` });
+    } finally {
+      setResetBusy(false);
+    }
+  };
+
   return (
     <div className="cm-explorer">
       <div className="cm-toolbar">
@@ -221,6 +241,17 @@ export function ComplexMemoryExplorer() {
             ))}
           </Select>
         </div>
+        {selected && (
+          <button
+            type="button"
+            className="ui-btn ui-btn-danger ts-12 cm-toolbar-reset"
+            onClick={() => void handleHardReset()}
+            disabled={resetBusy}
+            title="删除该角色全部长期记忆（事件/日记/周期/核心），保留短期沟通上下文；不可逆，建议先导出到 float 备份"
+          >
+            {resetBusy ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} 重置记忆
+          </button>
+        )}
         <div className="cm-tabs" role="tablist" aria-label="复杂记忆页签">
           {TABS.map(({ id, label, icon: Icon }) => (
             <button
@@ -1657,22 +1688,6 @@ function MigrationTab({ characterId, characterName, notify }: {
     notify({ kind: "ok", text: "迁移记录已重置" });
   };
 
-  const handleHardReset = () => {
-    stopAuto();
-    // 彻底重置：删除全部长期记忆（事件/日记/周期/核心/快照），保留短期记忆。不可逆，二次确认。
-    const ok = window.confirm("确定要彻底重置所有长期记忆吗？\n\n将删除：事件记忆、每日日记、周期、核心记忆、核心快照。\n保留：短期聊天上下文。\n\n此操作不可逆，建议先「导出到 float」备份。");
-    if (!ok) return;
-    setBusy(true);
-    void hardResetCharacterMemory(characterId)
-      .then(() => {
-        setState(null);
-        void loadCounts();
-        notify({ kind: "ok", text: "长期记忆已彻底重置，短期记忆保留" });
-      })
-      .catch((err) => notify({ kind: "err", text: `重置失败：${err instanceof Error ? err.message : String(err)}` }))
-      .finally(() => setBusy(false));
-  };
-
   const handleEstimate = () => {
     setEstimate(estimateMigration(characterId, days));
   };
@@ -1832,9 +1847,6 @@ function MigrationTab({ characterId, characterName, notify }: {
             <button type="button" className="ui-btn ui-btn-danger ts-12" onClick={handleReset}>
               <Trash2 size={14} /> 重置
             </button>
-            <button type="button" className="ui-btn ui-btn-danger ts-12" onClick={handleHardReset} disabled={busy}>
-              <RefreshCw size={14} /> 彻底重置记忆
-            </button>
           </div>
         </div>
       )}
@@ -1952,6 +1964,7 @@ function ConfigTab({ characterId, notify }: { characterId: string; notify: (n: N
         {boolField("rerankEnabled", "重排序")}
         {boolField("silkAssociationEnabled", "丝线联想")}
         {boolField("mirrorToFloatEnabled", "镜像到 float")}
+        {boolField("autoGenerationEnabled", "自动补生成", "后台按需生成日记/周期/核心；关闭后仅一键迁移可生成（迁移进行中自动暂停）")}
       </div>
 
       <div className="cm-section-head" style={{ marginTop: 18 }}>

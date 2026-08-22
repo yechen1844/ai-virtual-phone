@@ -61,6 +61,7 @@ export const DEFAULT_COMPLEX_MEMORY_CONFIG: ComplexMemoryConfig = {
   coreDailyInterval: 7,
   maxParallel: 2,
   retryCount: 3,
+  autoGenerationEnabled: true,
   voltageDecayFactor: 0.98,
   voltageRecallBoost: 0.1,
   voltageEraseThreshold: 0.1,
@@ -147,6 +148,7 @@ function normalizeConfig(parsed: Partial<ComplexMemoryConfig>): ComplexMemoryCon
     coreDailyInterval: num(parsed.coreDailyInterval, d.coreDailyInterval, 1, 100),
     maxParallel: num(parsed.maxParallel, d.maxParallel, 1, 10),
     retryCount: num(parsed.retryCount, d.retryCount, 0, 10),
+    autoGenerationEnabled: bool(parsed.autoGenerationEnabled, d.autoGenerationEnabled),
     voltageDecayFactor: num(parsed.voltageDecayFactor, d.voltageDecayFactor, 0.5, 1),
     voltageRecallBoost: num(parsed.voltageRecallBoost, d.voltageRecallBoost, 0, 1),
     voltageEraseThreshold: num(parsed.voltageEraseThreshold, d.voltageEraseThreshold, 0.001, 1),
@@ -218,7 +220,12 @@ export function setComplexMemoryEnabled(characterId: string, enabled: boolean): 
     config.enabledCharacters[characterId] = true;
     // 水位线安全锚定：有历史时间线时锚定到当前时刻，杜绝首次回读吞历史
     ensureWatermarkAnchored(characterId);
-    // 首次启用：异步 bootstrap 核心记忆（幂等，已存在则跳过）；失败必须可见，不静默吞掉
+    // 首次启用自动 bootstrap 核心记忆：仅在「自动补生成」开启时进行；关闭时交给一键迁移手动生成
+    if (!config.autoGenerationEnabled) {
+      saveComplexMemoryConfig(config);
+      return;
+    }
+    // 异步 bootstrap 核心记忆（幂等，已存在则跳过）；失败必须可见，不静默吞掉
     void import("./core-builder").then((m) => {
       const name = loadCharacters().find((c) => c.id === characterId)?.name ?? "角色";
       return m.bootstrapCoreMemory(characterId, name).then((res) => {

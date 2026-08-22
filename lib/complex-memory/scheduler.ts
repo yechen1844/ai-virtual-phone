@@ -66,20 +66,28 @@ async function runTaskWithRetry(
 }
 
 async function runCharacterTasks(characterId: string, characterName: string): Promise<void> {
-  // 一键迁移：不再由调度器自动恢复/推进，完全由用户在复杂记忆管理页手动开启并驱动（见 explorer MigrationTab）。
-  // 避免「启动复杂记忆 → 遗留 running 迁移被自动继续」造成用户误以为系统自动开启迁移生成。
-  await runTaskWithRetry(characterName, "日记补生成", async () => {
-    const r = await maybeGenerateDaily(characterId, characterName);
-    return { ok: r.generated || !r.error, error: r.error };
-  });
-  await runTaskWithRetry(characterName, "周期维护", async () => {
-    await runPeriodMaintenance(characterId, characterName);
-    return { ok: true };
-  });
-  await runTaskWithRetry(characterName, "核心记忆检查", async () => {
-    await maybeBootstrapCore(characterId, characterName);
-    return { ok: true };
-  });
+  // 自动补生成开关：被关闭，或正有一键迁移执行中 → 跳过「生成/总结类」后台任务（日记/周期/核心），
+  // 避免自动补生成与手动迁移互相污染时间线与生成逻辑（两者同时跑是时间混乱的根因）。
+  // 电压维护（记忆衰减，非生成）与生成无关，始终运行。
+  const autoPaused =
+    !loadComplexMemoryConfig().autoGenerationEnabled ||
+    loadCharacterState(characterId).migration?.status === "running";
+
+  if (!autoPaused) {
+    await runTaskWithRetry(characterName, "日记补生成", async () => {
+      const r = await maybeGenerateDaily(characterId, characterName);
+      return { ok: r.generated || !r.error, error: r.error };
+    });
+    await runTaskWithRetry(characterName, "周期维护", async () => {
+      await runPeriodMaintenance(characterId, characterName);
+      return { ok: true };
+    });
+    await runTaskWithRetry(characterName, "核心记忆检查", async () => {
+      await maybeBootstrapCore(characterId, characterName);
+      return { ok: true };
+    });
+  }
+
   await runTaskWithRetry(characterName, "电压维护", async () => {
     await maybeRunVoltageMaintenance(characterId);
     return { ok: true };
