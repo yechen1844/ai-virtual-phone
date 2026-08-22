@@ -1,7 +1,7 @@
 // lib/reading-storage.ts — Dexie IndexedDB persistence for Reading feature.
 
 import Dexie from "dexie";
-import type { Book, BookChapter, ReadingProgress, ReadingAnnotation } from "./reading-types";
+import type { Book, BookChapter, ReadingProgress, ReadingAnnotation, ReadingSummary } from "./reading-types";
 import { kvGet, kvSet, registerKvMigration } from "./kv-db";
 import { DEFAULT_READING_BILINGUAL_PROMPT } from "./bilingual-prompt-defaults";
 
@@ -12,6 +12,7 @@ class ReadingDB extends Dexie {
     chapters!: Dexie.Table<BookChapter, string>;
     progress!: Dexie.Table<ReadingProgress, string>;
     annotations!: Dexie.Table<ReadingAnnotation, string>;
+    summaries!: Dexie.Table<ReadingSummary, string>;
     rawFiles!: Dexie.Table<{ bookId: string; data: Blob }, string>;
 
     constructor() {
@@ -35,6 +36,14 @@ class ReadingDB extends Dexie {
             annotations: "id, [bookId+chapterIndex]",
             rawFiles: "bookId",
         });
+        this.version(4).stores({
+            books: "id, createdAt",
+            chapters: "id, bookId, [bookId+index]",
+            progress: "bookId",
+            annotations: "id, [bookId+chapterIndex]",
+            rawFiles: "bookId",
+            summaries: "id, bookId, [bookId+chapterIndex]",
+        });
     }
 }
 
@@ -46,6 +55,7 @@ let _booksCache: Book[] | null = null;
 let _chaptersCache: Map<string, BookChapter[]> = new Map();
 let _progressCache: Map<string, ReadingProgress> = new Map();
 let _annotationsCache: Map<string, ReadingAnnotation[]> = new Map(); // key: bookId:chapterIndex
+let _summariesCache: Map<string, ReadingSummary[]> = new Map(); // key: bookId
 
 const READING_INTERACTION_CONFIG_KEY = "ai_phone_reading_interaction_config_v1";
 registerKvMigration(READING_INTERACTION_CONFIG_KEY);
@@ -84,6 +94,8 @@ export type ReadingInteractionConfig = {
     pdfPreloadRadius: number;
     /** PDF 预加载：开启后阅读时提前渲染后续页，滚动更平滑 */
     pdfPreloadEnabled: boolean;
+    /** 摘要字数上限：达到此字数时触发提炼（压缩为当前的 1/3），默认 5000 */
+    maxSummariesChars: number;
 };
 
 export const DEFAULT_READING_INTERACTION_CONFIG: ReadingInteractionConfig = {
@@ -101,6 +113,7 @@ export const DEFAULT_READING_INTERACTION_CONFIG: ReadingInteractionConfig = {
     pdfZoom: 1,
     pdfPreloadRadius: 3,
     pdfPreloadEnabled: true,
+    maxSummariesChars: 5000,
 };
 
 export async function hydrateReadingStorage(): Promise<void> {
@@ -131,6 +144,7 @@ export async function deleteBook(bookId: string): Promise<void> {
     await db.chapters.where("bookId").equals(bookId).delete();
     await db.progress.delete(bookId);
     await db.annotations.where("[bookId+chapterIndex]").between([bookId, Dexie.minKey], [bookId, Dexie.maxKey]).delete();
+    await db.summaries.where("bookId").equals(bookId).delete();
     await deleteRawFile(bookId).catch(() => {});
     _booksCache = null;
     _booksCache = await db.books.orderBy("createdAt").reverse().toArray();
@@ -140,6 +154,7 @@ export async function deleteBook(bookId: string): Promise<void> {
     for (const key of _annotationsCache.keys()) {
         if (key.startsWith(bookId + ":")) _annotationsCache.delete(key);
     }
+    _summariesCache.delete(bookId);
 }
 
 // ── Chapters ──
@@ -221,6 +236,45 @@ export async function deleteAnnotation(annotationId: string): Promise<void> {
     if (cached) {
         _annotationsCache.set(key, cached.filter((annotation) => annotation.id !== annotationId));
     }
+}
+
+// ── Summaries ──
+
+/** 将 (chapterIndex, paragraphIndex) 编码为线性位置值，用于 distilledUpTo 比较。 */
+export function encodeReadingPosition(chapterIndex: number, paragraphIndex: number): number {
+    return chapterIndex * 100000 + paragraphIndex;
+}
+
+export async function loadSummaries(bookId: string): Promise<ReadingSummary[]> {
+    if (_summariesCache.has(bookId)) return _summariesCache.get(bookId)!;
+    const summaries = await db.summaries.where("bookId").equals(bookId).toArray();
+    summaries.sort((a, b) => {
+        if (a.isDistilled !== b.isDistilled) return a.isDistilled ? -1 : 1; // 提炼摘要在前
+        if (a.chapterIndex !== b.chapterIndex) return a.chapterIndex - b.chapterIndex;
+        return a.startParagraph - b.startParagraph;
+    });
+    _summariesCache.set(bookId, summaries);
+    return summaries;
+}
+
+export async function saveSummary(summary: ReadingSummary): Promise<void> {
+    await db.summaries.put(summary);
+    const cached = _summariesCache.get(summary.bookId);
+    if (cached) {
+        const idx = cached.findIndex(s => s.id === summary.id);
+        if (idx >= 0) cached[idx] = summary;
+        else cached.push(summary);
+        cached.sort((a, b) => {
+            if (a.isDistilled !== b.isDistilled) return a.isDistilled ? -1 : 1;
+            if (a.chapterIndex !== b.chapterIndex) return a.chapterIndex - b.chapterIndex;
+            return a.startParagraph - b.startParagraph;
+        });
+        _summariesCache.set(summary.bookId, cached);
+    }
+}
+
+export function getTotalSummaryChars(summaries: ReadingSummary[]): number {
+    return summaries.reduce((sum, s) => sum + s.content.length, 0);
 }
 
 // ── Reading Interaction Config ──

@@ -1,11 +1,11 @@
 // lib/reading-engine.ts — LLM integration for Reading feature.
 // All prompts go through the preset system via assemblePromptPayload. No extra message push.
 
-import type { Book, BookChapter, ReadingAnnotation } from "./reading-types";
+import type { Book, BookChapter, ReadingAnnotation, ReadingSummary } from "./reading-types";
 import type { ChatSession } from "./chat-storage";
 import { loadChatMessages, pushChatMessage } from "./chat-storage";
 import { loadCharacters } from "./character-storage";
-import { loadReadingInteractionConfig } from "./reading-storage";
+import { loadReadingInteractionConfig, loadSummaries, saveSummary, getTotalSummaryChars, encodeReadingPosition } from "./reading-storage";
 import {
     resolveBinding,
     loadBindingConfig,
@@ -26,6 +26,7 @@ import { retrieveCoreMemoriesForPrompt, retrieveMemoriesForPrompt } from "./memo
 import { formatCoreMemories, formatLongTermMemories } from "./memory-injector";
 import { prepareShortTermContext } from "./short-term-assembler";
 import { previewMessagesForApi, sendLLMRequest } from "./chat-engine";
+import { simpleLLMCall } from "./api-helpers";
 import { DEFAULT_READING_BILINGUAL_PROMPT, resolveBilingualPrompt } from "./bilingual-prompt-defaults";
 
 export type ReadingDiscussAction =
@@ -59,6 +60,7 @@ async function resolveReadingInput(
         chapterTitle: string;
         chapterContent: string;
         annotationHistory: string;
+        readingSummary?: string;
         history?: ReturnType<typeof loadChatMessages>;
     },
 ): Promise<{ input: AssemblerInput; apiConfig: ApiConfig | null; preset: PresetConfig | null } | null> {
@@ -124,6 +126,7 @@ async function resolveReadingInput(
         chapterTitle: options.chapterTitle,
         chapterContent: options.chapterContent,
         annotationHistory: options.annotationHistory,
+        readingSummary: options.readingSummary,
         chatBilingualInstruction: buildReadingBilingualInstruction(
             readingConfig.bilingualTranslationEnabled === true,
             readingConfig.bilingualTranslationPrompt,
@@ -268,7 +271,7 @@ export async function generateAnnotations(
     chapter: BookChapter,
     existingAnnotations: ReadingAnnotation[],
     characterId: string,
-): Promise<ReadingAnnotation[]> {
+): Promise<{ annotations: ReadingAnnotation[]; summary: ReadingSummary | null }> {
     return generateAnnotationBatch(
         book,
         chapter.title,
@@ -288,16 +291,18 @@ export async function generateAnnotationBatch(
     targets: AnnotationTarget[],
     existingAnnotations: ReadingAnnotation[],
     characterId: string,
-): Promise<ReadingAnnotation[]> {
+    readingSummary?: string,
+): Promise<{ annotations: ReadingAnnotation[]; summary: ReadingSummary | null }> {
     const character = loadCharacters().find(c => c.id === characterId);
     if (!character) throw new Error("角色不存在");
-    if (targets.length === 0) return [];
+    if (targets.length === 0) return { annotations: [], summary: null };
 
     const resolved = await resolveReadingInput(characterId, ["reading", "annotate"], {
         bookTitle: book.title,
         chapterTitle: batchTitle,
         chapterContent: formatBatchChapterContent(targets),
         annotationHistory: formatBatchAnnotationHistory(existingAnnotations, targets),
+        readingSummary,
     });
     if (!resolved) throw new Error("未找到 API 配置，请在设置中绑定 API");
 
@@ -313,30 +318,51 @@ export async function generateAnnotationBatch(
         input.userIdentity?.name,
     );
     if (!responseText) throw new Error("API 返回空内容");
-    if (responseText.includes("[无批注]")) return [];
 
-    // Parse [批注:N]...[/批注]
-    const pattern = /\[批注[:：](\d+)\]([\s\S]*?)\[\/批注\]/g;
     const results: ReadingAnnotation[] = [];
-    let match;
-    while ((match = pattern.exec(responseText)) !== null) {
-        const relativeIndex = parseInt(match[1], 10) - 1;
-        const content = match[2].trim();
-        const target = targets[relativeIndex];
-        if (content && target) {
-            results.push({
-                id: `ra_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-                bookId: book.id,
-                chapterIndex: target.chapterIndex,
-                paragraphIndex: target.paragraphIndex,
-                characterId,
-                characterName: character.name,
-                content,
-                createdAt: new Date().toISOString(),
-            });
+
+    if (!responseText.includes("[无批注]")) {
+        // Parse [批注:N]...[/批注]
+        const pattern = /\[批注[:：](\d+)\]([\s\S]*?)\[\/批注\]/g;
+        let match;
+        while ((match = pattern.exec(responseText)) !== null) {
+            const relativeIndex = parseInt(match[1], 10) - 1;
+            const content = match[2].trim();
+            const target = targets[relativeIndex];
+            if (content && target) {
+                results.push({
+                    id: `ra_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                    bookId: book.id,
+                    chapterIndex: target.chapterIndex,
+                    paragraphIndex: target.paragraphIndex,
+                    characterId,
+                    characterName: character.name,
+                    content,
+                    createdAt: new Date().toISOString(),
+                });
+            }
         }
     }
-    return results;
+
+    // Parse <summary>...</summary>
+    let summary: ReadingSummary | null = null;
+    const summaryMatch = responseText.match(/<summary>([\s\S]*?)<\/summary>/i);
+    if (summaryMatch && summaryMatch[1].trim()) {
+        const firstTarget = targets[0];
+        const lastTarget = targets[targets.length - 1];
+        summary = {
+            id: `rs_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            bookId: book.id,
+            chapterIndex: firstTarget.chapterIndex,
+            startParagraph: firstTarget.paragraphIndex,
+            endParagraph: lastTarget.paragraphIndex,
+            content: summaryMatch[1].trim(),
+            isDistilled: false,
+            createdAt: new Date().toISOString(),
+        };
+    }
+
+    return { annotations: results, summary };
 }
 
 export async function previewReadingAnnotationPrompt(
@@ -404,6 +430,7 @@ export async function generateReadingChat(
     book: Book,
     context: ReadingDiscussContext,
     characterId: string,
+    readingSummary?: string,
 ): Promise<string | null> {
     const character = loadCharacters().find(c => c.id === characterId);
     if (!character) return null;
@@ -415,6 +442,7 @@ export async function generateReadingChat(
         chapterTitle: context.chapterTitle,
         chapterContent: context.chapterContent,
         annotationHistory: formatAnnotationActionContext(context.annotations),
+        readingSummary,
         history,
     });
     if (!resolved) return null;
@@ -434,4 +462,113 @@ export async function generateReadingChat(
 
     // Return raw text — caller is responsible for parsing and saving (like chat-room's splitAndSaveAIMessages)
     return responseText;
+}
+
+// ── Reading Summary (情节摘要) ──
+
+/** 格式化摘要文本供注入预设模板。 */
+export function formatReadingSummary(summariesToInject: ReadingSummary[]): string {
+    if (summariesToInject.length === 0) return "";
+    const lines = summariesToInject.map(s => {
+        if (s.isDistilled) return `【前情提要（提炼）】${s.content}`;
+        return `【第${s.chapterIndex + 1}章 · 段落${s.startParagraph + 1}-${s.endParagraph + 1}】${s.content}`;
+    });
+    return `<reading_summary>\n以下是之前阅读内容的情节摘要，帮助你回忆已读过的内容：\n${lines.join("\n")}\n</reading_summary>\n`;
+}
+
+/**
+ * 按当前位置过滤应注入的摘要：
+ * - 普通摘要：endParagraph 在当前位置之前（同章）或 chapterIndex 在当前章之前（跨章）
+ * - 提炼摘要：distilledUpTo < 当前位置时注入（读到提炼覆盖范围之后才注入）
+ *   提炼位置之前的普通摘要不注入（已被提炼覆盖），但保留在存储中不删除
+ */
+export function getSummariesForInjection(
+    allSummaries: ReadingSummary[],
+    chapterIndex: number,
+    paragraphIndex: number,
+): ReadingSummary[] {
+    const currentPos = encodeReadingPosition(chapterIndex, paragraphIndex);
+    const result: ReadingSummary[] = [];
+
+    for (const s of allSummaries) {
+        if (s.isDistilled) {
+            // 提炼摘要：只在当前位置超过其覆盖范围时注入
+            if (s.distilledUpTo !== undefined && currentPos > s.distilledUpTo) {
+                result.push(s);
+            }
+        } else {
+            // 普通摘要：检查是否在当前位置之前
+            const summaryPos = encodeReadingPosition(s.chapterIndex, s.endParagraph);
+            if (summaryPos < currentPos) {
+                // 检查是否被某个提炼摘要覆盖（被覆盖的不注入）
+                const coveredByDistilled = allSummaries.some(
+                    d => d.isDistilled
+                        && d.distilledUpTo !== undefined
+                        && d.distilledUpTo >= summaryPos
+                        && currentPos > d.distilledUpTo,
+                );
+                if (!coveredByDistilled) result.push(s);
+            }
+        }
+    }
+
+    return result;
+}
+
+/** 当摘要总字数超过上限时，提炼为当前的 1/3。保留旧摘要不删除。 */
+export async function distillSummariesIfNeeded(
+    bookId: string,
+    characterId: string,
+    maxChars: number,
+): Promise<ReadingSummary | null> {
+    const summaries = await loadSummaries(bookId);
+    const totalChars = getTotalSummaryChars(summaries);
+    if (totalChars <= maxChars) return null;
+
+    const bindings = loadBindingConfig();
+    const slot = resolveBinding(bindings, characterId, "reading");
+    const apiConfigId = slot.apiConfigId;
+    if (!apiConfigId) return null;
+    const apiConfig = loadApiConfigs().find(c => c.id === apiConfigId);
+    if (!apiConfig) return null;
+
+    const targetChars = Math.floor(totalChars / 3);
+    const summaryText = summaries.map(s => {
+        if (s.isDistilled) return s.content;
+        return `【第${s.chapterIndex + 1}章】${s.content}`;
+    }).join("\n");
+
+    const prompt = `以下是一部长篇小说的阅读摘要记录，按时间顺序排列。请将这些摘要提炼为一份更简洁的版本，总字数约${targetChars}字，保留最重要的情节转折和人物发展，删去次要细节。只输出提炼后的摘要文本，不要输出任何其他内容：\n\n${summaryText}`;
+
+    try {
+        const result = await simpleLLMCall(apiConfig, [
+            { role: "user", content: prompt },
+        ], { label: "阅读摘要·提炼" });
+
+        if (!result.content || result.content.trim().length === 0) return null;
+
+        // 提炼摘要覆盖到最后一条摘要的位置
+        const lastSummary = summaries[summaries.length - 1];
+        const distilledUpTo = lastSummary
+            ? encodeReadingPosition(lastSummary.chapterIndex, lastSummary.endParagraph)
+            : 0;
+
+        const distilled: ReadingSummary = {
+            id: `rs_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            bookId,
+            chapterIndex: -1,
+            startParagraph: -1,
+            endParagraph: lastSummary?.endParagraph ?? -1,
+            content: result.content.trim(),
+            isDistilled: true,
+            distilledUpTo,
+            createdAt: new Date().toISOString(),
+        };
+
+        await saveSummary(distilled);
+        return distilled;
+    } catch (err) {
+        console.warn("[Reading] Summary distillation failed:", err);
+        return null;
+    }
 }

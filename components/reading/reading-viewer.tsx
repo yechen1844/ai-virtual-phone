@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from "react";
-import { Bot, ChevronDown, ChevronRight, Languages, Menu, Minus, PenLine, Rocket, SendHorizontal, X, ZoomIn } from "lucide-react";
+import { Bot, ChevronDown, ChevronRight, FileText, Languages, Menu, Minus, PenLine, Rocket, SendHorizontal, X, ZoomIn } from "lucide-react";
 import {
     loadChapters,
     loadProgress,
@@ -16,8 +16,11 @@ import {
     loadReadingInteractionConfig,
     saveReadingInteractionConfig,
     DEFAULT_READING_INTERACTION_CONFIG,
+    loadSummaries,
+    saveSummary,
+    getTotalSummaryChars,
 } from "@/lib/reading-storage";
-import { generateAnnotationBatch, generateReadingChat, parseReadingDiscussResponse, type ReadingDiscussAction, type ReadingDiscussContext } from "@/lib/reading-engine";
+import { generateAnnotationBatch, generateReadingChat, distillSummariesIfNeeded, formatReadingSummary, getSummariesForInjection, parseReadingDiscussResponse, type ReadingDiscussAction, type ReadingDiscussContext } from "@/lib/reading-engine";
 import { loadChatMessages, pushChatMessage, deleteChatMessage, editChatMessage, loadChatContacts, createOrGetSession, isReadingDiscussMessage } from "@/lib/chat-storage";
 import type { ChatMessage, ChatSession } from "@/lib/chat-storage";
 import { loadCharacters } from "@/lib/character-storage";
@@ -27,7 +30,7 @@ import { ContentDialog } from "@/components/ui/modal";
 import { Toggle } from "@/components/ui/form";
 import { PdfPageRenderer } from "./reading-pdf-viewer";
 import { decodeTxtArrayBuffer, parsePdfPageRange, PDF_PAGES_PER_CHAPTER, parseTxtContent, parseEpubFile } from "@/lib/reading-parser";
-import type { Book, BookChapter, ReadingAnnotation, ReadingProgress } from "@/lib/reading-types";
+import type { Book, BookChapter, ReadingAnnotation, ReadingProgress, ReadingSummary } from "@/lib/reading-types";
 import type { Character } from "@/lib/character-types";
 import { splitBilingualText } from "@/lib/bilingual-text";
 
@@ -683,6 +686,23 @@ export function ReadingViewer({ book, onBack }: Props) {
     useEffect(() => { refreshChatMessages(); }, [refreshChatMessages, companionId]);
 
     const [annotationError, setAnnotationError] = useState<string | null>(null);
+    const [summaries, setSummaries] = useState<ReadingSummary[]>([]);
+    const [showSummaryDialog, setShowSummaryDialog] = useState(false);
+    const [summaryDialogTab, setSummaryDialogTab] = useState<"injected" | "all" | "distilled">("injected");
+
+    const refreshSummaries = useCallback(async () => {
+        const loaded = await loadSummaries(book.id);
+        setSummaries(loaded);
+    }, [book.id]);
+
+    useEffect(() => { refreshSummaries(); }, [refreshSummaries]);
+
+    const getReadingSummaryForContext = useCallback(async (chapterIdx: number, paragraphIdx: number): Promise<string> => {
+        const all = await loadSummaries(book.id);
+        const toInject = getSummariesForInjection(all, chapterIdx, paragraphIdx);
+        return formatReadingSummary(toInject);
+    }, [book.id]);
+
     const loadExistingAnnotationsForItems = useCallback(async (items: ParagraphRef[]) => {
         const chapterIndexes = [...new Set(items.map((item) => item.chapterIndex))];
         const itemKeys = new Set(items.map((item) => `${item.chapterIndex}:${item.paragraphIndex}`));
@@ -858,7 +878,12 @@ export function ReadingViewer({ book, onBack }: Props) {
             // 「本次阅读体验内不重复」由 generatedBatchesRef（内存）保证。
             const existing = await loadExistingAnnotationsForItems(request.items);
 
-            const newAnnotations = await withAnnotationRetry(
+            // 获取当前批次之前的阅读摘要，注入批注上下文
+            const firstItem = request.items[0];
+            const lastItem = request.items[request.items.length - 1];
+            const readingSummaryText = await getReadingSummaryForContext(firstItem.chapterIndex, firstItem.paragraphIndex);
+
+            const batchResult = await withAnnotationRetry(
                 () => generateAnnotationBatch(
                     book,
                     request.title,
@@ -869,22 +894,40 @@ export function ReadingViewer({ book, onBack }: Props) {
                     })),
                     existing,
                     companionId,
+                    readingSummaryText,
                 ),
                 readingConfig.annotationRetryCount > 0 ? readingConfig.annotationRetryCount : 0,
             );
 
             generatedBatchesRef.current.add(batchKey);
 
-            if (newAnnotations.length > 0) {
-                await saveAnnotations(newAnnotations);
+            if (batchResult.annotations.length > 0) {
+                await saveAnnotations(batchResult.annotations);
                 setAnnotations((prev) => {
                     const merged = new Map(prev.map((annotation) => [annotation.id, annotation]));
-                    for (const annotation of newAnnotations) merged.set(annotation.id, annotation);
+                    for (const annotation of batchResult.annotations) merged.set(annotation.id, annotation);
                     return [...merged.values()];
                 });
             } else {
                 setAnnotationError("AI 没有返回批注（可能返回了[无批注]或API调用失败）");
             }
+
+            // 保存一并生成的摘要（按段落范围去重：该批次范围已存在摘要则不重复生成）
+            const isSummaryAlreadyCovered = summaries.some(s =>
+                !s.isDistilled
+                && s.chapterIndex === firstItem.chapterIndex
+                && s.startParagraph <= lastItem.paragraphIndex
+                && s.endParagraph >= firstItem.paragraphIndex,
+            );
+            if (batchResult.summary && !isSummaryAlreadyCovered) {
+                await saveSummary(batchResult.summary);
+                await refreshSummaries();
+                // 检查是否需要提炼
+                const maxChars = readingConfig.maxSummariesChars > 0 ? readingConfig.maxSummariesChars : 5000;
+                await distillSummariesIfNeeded(book.id, companionId, maxChars);
+                await refreshSummaries();
+            }
+
             return true;
         } catch (err) {
             console.error("[Reading] Annotation error:", err);
@@ -895,7 +938,7 @@ export function ReadingViewer({ book, onBack }: Props) {
             annotationInFlightRef.current = false;
             setGenerating(false);
         }
-    }, [book, companionId, loadExistingAnnotationsForItems, readingConfig.annotationRetryCount]);
+    }, [book, companionId, loadExistingAnnotationsForItems, readingConfig.annotationRetryCount, readingConfig.maxSummariesChars, getReadingSummaryForContext, refreshSummaries, summaries]);
 
     const openAnnotationDialog = (mode: AnnotationDialogMode) => {
         const nextSize = annotationBatchSize || (isPdf ? 5 : 50);
@@ -1435,7 +1478,12 @@ export function ReadingViewer({ book, onBack }: Props) {
                 : chapters;
             const discussContext = buildDiscussContext(sourceChapters);
             if (!discussContext) return;
-            const rawReply = await generateReadingChat(session, book, discussContext, companionId);
+            // 注入当前阅读位置之前的摘要
+            const currentChapterIdx = isPdf
+                ? Math.floor((pdfCurrentPage - 1) / PDF_PAGES_PER_CHAPTER)
+                : chapterIndex;
+            const discussSummaryText = await getReadingSummaryForContext(currentChapterIdx, 0);
+            const rawReply = await generateReadingChat(session, book, discussContext, companionId, discussSummaryText);
             if (rawReply) {
                 const { reply, actions } = parseReadingDiscussResponse(rawReply);
                 // Parse like chat: split into parts, extract inner monologue, state values, media
@@ -2326,6 +2374,16 @@ export function ReadingViewer({ book, onBack }: Props) {
                             <PenLine size={22} strokeWidth={1.7} />
                             <span>写批注</span>
                         </button>
+                        <button
+                            type="button"
+                            className="reading-footer-icon-btn"
+                            onClick={() => setShowSummaryDialog(true)}
+                            disabled={summaries.length === 0}
+                            title={summaries.length > 0 ? `查看情节摘要（${getTotalSummaryChars(summaries)}字）` : "暂无摘要"}
+                        >
+                            <FileText size={22} strokeWidth={1.7} />
+                            <span>摘要</span>
+                        </button>
                         {isPdf && (
                             <button
                                 type="button"
@@ -2742,6 +2800,96 @@ export function ReadingViewer({ book, onBack }: Props) {
                                 </p>
                             </section>
                         )}
+                    </div>
+                </ContentDialog>
+            )}
+            {showSummaryDialog && (
+                <ContentDialog
+                    open={showSummaryDialog}
+                    onClose={() => setShowSummaryDialog(false)}
+                    title={`情节摘要（${getTotalSummaryChars(summaries)}字 / 上限${readingConfig.maxSummariesChars}字）`}
+                    maxWidth={600}
+                >
+                    <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.75rem" }}>
+                        {(["injected", "all", "distilled"] as const).map(tab => (
+                            <button
+                                key={tab}
+                                type="button"
+                                onClick={() => setSummaryDialogTab(tab)}
+                                style={{
+                                    padding: "0.25rem 0.75rem",
+                                    borderRadius: "0.375rem",
+                                    border: "1px solid var(--c-border)",
+                                    background: summaryDialogTab === tab ? "var(--c-accent)" : "transparent",
+                                    color: summaryDialogTab === tab ? "#fff" : "var(--c-text-2)",
+                                    fontSize: "0.8125rem",
+                                    cursor: "pointer",
+                                }}
+                            >
+                                {tab === "injected" ? "当前注入" : tab === "all" ? "全部摘要" : "提炼记录"}
+                            </button>
+                        ))}
+                    </div>
+                    <div style={{ maxHeight: "55vh", overflowY: "auto" }}>
+                        {(() => {
+                            const currentChapterIdx = isPdf
+                                ? Math.floor((pdfCurrentPage - 1) / PDF_PAGES_PER_CHAPTER)
+                                : chapterIndex;
+                            let displaySummaries: ReadingSummary[] = [];
+                            if (summaryDialogTab === "injected") {
+                                displaySummaries = getSummariesForInjection(summaries, currentChapterIdx, 0);
+                            } else if (summaryDialogTab === "distilled") {
+                                displaySummaries = summaries.filter(s => s.isDistilled);
+                            } else {
+                                displaySummaries = summaries;
+                            }
+
+                            if (displaySummaries.length === 0) {
+                                return (
+                                    <p style={{ color: "var(--c-text-2)", textAlign: "center", padding: "2rem 0" }}>
+                                        {summaryDialogTab === "injected"
+                                            ? "当前位置没有需要注入的摘要。"
+                                            : summaryDialogTab === "distilled"
+                                                ? "尚未发生过提炼。"
+                                                : "还没有生成摘要。批注完成后会自动生成情节摘要。"}
+                                    </p>
+                                );
+                            }
+
+                            return displaySummaries.map(s => (
+                                <div
+                                    key={s.id}
+                                    style={{
+                                        padding: "0.75rem",
+                                        marginBottom: "0.5rem",
+                                        borderRadius: "0.5rem",
+                                        background: "var(--c-bg-2)",
+                                        border: s.isDistilled
+                                            ? "1px solid var(--c-accent)"
+                                            : "1px solid var(--c-border)",
+                                    }}
+                                >
+                                    <div style={{
+                                        fontSize: "0.75rem",
+                                        color: "var(--c-text-2)",
+                                        marginBottom: "0.25rem",
+                                        display: "flex",
+                                        justifyContent: "space-between",
+                                        alignItems: "center",
+                                    }}>
+                                        <span>
+                                            {s.isDistilled
+                                                ? `前情提要（提炼）· 覆盖到第${Math.floor((s.distilledUpTo ?? 0) / 100000) + 1}章`
+                                                : `第${s.chapterIndex + 1}章 · 段落${s.startParagraph + 1}-${s.endParagraph + 1}`}
+                                        </span>
+                                        <span>{s.content.length}字</span>
+                                    </div>
+                                    <div style={{ fontSize: "0.875rem", lineHeight: 1.6, color: "var(--c-text)" }}>
+                                        {s.content}
+                                    </div>
+                                </div>
+                            ));
+                        })()}
                     </div>
                 </ContentDialog>
             )}

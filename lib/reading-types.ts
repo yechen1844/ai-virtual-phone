@@ -49,3 +49,24 @@ export type ReadingAnnotation = {
     content: string;
     createdAt: string;
 };
+
+/** 阅读摘要：批注时一并生成的情节概要，注入后续批注/讨论上下文以防失忆。 */
+export type ReadingSummary = {
+    id: string;
+    bookId: string;
+    /** 章节序号；提炼摘要覆盖多章时为 -1 */
+    chapterIndex: number;
+    /** 本批起始段落序号 */
+    startParagraph: number;
+    /** 本批结束段落序号 */
+    endParagraph: number;
+    /** ~150 字情节摘要 */
+    content: string;
+    /** 是否为提炼后的摘要 */
+    isDistilled: boolean;
+    /** 提炼摘要覆盖到的最后位置（chapterIndex * 100000 + endParagraph）；仅 isDistilled 时有值。
+     *  注入条件：当前位置 > distilledUpTo 时才注入提炼摘要。
+     *  提炼位置之前的普通摘要不注入（被提炼覆盖），但保留在存储中。 */
+    distilledUpTo?: number;
+    createdAt: string;
+};

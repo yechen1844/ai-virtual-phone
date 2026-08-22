@@ -303,6 +303,25 @@ export function ReadingInteractionDialog({ onClose }: Props) {
                         <span>提示：一次渲染页数过少时，滑动到未渲染的页会反复渲染，造成闪烁卡顿；调大并开启预加载可缓解。缩放率调大后一页更接近一屏。</span>
                     </p>
                 </section>
+                <section className="reading-settings-section">
+                    <h4 className="reading-settings-section-title">情节摘要</h4>
+                    <div className="reading-settings-inline-note">
+                        <span>摘要字数上限（达到后自动提炼为 1/3）</span>
+                        <span>{config.maxSummariesChars > 0 ? config.maxSummariesChars : 5000} 字</span>
+                    </div>
+                    <input
+                        type="range"
+                        className="w-full my-1"
+                        min={2000}
+                        max={20000}
+                        step={500}
+                        value={config.maxSummariesChars > 0 ? config.maxSummariesChars : 5000}
+                        onChange={(e) => setConfig((prev) => ({ ...prev, maxSummariesChars: Number(e.target.value) }))}
+                    />
+                    <p className="reading-settings-inline-note">
+                        <span>批注时一并生成 ~150 字情节摘要，注入后续批注和讨论的上下文。当摘要总字数达到上限时，自动提炼为当前的 1/3，保留关键情节。旧摘要保留存储但不注入。</span>
+                    </p>
+                </section>
             </div>
         </ContentDialog>
     );

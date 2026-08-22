@@ -6,7 +6,7 @@ import type { PresetConfig } from "./settings-types";
 import { getCheckPhonePromptTags } from "./checkphone-config";
 
 export const BUILTIN_PRESET_ID = "builtin_default_v1";
-export const BUILTIN_PRESET_VERSION = 260; // 升版本会用出厂内容重写用户的内置预设副本（自定义会丢），非必要不升
+export const BUILTIN_PRESET_VERSION = 261; // 升版本会用出厂内容重写用户的内置预设副本（自定义会丢），非必要不升
 
 export function createBuiltinPreset(): PresetConfig {
     const now = Date.now();
@@ -3846,6 +3846,7 @@ export function createBuiltinPreset(): PresetConfig {
                     "你正在和{{user}}一起阅读电子书「{{bookTitle}}」。",
                     "当前章节：{{chapterTitle}}",
                     "",
+                    "{{readingSummary}}",
                     "以下是当前章节的内容（每段前有序号）：",
                     "{{chapterContent}}",
                     "</reading_context>",
@@ -3865,6 +3866,8 @@ export function createBuiltinPreset(): PresetConfig {
                     "- 可以吐槽、感叹、分析、联想、共情、提问，但不要复述原文",
                     "- 如果这章内容确实没什么值得评论的，输出 [无批注]",
                     "- 禁止用星号（*）或括号包裹动作描写、神态描写或旁白",
+                    "",
+                    "最后，用 <summary>150字左右的情节摘要</summary> 输出本批内容的情节概要，只记录关键事件和人物动态，不要评论或分析。",
                     "{{chatBilingualInstruction}}",
                     "</reading_instruction>",
                 ].join("\n"),
@@ -3882,6 +3885,7 @@ export function createBuiltinPreset(): PresetConfig {
                     "你正在和{{user}}一起阅读电子书「{{bookTitle}}」。",
                     "当前章节：{{chapterTitle}}",
                     "",
+                    "{{readingSummary}}",
                     "以下是用户当前阅读位置附近的正文（每段前使用真实段落序号）：",
                     "{{chapterContent}}",
                     "",
