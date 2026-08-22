@@ -704,6 +704,7 @@ function ApiLogViewer({ onBack }: { onBack: () => void }) {
                                                 </div>
                                                 <div className="menu-desc mt-1 flex gap-3 flex-wrap">
                                                     {log.model && <span>Model: {log.model}</span>}
+                                                    {log.durationMs !== undefined && <span>耗时 {(log.durationMs / 1000).toFixed(1)}s</span>}
                                                     {log.usage && (
                                                         <span>Tokens: {log.usage.prompt_tokens ?? "—"} / {log.usage.completion_tokens ?? "—"} / {log.usage.total_tokens ?? "—"}</span>
                                                     )}

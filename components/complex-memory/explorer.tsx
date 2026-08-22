@@ -16,6 +16,7 @@ import {
   Download,
   Edit3,
   Flame,
+  Languages,
   Layers,
   ListTree,
   Loader2,
@@ -119,6 +120,8 @@ import type {
   MigrationState,
 } from "@/lib/complex-memory/types";
 import { getFeedAudit, clearFeedAudit, type FeedAuditEntry, type FeedAuditKind } from "@/lib/complex-memory/feed-audit";
+import { translateMemoryText } from "@/lib/complex-memory/memory-translate";
+import { runPeriodThinking, type PeriodThinkResult, type PeriodThinkNew } from "@/lib/complex-memory/period-thinking";
 
 const ACCENT = "#2F9E97";
 
@@ -334,6 +337,39 @@ function SourceMaterialsView({ materials }: { materials?: string }) {
   );
 }
 
+// ── 记忆翻译查看（原文 ↔ 译文切换，仅展示，不写库、不改动原文、不参与投喂） ──
+function Translatable({ text, textClass }: { text: string; textClass?: string }) {
+  const [busy, setBusy] = useState(false);
+  const [translated, setTranslated] = useState("");
+  const [show, setShow] = useState(false);
+  const [error, setError] = useState("");
+
+  const toggle = async () => {
+    if (show) { setShow(false); return; }
+    if (translated) { setShow(true); return; }
+    setBusy(true);
+    setError("");
+    const res = await translateMemoryText(text);
+    setBusy(false);
+    if (res.error) { setError(res.error); return; }
+    setTranslated(res.content ?? "");
+    setShow(true);
+  };
+
+  return (
+    <div className="cm-translatable">
+      <div className={textClass}>{show && translated ? translated : text}</div>
+      <div className="cm-translate-row">
+        <button type="button" className="ui-btn ui-btn-ghost ts-12 cm-translate-btn" onClick={toggle} disabled={busy} title="译为中文查看（不写入记忆，不改动原文）">
+          {busy ? <Loader2 size={13} className="animate-spin" /> : <Languages size={13} />}
+          {show ? "显示原文" : "译为中文"}
+        </button>
+        {error && <span className="cm-meta-text cm-translate-err" title={error}>翻译失败</span>}
+      </div>
+    </div>
+  );
+}
+
 function CoreTab({ characterId, characterName, notify, refresh }: {
   characterId: string;
   characterName: string;
@@ -533,7 +569,7 @@ function CoreTab({ characterId, characterName, notify, refresh }: {
                 <div className="cm-entry-group-title">{CORE_CATEGORY_LABEL[cat]}</div>
                 {list.map((e) => (
                   <div key={e.id} className="cm-entry-item">
-                    <span className="cm-entry-text">{e.text}</span>
+                    <Translatable text={e.text} textClass="cm-entry-text" />
                     <span className="cm-entry-actions">
                       <button type="button" className="ui-btn ui-btn-ghost ts-12" onClick={() => startEdit(e)} disabled={busy}>
                         <Edit3 size={13} /> 编辑
@@ -783,7 +819,7 @@ function DailyTab({ characterId, characterName, notify, refresh }: {
                 <span className="cm-section-title">{selectedDaily.date}{selectedDaily.special === true && <span className="cm-special-badge">★</span>}</span>
                 <span className="cm-meta-text">情绪 {selectedDaily.emotionVector.valence.toFixed(2)} / {selectedDaily.emotionVector.arousal.toFixed(2)}</span>
               </div>
-              <div className="cm-daily-content">{selectedDaily.content}</div>
+              <Translatable text={selectedDaily.content} textClass="cm-daily-content" />
               <div className="cm-card-actions">
                 <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => void handleToggleSpecial(selectedDaily)}>
                   <Flame size={14} /> {selectedDaily.special === true ? "取消特殊" : "标记特殊"}
@@ -825,11 +861,11 @@ function DailyTab({ characterId, characterName, notify, refresh }: {
                       </div>
                     </>
                   ) : (
-                    <>
-                      <div className="cm-daily-content">{d.content}</div>
-                      <SourceMaterialsView materials={d.sourceMaterials} />
-                      <div className="cm-card-actions">
-                        <span className="cm-meta-text">情绪 {d.emotionVector.valence.toFixed(2)} / {d.emotionVector.arousal.toFixed(2)}</span>
+                      <>
+                        <Translatable text={d.content} textClass="cm-daily-content" />
+                        <SourceMaterialsView materials={d.sourceMaterials} />
+                        <div className="cm-card-actions">
+                          <span className="cm-meta-text">情绪 {d.emotionVector.valence.toFixed(2)} / {d.emotionVector.arousal.toFixed(2)}</span>
                         <span className="cm-spacer" />
                         <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => void handleToggleSpecial(d)}>
                           <Flame size={14} /> {d.special === true ? "取消特殊" : "标记特殊"}
@@ -861,6 +897,7 @@ function PeriodTab({ characterId, characterName, notify, refresh }: {
   refresh: () => void;
 }) {
   const [periods, setPeriods] = useState<ComplexPeriod[]>([]);
+  const [dailies, setDailies] = useState<ComplexDaily[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // 周期手动化 + 时间轴（M6）
@@ -875,9 +912,17 @@ function PeriodTab({ characterId, characterName, notify, refresh }: {
   const [summaryDraft, setSummaryDraft] = useState("");
   const [briefForId, setBriefForId] = useState<string | null>(null);
   const [briefDraft, setBriefDraft] = useState("");
+  // 周期思考（多选日记 → 模型综合判定是否开启长期事件）
+  const [showThink, setShowThink] = useState(false);
+  const [thinkSelected, setThinkSelected] = useState<Set<string>>(new Set());
+  const [thinkBusy, setThinkBusy] = useState(false);
+  const [thinkResult, setThinkResult] = useState<PeriodThinkResult | null>(null);
+  const [thinkError, setThinkError] = useState("");
 
   const load = useCallback(async () => {
-    setPeriods(await loadPeriods(characterId));
+    const [ps, ds] = await Promise.all([loadPeriods(characterId), loadDailies(characterId)]);
+    setPeriods(ps);
+    setDailies(ds);
   }, [characterId]);
 
   useEffect(() => {
@@ -934,6 +979,52 @@ function PeriodTab({ characterId, characterName, notify, refresh }: {
     await load();
   };
 
+  // ── 周期思考：多选日记 → 模型综合判定是否开启长期事件 ──
+  const toggleThink = () => {
+    setShowThink((v) => {
+      const next = !v;
+      if (!next) { setThinkResult(null); setThinkError(""); }
+      return next;
+    });
+  };
+
+  const toggleThinkDate = (date: string) => {
+    setThinkSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(date)) next.delete(date);
+      else next.add(date);
+      return next;
+    });
+  };
+
+  const handleThink = async () => {
+    if (thinkSelected.size === 0) { setThinkError("请先选中至少一天日记"); return; }
+    setThinkBusy(true);
+    setThinkError("");
+    setThinkResult(null);
+    const res = await runPeriodThinking(characterId, characterName, [...thinkSelected]);
+    setThinkBusy(false);
+    if (!res.success) {
+      setThinkError(res.error ?? "周期思考失败");
+      return;
+    }
+    setThinkResult(res.result ?? { newPeriods: [], existing: [] });
+  };
+
+  const handleCreateFromThink = async (np: PeriodThinkNew) => {
+    setBusy(true);
+    const start = [...thinkSelected].sort()[0] ?? "";
+    const res = await createPeriodManual(characterId, np.title, start, null);
+    setBusy(false);
+    if (res.success) {
+      notify({ kind: "ok", text: `周期「${np.title}」已创建（起始 ${start}）` });
+      await load();
+      refresh();
+    } else {
+      notify({ kind: "err", text: res.error ?? "创建失败" });
+    }
+  };
+
   const statusLabel: Record<ComplexPeriod["status"], string> = { active: "进行中", stabilized: "已稳定", archived: "已归档" };
 
   // 时间轴：以最早周期起点为左端，今天为右端
@@ -966,6 +1057,9 @@ function PeriodTab({ characterId, characterName, notify, refresh }: {
             <button type="button" className={`cm-view-btn ${viewMode === "list" ? "is-active" : ""}`} onClick={() => setViewMode("list")}>列表</button>
             <button type="button" className={`cm-view-btn ${viewMode === "timeline" ? "is-active" : ""}`} onClick={() => setViewMode("timeline")}>时间轴</button>
           </div>
+          <button type="button" className={`ui-btn ts-12 ${showThink ? "ui-btn-primary" : "ui-btn-outline"}`} onClick={toggleThink} title="选中若干天日记，让模型综合判定这段时间是否开启了新的长期事件（周期）">
+            <Brain size={14} /> 周期思考
+          </button>
           <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => setShowCreate((v) => !v)}>
             <Plus size={14} /> 新建周期
           </button>
@@ -989,6 +1083,72 @@ function PeriodTab({ characterId, characterName, notify, refresh }: {
               {busy ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} 创建
             </button>
           </div>
+        </div>
+      )}
+
+      {showThink && (
+        <div className="cm-card cm-think-period">
+          <div className="cm-think-head">
+            <span className="cm-section-title">周期思考</span>
+            <span className="cm-meta-text">选中若干天日记，让模型结合人设/规则词/user 人设/核心记忆，综合判定这段时间是否开启了新的长期事件（周期）。</span>
+          </div>
+          <div className="cm-think-days">
+            <div className="cm-think-day-list">
+              {[...dailies].sort((a, b) => b.date.localeCompare(a.date)).map((d) => (
+                <button
+                  key={d.id}
+                  type="button"
+                  className={`cm-think-day ${thinkSelected.has(d.date) ? "is-selected" : ""}`}
+                  onClick={() => toggleThinkDate(d.date)}
+                >
+                  {thinkSelected.has(d.date) ? "✓ " : ""}{d.date}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="cm-card-actions">
+            <span className="cm-meta-text">已选 {thinkSelected.size} 天（最多 40）</span>
+            <span className="cm-spacer" />
+            <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => { setThinkSelected(new Set()); setThinkResult(null); setThinkError(""); }}>
+              <RotateCcw size={14} /> 清空
+            </button>
+            <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={() => void handleThink()} disabled={thinkBusy || thinkSelected.size === 0}>
+              {thinkBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} 开始分析
+            </button>
+          </div>
+          {thinkError && <p className="cm-muted cm-think-error">周期思考失败：{thinkError}</p>}
+          {thinkResult && (
+            <div className="cm-think-result">
+              <div className="cm-think-result-group">
+                <div className="cm-meta-text cm-think-group-title">建议开启的新周期（{thinkResult.newPeriods.length}）</div>
+                {thinkResult.newPeriods.length === 0 && <p className="cm-muted">这段时间未检出值得作为长期事件的新周期。</p>}
+                {thinkResult.newPeriods.map((np, i) => (
+                  <div key={`${np.title}-${i}`} className="cm-think-period-item">
+                    <div className="cm-think-item-head">
+                      <span className="cm-badge">新周期</span>
+                      <strong>{np.title}</strong>
+                    </div>
+                    <p className="cm-meta-text">{np.reason}</p>
+                    <div className="cm-card-actions">
+                      <span className="cm-spacer" />
+                      <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={() => void handleCreateFromThink(np)} disabled={busy}>
+                        <Plus size={14} /> 创建周期
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="cm-think-result-group">
+                <div className="cm-meta-text cm-think-group-title">与进行中周期的关联（{thinkResult.existing.length}）</div>
+                {thinkResult.existing.map((ex, i) => (
+                  <div key={`${ex.title}-${i}`} className="cm-think-period-item">
+                    <div className="cm-think-item-head"><span className="cm-badge cm-badge-soft">已有进度</span><strong>{ex.title}</strong></div>
+                    <p className="cm-meta-text">{ex.note}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1051,7 +1211,7 @@ function PeriodTab({ characterId, characterName, notify, refresh }: {
                     </div>
                   ) : p.summary ? (
                     <div className="cm-period-summary">
-                      {p.summary}
+                      <Translatable text={p.summary} textClass="cm-period-summary" />
                       <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => { setEditingSummaryId(p.id); setSummaryDraft(p.summary); }}>
                         <Edit3 size={14} /> 编辑总结
                       </button>
@@ -1215,7 +1375,7 @@ function EventTab({ characterId, characterName, notify, refresh }: {
                       </>
                     ) : (
                       <>
-                        <div className="cm-event-content">{e.content}</div>
+                        <Translatable text={e.content} textClass="cm-event-content" />
                         <SourceMaterialsView materials={e.sourceMaterials} />
                         <div className="cm-card-actions">
                           <span className="cm-meta-text">情绪 {e.emotion.valence.toFixed(2)} / {e.emotion.arousal.toFixed(2)}</span>

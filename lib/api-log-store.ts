@@ -15,6 +15,8 @@ export type DebugInfo = {
     usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
     /** 模型思维链（reasoning/CoT）原文，独立于回复内容存储，避免被清洗吞掉 */
     reasoning?: string;
+    /** 本次调用的耗时（毫秒，从发起请求到拿到响应/出错） */
+    durationMs?: number;
     /** 调用来源：chat=聊天引擎、background=simpleLLMCall 后台功能（具体功能名看 characterName 标签）、qa=工坊答疑引擎 */
     source?: "chat" | "background" | "qa";
     /** 归属通道：qa 进工坊专用环，其余进底层调用日志环。分流只认这个显式字段，不看角色名 */

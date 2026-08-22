@@ -144,6 +144,8 @@ export async function simpleLLMCall(
     const headers = buildRequestHeaders(config, baseUrl);
     const temperature = options?.temperature ?? 0.7;
     const max_tokens = options?.max_tokens;
+    const startedAt = Date.now();
+    const durationMs = () => Date.now() - startedAt;
 
     try {
         let fetchUrl: string;
@@ -213,6 +215,7 @@ export async function simpleLLMCall(
                 characterName: options?.label,
                 source: "background",
                 model: config.defaultModel,
+                durationMs: durationMs(),
                 messages: messages.map(m => ({ role: m.role, content: m.content })),
                 rawResponse: `[API 错误 ${res.status}] ${errText.slice(0, 2000)}`,
             });
@@ -229,6 +232,7 @@ export async function simpleLLMCall(
             characterName: options?.label,
             source: "background",
             model: config.defaultModel,
+            durationMs: durationMs(),
             messages: messages.map(m => ({ role: m.role, content: m.content })),
             rawResponse: content ?? describeEmptyLLMResponse(data, finishReason, wasTruncated, config),
             usage: extractUsage(data),
@@ -246,6 +250,7 @@ export async function simpleLLMCall(
             characterName: options?.label,
             source: "background",
             model: config.defaultModel,
+            durationMs: durationMs(),
             messages: messages.map(m => ({ role: m.role, content: m.content })),
             rawResponse: `[请求失败] ${err instanceof Error ? err.message : String(err)}`,
         });

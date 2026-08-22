@@ -6618,3 +6618,123 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* ═══════════ 记忆翻译查看（原文 ↔ 译文，仅展示不写库） ═══════════ */
+.cm-translatable {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.cm-entry-item > .cm-translatable {
+  flex: 1;
+}
+
+.cm-translate-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cm-translate-btn {
+  align-self: flex-start;
+  opacity: 0.9;
+}
+
+.cm-translate-err {
+  color: var(--c-danger, #d64545);
+}
+
+/* ═══════════ 周期思考（多选日记 → 综合判定长期事件） ═══════════ */
+.cm-think-period {
+  gap: 12px;
+}
+
+.cm-think-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cm-think-days {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cm-think-day-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 160px;
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--c-panel-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--c-text) 3%, transparent);
+}
+
+.cm-think-day {
+  border: 1px solid var(--c-panel-border);
+  background: color-mix(in srgb, var(--c-text) 4%, transparent);
+  color: var(--c-text);
+  cursor: pointer;
+  padding: 5px 10px;
+  border-radius: 8px;
+  font-size: calc(11px*var(--app-text-scale,1));
+  font-weight: 700;
+  font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.cm-think-day:hover {
+  border-color: color-mix(in srgb, #2F9E97 40%, transparent);
+}
+
+.cm-think-day.is-selected {
+  background: color-mix(in srgb, #2F9E97 16%, transparent);
+  border-color: color-mix(in srgb, #2F9E97 45%, transparent);
+  color: #2F9E97;
+}
+
+.cm-think-error {
+  color: var(--c-danger, #d64545);
+  font-size: calc(11px*var(--app-text-scale,1));
+}
+
+.cm-think-result {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  border-top: 1px dashed var(--c-panel-border);
+  padding-top: 12px;
+}
+
+.cm-think-result-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cm-think-group-title {
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.cm-think-period-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--c-text) 3.5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-text) 8%, transparent);
+}
+
+.cm-think-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

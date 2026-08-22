@@ -352,6 +352,8 @@ type ChatPromptBuildOptions = {
     activateAllWorldBooks?: boolean;
     toolsAllowed?: boolean;
     forceEnableTools?: boolean;
+    /** 预览等只求看结果的场景置 true：跳过复杂记忆重排序（LLM），只做向量召回，避免等一次慢排序 */
+    skipMemoryRerank?: boolean;
 };
 
 function matchesPromptProfileRef(prompt: { identifier: string; name?: string }, refs: Set<string>): boolean {
@@ -1850,6 +1852,7 @@ export async function buildChatPromptMessages(
     if (isComplexMemoryEnabled(character.id)) {
         const bundle = await buildMemoryContextBundle(character.id, character.name, wbActivationContext, {
             shortTermText: recentBlocks.map(b => b.content).filter(Boolean).join("\n"),
+            skipRerank: options?.skipMemoryRerank,
         }).catch(() => null);
         if (bundle) {
             coreMemories = bundle.coreMemory;
@@ -2716,7 +2719,7 @@ export async function previewPromptPayload(
     }
 
     // Use the SAME shared builder as generateChatCompletion
-    const { llmMessages, character, config, preset } = await buildChatPromptMessages(session, effectiveHistory, options);
+    const { llmMessages, character, config, preset } = await buildChatPromptMessages(session, effectiveHistory, { ...options, skipMemoryRerank: true });
 
     const apiMessages = previewMessagesForApi(config, preset, llmMessages);
 
@@ -2777,7 +2780,7 @@ export async function previewPromptRequestSnapshot(
         effectiveHistory = annotated;
     }
 
-    const { llmMessages, character, config, preset, userIdentity, toolsEnabled } = await buildChatPromptMessages(session, effectiveHistory, options);
+    const { llmMessages, character, config, preset, userIdentity, toolsEnabled } = await buildChatPromptMessages(session, effectiveHistory, { ...options, skipMemoryRerank: true });
     const requestMessages = toLlmRequestMessages(llmMessages);
     const enabledTools = toolsEnabled ? getEnabledTools(options?.appId ?? "chat") : [];
     const meta = { characterName: character.name, userName: userIdentity?.name };

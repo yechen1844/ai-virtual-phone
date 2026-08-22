@@ -283,6 +283,8 @@ export type GroupChatPromptBuildOptions = {
     disableTools?: boolean;
     promptProfile?: CustomAppPromptProfile | null;
     apiConfigId?: string;
+    /** 预览等只求看结果的场景置 true：跳过复杂记忆重排序（LLM），只做向量召回 */
+    skipMemoryRerank?: boolean;
 };
 
 async function buildGroupChatPromptMessages(
@@ -351,7 +353,7 @@ async function buildGroupChatPromptMessages(
         let coreMemories = "", longTermMemories = "";
         try {
             if (isComplexMemoryEnabled(charId)) {
-                const bundle = await buildMemoryContextBundle(charId, character.name, wbActivationContext).catch(() => null);
+                const bundle = await buildMemoryContextBundle(charId, character.name, wbActivationContext, { skipRerank: options?.skipMemoryRerank }).catch(() => null);
                 if (bundle) {
                     coreMemories = bundle.coreMemory;
                     longTermMemories = [bundle.fixedEvents, bundle.yesterdayDaily, bundle.specialDateDailies, bundle.activePeriods, bundle.recalled]
@@ -1230,7 +1232,7 @@ export async function previewGroupPromptPayload(
     history: ChatMessage[],
 ): Promise<{ messages: LLMMessage[]; characterName: string; model: string; presetName: string }> {
     // Use the SAME shared builder as generateGroupChatCompletion
-    const { llmMessages, config, preset } = await buildGroupChatPromptMessages(session, history);
+    const { llmMessages, config, preset } = await buildGroupChatPromptMessages(session, history, { skipMemoryRerank: true });
 
     const apiMessages = previewMessagesForApi(config, preset, llmMessages);
 
@@ -1247,7 +1249,7 @@ export async function previewGroupPromptRequestSnapshot(
     history: ChatMessage[],
     options?: GroupChatPromptBuildOptions,
 ): Promise<DebugPromptSnapshot> {
-    const { llmMessages, config, preset, memberNames, enabledTools, userName, appTags } = await buildGroupChatPromptMessages(session, history, options);
+    const { llmMessages, config, preset, memberNames, enabledTools, userName, appTags } = await buildGroupChatPromptMessages(session, history, { ...options, skipMemoryRerank: true });
     const requestMessages = toLlmRequestMessages(llmMessages);
     const meta = { characterName: `群聊:${session.groupName || "群聊"}`, userName };
 

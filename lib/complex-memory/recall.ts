@@ -114,7 +114,7 @@ export async function buildMemoryContextBundle(
   characterId: string,
   characterName: string,
   currentContext: string,
-  options?: { shortTermText?: string },
+  options?: { shortTermText?: string; skipRerank?: boolean },
 ): Promise<MemoryContextBundle> {
   const config = loadComplexMemoryConfig();
 
@@ -159,8 +159,8 @@ export async function buildMemoryContextBundle(
     recalledItems = silkAssociate(recalledItems, periods);
   }
 
-  // ③ 重排序（未配置重排序模型时按向量分截断）
-  const reranked = config.rerankEnabled
+  // ③ 重排序（未配置重排序模型时按向量分截断；预览等只求看结果的场景可跳过，避免等一次 LLM 排序）
+  const reranked = config.rerankEnabled && !options?.skipRerank
     ? await rerankCandidates(recalledItems, currentContext, coreMemory, characterName, config)
     : recalledItems.slice(0, config.rerankKeepMax);
 

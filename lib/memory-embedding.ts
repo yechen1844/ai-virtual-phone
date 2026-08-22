@@ -4,6 +4,7 @@
 import type { ApiConfig } from "./settings-types";
 import type { MemoryEntry, MemorySearchResult } from "./memory-types";
 import { determineBaseUrl, buildRequestHeaders } from "./api-helpers";
+import { pushApiLog } from "./api-log-store";
 
 // ── Provider → Embedding Model Mapping ──
 
@@ -59,6 +60,20 @@ export async function generateEmbedding(
 
     const headers = buildRequestHeaders(apiConfig, baseUrl);
 
+    const startedAt = Date.now();
+    const durationMs = () => Date.now() - startedAt;
+    const log = (rawResponse: string) => {
+        // 向量嵌入调用也进「底层模型调用日志」，方便用户看清每次向量召回的耗时/是否成功
+        pushApiLog({
+            characterName: "复杂记忆·向量嵌入",
+            source: "background",
+            model: embeddingModel,
+            durationMs: durationMs(),
+            messages: [{ role: "user", content: text.slice(0, 500) }],
+            rawResponse,
+        });
+    };
+
     try {
         const res = await fetch(url, {
             method: "POST",
@@ -69,15 +84,27 @@ export async function generateEmbedding(
             }),
         });
         if (!res.ok) {
-            return fail(`API 错误 ${res.status}: ${await res.text()}`);
+            const errText = await res.text().catch(() => "");
+            log(`[API 错误 ${res.status}] ${errText.slice(0, 1000)}`);
+            return fail(`API 错误 ${res.status}: ${errText}`);
         }
         const data = await res.json();
         const embedding = data?.data?.[0]?.embedding;
         if (!Array.isArray(embedding) || embedding.length === 0) {
+            log("接口未返回向量数据");
             return fail("接口未返回向量数据");
         }
+        log(`OK · 向量维度 ${embedding.length}`);
         return embedding;
     } catch (err) {
+        pushApiLog({
+            characterName: "复杂记忆·向量嵌入",
+            source: "background",
+            model: embeddingModel,
+            durationMs: durationMs(),
+            messages: [{ role: "user", content: text.slice(0, 500) }],
+            rawResponse: `[请求失败] ${err instanceof Error ? err.message : String(err)}`,
+        });
         if (options.throwOnError) throw err;
         console.warn("[MemoryEmbedding] fetch error:", err);
         return null;
