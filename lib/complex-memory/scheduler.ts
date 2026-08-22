@@ -66,15 +66,8 @@ async function runTaskWithRetry(
 }
 
 async function runCharacterTasks(characterId: string, characterName: string): Promise<void> {
-  // 迁移驱动：状态为 running 时确保后台驱动循环存在（页面刷新/切换后自动恢复推进，幂等）
-  await runTaskWithRetry(characterName, "迁移驱动", async () => {
-    const { getMigrationState, driveMigration } = await import("./migration");
-    const ms = getMigrationState(characterId);
-    if (ms?.status === "running") {
-      void driveMigration(characterId, characterName);
-    }
-    return { ok: true };
-  });
+  // 一键迁移：不再由调度器自动恢复/推进，完全由用户在复杂记忆管理页手动开启并驱动（见 explorer MigrationTab）。
+  // 避免「启动复杂记忆 → 遗留 running 迁移被自动继续」造成用户误以为系统自动开启迁移生成。
   await runTaskWithRetry(characterName, "日记补生成", async () => {
     const r = await maybeGenerateDaily(characterId, characterName);
     return { ok: r.generated || !r.error, error: r.error };
