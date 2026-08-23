@@ -114,7 +114,7 @@ export async function buildMemoryContextBundle(
   characterId: string,
   characterName: string,
   currentContext: string,
-  options?: { shortTermText?: string; skipRerank?: boolean },
+  options?: { shortTermText?: string; skipRerank?: boolean; maxRecallEntries?: number },
 ): Promise<MemoryContextBundle> {
   const config = loadComplexMemoryConfig();
 
@@ -159,10 +159,11 @@ export async function buildMemoryContextBundle(
     recalledItems = silkAssociate(recalledItems, periods);
   }
 
-  // ③ 重排序（未配置重排序模型时按向量分截断；预览等只求看结果的场景可跳过，避免等一次 LLM 排序）
+  // ③ 重排序（未配置重排序模型时按向量分截断；预览等只求看结果的场景可跳过，避免等一次 LLM 排序；
+  //    非会话场景（自定义 app/阅读等）也跳过重排，且只放行最多 maxRecallEntries 条向量召回结果）
   const reranked = config.rerankEnabled && !options?.skipRerank
     ? await rerankCandidates(recalledItems, currentContext, coreMemory, characterName, config)
-    : recalledItems.slice(0, config.rerankKeepMax);
+    : recalledItems.slice(0, options?.maxRecallEntries ?? config.rerankKeepMax);
 
   // 预算控制：固定注入区优先，召回区按得分从高到低填充
   const fixedTokens =

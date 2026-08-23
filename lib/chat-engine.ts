@@ -1850,9 +1850,13 @@ export async function buildChatPromptMessages(
     let longTermMemories = "";
     let coreMemories = "";
     if (isComplexMemoryEnabled(character.id)) {
+        const isChatSession = resolvedAppId === "chat";
         const bundle = await buildMemoryContextBundle(character.id, character.name, wbActivationContext, {
             shortTermText: recentBlocks.map(b => b.content).filter(Boolean).join("\n"),
-            skipRerank: options?.skipMemoryRerank,
+            // 只在「单聊会话」触发重排（群聊走 group-chat-engine 单独处理）；预览或非会话 app（自定义/阅读等）
+            // 一律跳过重排，且非会话场景只放行最多 6 条向量召回结果，节省副 API 消耗
+            skipRerank: options?.skipMemoryRerank || !isChatSession,
+            maxRecallEntries: isChatSession ? undefined : 6,
         }).catch(() => null);
         if (bundle) {
             coreMemories = bundle.coreMemory;
