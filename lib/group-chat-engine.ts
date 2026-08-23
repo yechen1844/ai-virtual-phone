@@ -285,6 +285,8 @@ export type GroupChatPromptBuildOptions = {
     apiConfigId?: string;
     /** 预览等只求看结果的场景置 true：跳过复杂记忆重排序（LLM），只做向量召回 */
     skipMemoryRerank?: boolean;
+    /** 跳过重排时的向量召回条数上限（默认沿用 rerankKeepMax 配置） */
+    maxRecallEntries?: number;
 };
 
 async function buildGroupChatPromptMessages(
@@ -353,7 +355,10 @@ async function buildGroupChatPromptMessages(
         let coreMemories = "", longTermMemories = "";
         try {
             if (isComplexMemoryEnabled(charId)) {
-                const bundle = await buildMemoryContextBundle(charId, character.name, wbActivationContext, { skipRerank: options?.skipMemoryRerank }).catch(() => null);
+                const bundle = await buildMemoryContextBundle(charId, character.name, wbActivationContext, {
+                    skipRerank: options?.skipMemoryRerank,
+                    maxRecallEntries: options?.maxRecallEntries,
+                }).catch(() => null);
                 if (bundle) {
                     coreMemories = bundle.coreMemory;
                     longTermMemories = [bundle.fixedEvents, bundle.yesterdayDaily, bundle.specialDateDailies, bundle.activePeriods, bundle.recalled]
@@ -1114,6 +1119,9 @@ export async function generateGroupRawCompletion(
             disableTools: true,
             promptProfile: options?.promptProfile,
             apiConfigId: options?.apiConfigId,
+            // 自定义 APP 的多角色补全不属于会话聊天：跳过重排 LLM，向量召回最多 6 条（与单角色自定义 APP 同规则）
+            skipMemoryRerank: true,
+            maxRecallEntries: 6,
         },
     );
     const rawOutput = await sendLLMRequest(config, preset, llmMessages, regexes, {
