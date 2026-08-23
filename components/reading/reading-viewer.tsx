@@ -2378,8 +2378,7 @@ export function ReadingViewer({ book, onBack }: Props) {
                             type="button"
                             className="reading-footer-icon-btn"
                             onClick={() => setShowSummaryDialog(true)}
-                            disabled={summaries.length === 0}
-                            title={summaries.length > 0 ? `查看情节摘要（${getTotalSummaryChars(summaries)}字）` : "暂无摘要"}
+                            title={summaries.length > 0 ? `查看情节摘要（${getTotalSummaryChars(summaries)}字）` : "暂无摘要：完成一次批注后自动生成"}
                         >
                             <FileText size={22} strokeWidth={1.7} />
                             <span>摘要</span>
@@ -2847,13 +2846,23 @@ export function ReadingViewer({ book, onBack }: Props) {
 
                             if (displaySummaries.length === 0) {
                                 return (
-                                    <p style={{ color: "var(--c-text-2)", textAlign: "center", padding: "2rem 0" }}>
-                                        {summaryDialogTab === "injected"
-                                            ? "当前位置没有需要注入的摘要。"
-                                            : summaryDialogTab === "distilled"
-                                                ? "尚未发生过提炼。"
-                                                : "还没有生成摘要。批注完成后会自动生成情节摘要。"}
-                                    </p>
+                                    <div style={{ color: "var(--c-text-2)", textAlign: "center", padding: "2rem 1rem", fontSize: "0.875rem", lineHeight: 1.8 }}>
+                                        {summaryDialogTab === "injected" ? (
+                                            <p>当前位置没有需要注入的摘要。</p>
+                                        ) : summaryDialogTab === "distilled" ? (
+                                            <p>尚未发生过提炼。摘要总字数达到上限后会自动提炼为 1/3。</p>
+                                        ) : summaries.length === 0 ? (
+                                            <>
+                                                <p>还没有生成过摘要。摘要随批注一并生成，不会为旧批注补生成。</p>
+                                                <p style={{ marginTop: "0.5rem" }}>开始方法：重新对当前章节执行一次批注（自动或手动均可）。</p>
+                                                <p style={{ marginTop: "0.5rem", color: "var(--c-warning, #c88719)" }}>
+                                                    注意：若该角色绑定的是复制出来的预设，请先到「预设管理 → 同步条目」把最新的阅读·批注条目同步进来，否则模型不会输出摘要。
+                                                </p>
+                                            </>
+                                        ) : (
+                                            <p>该标签下暂无内容。</p>
+                                        )}
+                                    </div>
                                 );
                             }
 
