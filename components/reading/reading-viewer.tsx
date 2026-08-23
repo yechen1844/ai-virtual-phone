@@ -2805,10 +2805,11 @@ export function ReadingViewer({ book, onBack }: Props) {
             )}
             {showSummaryDialog && (
                 <ContentDialog
-                    open={showSummaryDialog}
-                    onClose={() => setShowSummaryDialog(false)}
                     title={`情节摘要（${getTotalSummaryChars(summaries)}字 / 上限${readingConfig.maxSummariesChars}字）`}
-                    maxWidth={600}
+                    confirmLabel=""
+                    cancelLabel=""
+                    onConfirm={() => setShowSummaryDialog(false)}
+                    onCancel={() => setShowSummaryDialog(false)}
                 >
                     <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.75rem" }}>
                         {(["injected", "all", "distilled"] as const).map(tab => (

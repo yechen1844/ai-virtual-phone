@@ -72,6 +72,7 @@ export class MacroEngine {
     chapterTitle: string = "";
     chapterContent: string = "";
     annotationHistory: string = "";
+    readingSummary: string = "";
     noteWallContext: string = "";
     diaryEntryContext: string = "";
     xiaohongshuFeedContext: string = "";
@@ -225,6 +226,7 @@ export class MacroEngine {
         if (body === "chapterTitle") return this.chapterTitle || "\x00TRIM\x00";
         if (body === "chapterContent") return this.chapterContent || "\x00TRIM\x00";
         if (body === "annotationHistory") return this.annotationHistory || "\x00TRIM\x00";
+        if (body === "readingSummary") return this.readingSummary || "\x00TRIM\x00";
         if (body === "noteWallContext") return this.noteWallContext || "暂无便签";
         if (body === "diaryEntryContext") return this.diaryEntryContext || "暂无日记";
         if (body === "xiaohongshuFeedContext") return this.xiaohongshuFeedContext || "暂无小红书笔记";
@@ -394,7 +396,7 @@ export const STATIC_MACRO_NAMES: ReadonlySet<string> = new Set([
     "phoneAppId", "phoneAppLabel", "phoneSnapshotSummary", "phoneLastRefreshAt",
     // 定居
     "dwellingRoom", "dwellingFurniture", "dwellingItem", "dwellingItemPreview",
-    "bookTitle", "chapterTitle", "chapterContent", "annotationHistory", "noteWallContext", "diaryEntryContext",
+    "bookTitle", "chapterTitle", "chapterContent", "annotationHistory", "readingSummary", "noteWallContext", "diaryEntryContext",
     "xiaohongshuFeedContext", "xiaohongshuUserPostContext", "xiaohongshuCommentContext", "xiaohongshuMentionContext",
     // 访谈杂志
     "interviewTheme", "interviewHostName", "interviewGuests", "interviewGuestCount",

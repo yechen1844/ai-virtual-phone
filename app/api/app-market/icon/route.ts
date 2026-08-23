@@ -39,7 +39,8 @@ export async function GET(request: Request) {
       headers["Netlify-CDN-Cache-Control"] = "public, durable, s-maxage=31536000, immutable";
       headers["Netlify-Vary"] = "query";
     } else headers["Cache-Control"] = "private, max-age=300";
-    return new Response(decoded.bytes, { status: 200, headers });
+    // Buffer 不满足 BodyInit 类型（其 ArrayBufferLike 可能是 SharedArrayBuffer），转成普通 Uint8Array
+    return new Response(new Uint8Array(decoded.bytes), { status: 200, headers });
   } catch (err) {
     return NextResponse.json({ ok: false, error: formatSupabaseRestError(err) }, { status: 500 });
   }

@@ -1856,7 +1856,7 @@ function SyncBuiltinDialog({
     };
 
     return (
-        <BottomSheet open onClose={onCancel} title={`同步内置条目到「${presetName}」`}>
+        <BottomSheet onClose={onCancel} title={`同步内置条目到「${presetName}」`}>
             <div style={{ padding: "0.75rem 0" }}>
                 {missingPrompts.length === 0 ? (
                     <p style={{ color: "var(--c-text-2)", textAlign: "center", padding: "2rem 0" }}>

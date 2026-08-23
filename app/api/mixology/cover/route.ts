@@ -67,7 +67,8 @@ export async function GET(request: Request) {
 
     const decoded = decodeDataUrl(cover);
     if (!decoded) return new Response(null, { status: 404 });
-    return new Response(decoded.bytes, {
+    // Buffer 不满足 BodyInit 类型（其 ArrayBufferLike 可能是 SharedArrayBuffer），转成普通 Uint8Array
+    return new Response(new Uint8Array(decoded.bytes), {
       status: 200,
       headers: {
         ...IMMUTABLE_HEADERS,
