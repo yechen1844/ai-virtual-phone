@@ -829,6 +829,10 @@ const MIX_MATERIAL_FIELDS = {
         description: "filter：清洗规则数组",
     },
     script: { type: "string", description: "mechanism：钩子逻辑纯 JS" },
+    layout: {
+        type: "object",
+        description: "mechanism 选填：摆放对象。slot 挂点：float（默认自由悬浮）/header/inputbar-left/inputbar-right（宿主画图标按钮点击开合面板，配 icon 一两个 emoji）/flow-top/flow-bottom（作为内嵌卡进滚动流）；x/y/w/h 为占画面的百分比，autoHeight 高度随内容",
+    },
     panelHtml: { type: "string", description: "mechanism：常驻界面完整 HTML" },
 };
 

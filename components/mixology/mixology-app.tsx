@@ -162,6 +162,13 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
         toastTimer.current = setTimeout(() => setToast(""), 2200);
     }, []);
 
+    /** 常驻型 toast：上传这类要等一会儿的动作挂着不消失，结束时用定时 toast 顶掉 */
+    const showStickyToast = useCallback((message: string) => {
+        if (toastTimer.current) clearTimeout(toastTimer.current);
+        toastTimer.current = null;
+        setToast(message);
+    }, []);
+
     useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
 
     useEffect(() => {
@@ -387,6 +394,7 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
     const handleShareMaterial = async (material: MixMaterial) => {
         if (sharing) return;
         setSharing(true);
+        showStickyToast(`「${material.name}」上传中…`);
         try {
             if (material.publishedId) {
                 await updateHallMaterial(material.publishedId, material);
@@ -450,10 +458,14 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
             return;
         }
         setSharing(true);
+        showStickyToast(`「${recipe.name}」上传中…`);
         try {
             // 第一步：把自己的材料推上云端——没上架的上架，改过的同步（云端丢失就重新上架）
             for (const material of plan.materials) {
                 if (isMixBuiltinId(material.id) || material.imported) continue;
+                if (!material.publishedId || mixCloudState(material) === "dirty") {
+                    showStickyToast(`「${material.name}」上传中…`);
+                }
                 if (!material.publishedId) {
                     const entry = await shareHallMaterial(material);
                     markMixMaterialSynced(material.id, entry.id);
@@ -480,6 +492,7 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
                         : { id: fresh.find((m) => m.id === material.id)?.publishedId ?? material.publishedId ?? material.id, kind: material.kind, name: material.name };
                 return when ? { ...base, when } : base;
             });
+            showStickyToast(`「${recipe.name}」配方上传中…`);
             const character = plan.character;
             const input = {
                 name: recipe.name,

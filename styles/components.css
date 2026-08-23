@@ -110,6 +110,9 @@
   text-align: center;
   width: 100%;
   overflow-y: auto;
+  /* 显式关掉横轴：overflow-y:auto 会把未声明的横轴也算成 auto，
+     一旦内容超宽整个弹窗就能左右滑（MCP 弹窗请求头行曾触发） */
+  overflow-x: hidden;
   flex: 1;
   min-height: 0;
 }

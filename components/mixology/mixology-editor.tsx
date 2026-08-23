@@ -556,7 +556,7 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
                             style={{ minHeight: 130 }}
                             value={contract}
                             onChange={(e) => setContract(e.target.value)}
-                            placeholder={"例：\n每轮结束后报告下面三行，每行一个字段：\n好感度: 0-100 的整数\n心情: 四个字以内\n此刻在想: 一句话"}
+                            placeholder={"例：\n每轮按下面的分组逐行报告，键名不变：\n【核心】\n好感度: 0-100 整数，括号里注变化与原因，如 62（+3，替我挡了酒）\n关系阶段: 陌生/试探/靠近/纠缠 之一\n【他此刻】\n动作神态: 带细节的完整句，写到小动作\n衣着: 具体到单品与状态\n内心OS: 第一人称一句，20~40 字，可带吐槽\n【小节】\n今日流言: 两三句成段的八卦或传闻"}
                         />
                     </Field>
                     <Field label="渲染代码" hint="必填，HTML+CSS+JS，把上面那段原文画成卡片">
@@ -713,7 +713,7 @@ export function MixMaterialEditor({ kind, initial, onSave, onCancel }: EditorPro
                             style={{ minHeight: 110 }}
                             value={encoreContract}
                             onChange={(e) => setEncoreContract(e.target.value)}
-                            placeholder={"告诉 AI 何时输出、写什么。例：\n仅在剧情出现明显进展或情绪转折时输出：以旁观视角（助理、监控、朋友圈动态等）写一段不超过 80 字的小剧场，第一行标注视角。平淡回合整段省略。"}
+                            placeholder={"告诉 AI 写什么、按什么格式写；小剧场默认每轮都演。例：\n每轮以他朋友圈最新一条动态收尾：第一行「配图」用文字描述画面，第二行正文文案（口吻贴人设），随后一行点赞数，再盖至少 5 条评论楼——各有人名与口吻、有来有回可以歪楼拌嘴，其中一条是盖楼回复。整块十来行、两三百字起步，像一篇完整的帖子，不要三五行敷衍。"}
                         />
                     </Field>
                     <Field label="历史回传" hint="往期轮次的壳内原文要不要回传给 AI；默认只回传最近一轮——格式示范够用，长局不费 token">

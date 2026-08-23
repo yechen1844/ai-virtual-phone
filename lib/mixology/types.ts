@@ -334,6 +334,30 @@ export type MixPanelLayout = {
     z?: number;
     /** 开局时收起（只有 chrome 为 bar 时才有收起这回事） */
     collapsed?: boolean;
+    /** 挂点（见 MIX_PANEL_SLOTS）；不写 = float 自由悬浮，老材料全部落在这档 */
+    slot?: MixPanelSlot;
+    /** 按钮位（header/inputbar-*）的图标：一两个 emoji 或单字，宿主画在按钮上 */
+    icon?: string;
+};
+
+/**
+ * 机括挂点：面板长在对局画面的哪儿。
+ * float（默认）= 自由悬浮层，位置尺寸全由摆放/mix API 说了算；
+ * header / inputbar-left / inputbar-right = 宿主在标题栏或输入栏画一颗图标按钮，
+ *   点击开合面板（按钮由宿主渲染，样式统一、位置精确，沙盒碰不到宿主排版）；
+ * flow-top / flow-bottom = 面板作为一张内嵌卡直接进滚动流（画布之下 / 轮次流末尾），
+ *   随内容滚动，autoHeight 常开，不可拖不可缩。
+ */
+export const MIX_PANEL_SLOTS = ["float", "header", "inputbar-left", "inputbar-right", "flow-top", "flow-bottom"] as const;
+export type MixPanelSlot = (typeof MIX_PANEL_SLOTS)[number];
+
+export const MIX_PANEL_SLOT_LABELS: Record<MixPanelSlot, string> = {
+    float: "自由悬浮",
+    header: "标题栏按钮",
+    "inputbar-left": "输入栏左侧按钮",
+    "inputbar-right": "输入栏右侧按钮",
+    "flow-top": "正文顶部",
+    "flow-bottom": "正文尾部",
 };
 
 /** 拖丢了捡不回来，所以无论怎么拖都至少留这么多在画面里（百分比） */
@@ -381,7 +405,16 @@ export function normalizeMixPanelLayout(value: unknown): MixPanelLayout | undefi
     const z = clampNum(record.z, 0, MIX_PANEL_MAX_Z, 0);
     if (z) layout.z = z;
     if (record.collapsed === true) layout.collapsed = true;
+    if (typeof record.slot === "string" && record.slot !== "float" && (MIX_PANEL_SLOTS as readonly string[]).includes(record.slot)) {
+        layout.slot = record.slot as MixPanelSlot;
+    }
+    if (typeof record.icon === "string" && record.icon.trim()) layout.icon = record.icon.trim().slice(0, 4);
     return layout;
+}
+
+/** 一份摆放实际落在哪个挂点 */
+export function mixPanelSlotOf(layout: MixPanelLayout | undefined): MixPanelSlot {
+    return layout?.slot ?? "float";
 }
 
 /**
@@ -407,6 +440,10 @@ export function mixPanelLayoutOf(material: { layout?: MixPanelLayout; dock?: Mix
 
 /** 详情页上用一行字说清这份摆放 */
 export function mixPanelLayoutSummary(layout: MixPanelLayout): string {
+    const slot = mixPanelSlotOf(layout);
+    if (slot !== "float") {
+        return `${MIX_PANEL_SLOT_LABELS[slot]}${layout.icon ? ` · 图标 ${layout.icon}` : ""}`;
+    }
     const parts = [
         `左 ${layout.x}% · 上 ${layout.y}%`,
         `${layout.w}% × ${layout.autoHeight ? "随内容" : `${layout.h}%`}`,
@@ -606,11 +643,22 @@ export type MixSession = {
      */
     panelBox?: Record<string, MixPanelLayout>;
     /**
+     * 按钮位机括面板的开合状态（materialId → 是否展开），按局记忆。
+     * 只对挂在 header/inputbar-* 的机括有意义；关掉的面板不渲染（重开会重载，
+     * 需要留住的状态放机括存储桶里）。
+     */
+    panelOpen?: Record<string, boolean>;
+    /**
      * 退役的渲染皮（materialId → 渲染 HTML）：局中换小票/尾调那一刻，旧件的
      * 渲染代码快照进来，被盖了戳的历史轮（MixTurn.ticketId/encoreId）按这份
      * 皮回放——旧件之后从酒柜删掉也不受影响。每件只存一份，不逐轮存。
      */
     retiredRender?: Record<string, string>;
+    /**
+     * 回传上下文轮数上限（一轮 = 一次 AI 回复）。不设 = 全部历史回传；
+     * 设了只把最近 N 轮发给模型——只影响请求内容，存储与界面回放永远完整。
+     */
+    historyLimit?: number;
     /**
      * 背景观感微调（对局页右上角亮度按钮）：mask = 蒙版亮度 -40~100（0 为默认
      * 三段蒙版原样，负值在蒙版外再压一层匀黑更暗，100 为完全无蒙版）；

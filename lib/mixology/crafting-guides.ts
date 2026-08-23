@@ -229,7 +229,7 @@ ctx 字段：turnCount 已发生轮数；state 记住的值；store 本机括自
 返回一个普通对象（各项都可省略）：{ text: 改写后的 text, note: 只在这一轮生效的临时提示（≤2000字）, state: 要写入的记住值, store: 覆盖自己的存储 }。
 限制：单次执行 2 秒超时；无网络、碰不到页面；存储上限 100KB。
 
-② 常驻界面（完整 HTML，可选）：跑在沙盒 iframe 里。用 window.MIX_STATE / window.MIX_STORE 读数据，定义 window.onMixSync(state, store) 接收更新；通过 window.mix 请求动作：setStore(obj)、setState(obj)、say(text) 以玩家身份发言、move(x,y) 与 size(w,h)（占对局画面的百分比）、fit(px) 报内容高度、design(px) 设排版基准宽度、drag(bool)/resize(bool)/chrome(bool)/plate(bool)、z(n)、grab() 在自绘标题条上起拖。界面初始无外壳无底板，位置与尺寸请在代码里用 mix.move / mix.size 自己定好。界面里可用的数据只有 MIX_STATE 与 MIX_STORE 两个对象——没有角色名、玩家名这类现成变量，需要就让钩子写进 store 再读；写完自查一遍：用到的每个变量都必须已声明。
+② 常驻界面（完整 HTML，可选）：跑在沙盒 iframe 里。用 window.MIX_STATE / window.MIX_STORE 读数据，定义 window.onMixSync(state, store) 接收更新；通过 window.mix 请求动作：setStore(obj)、setState(obj)、say(text) 以玩家身份发言、move(x,y) 与 size(w,h)（占对局画面的百分比）、fit(px) 报内容高度、design(px) 设排版基准宽度、drag(bool)/resize(bool)/chrome(bool)/plate(bool)、z(n)、grab() 在自绘标题条上起拖。界面初始无外壳无底板，位置与尺寸请在代码里用 mix.move / mix.size 自己定好。除自由悬浮外还有五个挂点（材料的 layout.slot 字段声明，代码里不可改）："header"/"inputbar-left"/"inputbar-right" 三个按钮位——宿主在标题栏或输入栏画一颗图标按钮（图标由 layout.icon 给一两个 emoji），点击开合面板，面板宽度铺满、高度随内容，适合骰子/道具/快捷指令这类召之即来的工具；"flow-top"/"flow-bottom" 两个流内位——面板作为内嵌卡进滚动流（画布之下/最新一轮之下），随内容滚动，适合任务看板、选择器这类跟着剧情走的界面。非悬浮挂点下 move/size/drag/resize/chrome 无效，fit/design/plate 照常；按钮位面板关闭时会被卸载，要留住的状态写进 store。界面里可用的数据只有 MIX_STATE 与 MIX_STORE 两个对象——没有角色名、玩家名这类现成变量，需要就让钩子写进 store 再读；写完自查一遍：用到的每个变量都必须已声明。
 - 美学要求：形态跟着玩法走——一颗胶囊、一条窄边栏、一枚角标、一张卡片，或一块整面的仪表盘都可以。原则只有三条：默认别挡住对话（大面板要能收起或退场）；气质贴合对局，把它当世界里的道具来做（罗盘、签筒、终端、账本），不要做成工程感的调试面板；动效轻、不抢注意力。配色与深色界面协调。
 
 请分段输出：
@@ -291,7 +291,8 @@ name＝材料名；hook＝一句话介绍；tags＝字符串数组；
 rules＝数组 [{"find":"正则本体（不带斜杠定界符）","replace":"替换文本（删除传空串）","mode":"display"|"context"}]。`,
     mechanism: `—— 工具字段对照 ——
 name＝材料名；hook＝一句话介绍；tags＝字符串数组；script＝钩子逻辑纯 JS（可不传）；
-panelHtml＝常驻界面完整 HTML（可不传）；script 与 panelHtml 至少传一个。
+panelHtml＝常驻界面完整 HTML（可不传）；script 与 panelHtml 至少传一个；
+layout＝摆放对象（选填）：{"slot":"float|header|inputbar-left|inputbar-right|flow-top|flow-bottom","icon":"🎲","x":3,"y":62,"w":94,"h":20,"autoHeight":true,…}——slot 不写为自由悬浮；按钮位（header/inputbar-*）配 icon 一两个 emoji，宿主画按钮点击开合；流内位（flow-top/flow-bottom）嵌进滚动流随内容滚动。
 图片细则：机括沙盒完全断网（CSP default-src 'none'），任何外链（含图床 URL）都加载不了，界面素材只能内联。`,
 };
 
