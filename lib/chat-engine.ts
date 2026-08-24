@@ -710,6 +710,7 @@ async function readSseStream(
     response: Response,
     providerKind: ChatCompletionStreamResult["providerKind"],
     callbacks?: ChatCompletionStreamCallbacks,
+    stripTimestamps = true,
 ): Promise<{ content: string; rawResponse: string }> {
     if (!response.body) throw new ChatEngineError("流式响应没有 body。");
     const reader = response.body.getReader();
@@ -717,7 +718,12 @@ async function readSseStream(
     let buffer = "";
     let content = "";
     let rawResponse = "";
-    const contentStripper = createStreamingTimestampStripper();
+    // 时间戳剥离器会一直扣住流尾巴的 64 个字符等括号闭合，流结束才吐出来。
+    // 要求"所见即模型所写"的调用方（独家特调）把它整个关掉：增量来一个字出一个字，
+    // 否则模型在末尾写机括标记行（〔记〕这类）时，整行都压在扣留窗里，看起来像卡死。
+    const contentStripper = stripTimestamps
+        ? createStreamingTimestampStripper()
+        : { push: (text: string) => text, flush: () => "" };
 
     // 容错解析：中转把长 JSON 行切开时做碎片重组，不再静默丢增量（见 sse-json.ts）
     const sseParser = createSseJsonParser();
@@ -775,6 +781,8 @@ export async function sendLLMStreamRequest(
     meta?: { characterName?: string; userName?: string },
     options?: {
         skipOutputRegex?: boolean;
+        /** 不剥幻觉时间戳：流式增量原样直出（不扣尾巴），落库文本与流出的一字不差 */
+        skipTimestampStrip?: boolean;
         includeReasoning?: boolean;
         appId?: string;
         appTags?: string[];
@@ -817,11 +825,11 @@ export async function sendLLMStreamRequest(
                 await (pluginCallbacks ?? callbacks)?.onReasoningDelta?.(text);
             },
         };
-        const { content: streamedContent, rawResponse } = await readSseStream(response, request.providerKind, streamLogCallbacks);
+        const { content: streamedContent, rawResponse } = await readSseStream(response, request.providerKind, streamLogCallbacks, !options?.skipTimestampStrip);
         if (!streamedContent.trim()) {
             throw new ChatEngineError("流式响应没有解析到文本增量。");
         }
-        let rawOutput = stripHallucinatedTimestamps(streamedContent.trim());
+        let rawOutput = options?.skipTimestampStrip ? streamedContent.trim() : stripHallucinatedTimestamps(streamedContent.trim());
         rawOutput = await applyChatPluginLlmResponse(rawOutput, pluginPurpose);
 
         // Store API log entry — mirror sendLLMRequest so streaming calls also show up

@@ -142,7 +142,7 @@ async function runCloudScheduleAction(env, action) {
       // 每分钟触发一次、函数内部按 ~12 秒子轮询（mode=loop）：回复延迟与旧的
       // 10 秒 cron 基本一致，但 Edge Function 调用次数降到 1/6（约 4.3 万次/月，
       // 免费档 50 万次的 9%）。timeout 只是 pg_net 等待响应的上限，函数照常跑完。
-      await sql.unsafe(`select cron.schedule('${CLOUD_CRON_JOB_NAME}', '1 minute', $CRON$
+      await sql.unsafe(`select cron.schedule('${CLOUD_CRON_JOB_NAME}', '* * * * *', $CRON$
   select net.http_post(
     url     := '${functionUrl}',
     headers := jsonb_build_object('Content-Type', 'application/json'),

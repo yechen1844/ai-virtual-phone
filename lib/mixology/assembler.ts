@@ -186,7 +186,10 @@ function ticketSection(tickets: MixTicketMaterial[], charName: string, userName:
 
 /**
  * 小剧场契约段：格式说明在前，内容要求在后；没写契约的不进提示词。
- * 单出 = 老格式；多出 = 每出一块、开标签带名，是否上演各自按各自的契约条件定。
+ * 单出 = 老格式；多出 = 每出一块、开标签带名。
+ * 每轮必演——壳指令不给"这轮好像不用演"的台阶：条件式措辞会让模型在长篇里
+ * 越来越常把末尾块整个吞掉（历史先例又会放大这一点）。创作者真想按条件上演，
+ * 在契约里自己写条件，契约的要求压得过这句默认。
  */
 function encoreSection(encores: MixEncoreMaterial[], charName: string, userName: string, state?: MixState): string | null {
     const withContract = encores.filter((e) => e.contract?.trim());
@@ -194,14 +197,14 @@ function encoreSection(encores: MixEncoreMaterial[], charName: string, userName:
     if (withContract.length === 1) {
         return [
             "# 小剧场",
-            `输出格式：放在回复最末尾（正文之后），整块用 ${MIX_ENCORE_OPEN}...${MIX_ENCORE_CLOSE} 包裹；是否输出由「输出契约」的条件决定，不输出时整段省略，不要输出空壳。`,
+            `输出格式：每轮回复的最末尾（正文之后）输出这一块，整块用 ${MIX_ENCORE_OPEN}...${MIX_ENCORE_CLOSE} 包裹，内容按「输出契约」的要求写。任何一轮都不要省略这一块。`,
             "## 输出契约",
             applyMixMacros(withContract[0].contract!.trim(), charName, userName, state),
         ].join("\n");
     }
     const lines = [
         "# 小剧场",
-        `输出格式：本局有 ${withContract.length} 个小剧场，全部放在回复最末尾（正文之后），按下面的顺序排列，彼此独立成块：每块用带名字的开标签（如 ${mixNamedOpen(MIX_ENCORE_OPEN, withContract[0].name)}）开头，以 ${MIX_ENCORE_CLOSE} 收束。每一出是否上演由它自己「输出契约」里的条件决定，不上演的那块整段省略，不要输出空壳。`,
+        `输出格式：本局有 ${withContract.length} 个小剧场，每轮回复的最末尾（正文之后）按下面的顺序全部输出，彼此独立成块：每块用带名字的开标签（如 ${mixNamedOpen(MIX_ENCORE_OPEN, withContract[0].name)}）开头，以 ${MIX_ENCORE_CLOSE} 收束。任何一轮任何一块都不要省略。`,
     ];
     for (const encore of withContract) {
         lines.push(
@@ -222,9 +225,9 @@ function checklistSection(ticketCount: number, encoreCount: number): string | nu
         items.push(`- 回复最开头已按「状态栏」的格式与顺序输出全部 ${ticketCount} 块（每块开标签带名字）——任何一轮任何一块都不能缺。`);
     }
     if (encoreCount === 1) {
-        items.push(`- 若本轮满足「小剧场」的输出条件，已用 ${MIX_ENCORE_OPEN}...${MIX_ENCORE_CLOSE} 块输出。`);
+        items.push(`- 回复最末尾已按「小剧场」的格式输出 ${MIX_ENCORE_OPEN}...${MIX_ENCORE_CLOSE} 块——任何一轮都不能缺。`);
     } else if (encoreCount > 1) {
-        items.push(`- 已逐一核对 ${encoreCount} 个「小剧场」各自的输出条件，满足的都已用带名字的块输出。`);
+        items.push(`- 回复最末尾已按「小剧场」的格式与顺序输出全部 ${encoreCount} 块（每块开标签带名字）——任何一轮任何一块都不能缺。`);
     }
     return ["# 输出格式检查", "每轮回复发出前逐项核对：", ...items].join("\n");
 }

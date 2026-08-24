@@ -384,7 +384,7 @@ export function buildWeixinCloudAssistantCronSql(token: string, config: CloudBac
 create extension if not exists pg_cron;
 create extension if not exists pg_net;
 
-select cron.schedule('${WEIXIN_CLOUD_CRON_JOB_NAME}', '1 minute', $CRON$
+select cron.schedule('${WEIXIN_CLOUD_CRON_JOB_NAME}', '* * * * *', $CRON$
   select net.http_post(
     url     := '${functionUrl}',
     headers := jsonb_build_object('Content-Type', 'application/json'),

@@ -19,6 +19,7 @@ import MusicFloat from "@/components/music/music-float";
 import MiniAppWindow from "@/components/music/mini-app-window";
 import { PhoneCalendarApp } from "@/components/calendar-app";
 import { PhoneQaApp } from "@/components/phone-qa-app";
+import { ChatPluginPageBoundary } from "@/components/chat/chat-plugin-page-boundary";
 import { ResourceHubApp } from "@/components/resource-hub/resource-hub-app";
 import "@/lib/qa-error-log";
 import { DiaryApp } from "@/components/diary/diary-app";
@@ -3914,7 +3915,11 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
       return <PhoneCalendarApp onClose={() => setActiveApp(null)} onNotice={setNotice} />;
     }
     if (activeApp === "qa") {
-      return <PhoneQaApp onClose={() => setActiveApp(null)} onNotice={setNotice} />;
+      return (
+        <ChatPluginPageBoundary page="工坊" onClose={() => setActiveApp(null)}>
+          <PhoneQaApp onClose={() => setActiveApp(null)} onNotice={setNotice} />
+        </ChatPluginPageBoundary>
+      );
     }
     if (activeApp === "resource_hub") {
       return <ResourceHubApp onClose={() => setActiveApp(null)} onNotice={setNotice} />;
