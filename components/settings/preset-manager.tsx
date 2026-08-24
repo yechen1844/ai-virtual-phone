@@ -1,15 +1,13 @@
 "use client";
 
 import { useState, useEffect, useRef, useContext, useCallback, useMemo } from "react";
-import { Plus, Upload, Download, Trash2, RotateCcw, ChevronLeft, ChevronDown, GripVertical, MessageSquare, AlertCircle, Maximize2, Copy, Replace, CheckSquare, Check, RefreshCw } from "lucide-react";
+import { Plus, Upload, Download, Trash2, RotateCcw, ChevronLeft, ChevronDown, GripVertical, MessageSquare, AlertCircle, Maximize2, Copy, Replace, CheckSquare, Check } from "lucide-react";
 import {
     loadPresets,
     savePresets,
     createPreset,
     parsePresetFromJson,
     resetBuiltinPreset,
-    findMissingBuiltinPrompts,
-    syncPresetFromBuiltin,
     UNSUPPORTED_IMPORT_FORMAT,
 } from "@/lib/settings-storage";
 import type { PresetConfig, Prompt, PromptOrderEntry } from "@/lib/settings-types";
@@ -147,7 +145,6 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
     const [confirmExportId, setConfirmExportId] = useState<string | null>(null);
     const [confirmResetId, setConfirmResetId] = useState<string | null>(null);
     const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-    const [syncPresetId, setSyncPresetId] = useState<string | null>(null);
     const [confirmDeleteEntry, setConfirmDeleteEntry] = useState<string | null>(null);
     const [isLoaded, setIsLoaded] = useState(false);
     const [paramsOpen, setParamsOpen] = useState(false);
@@ -897,15 +894,6 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                         </button>
                                     ) : (
                                         <>
-                                            <button
-                                                type="button"
-                                                onClick={() => setSyncPresetId(preset.id)}
-                                                className="inline-flex h-10 items-center justify-center gap-1.5 rounded-[20px] border border-black/10 bg-white px-4 text-xs font-bold text-gray-800 shadow-sm transition-all hover:bg-gray-50 hover:shadow-md active:scale-95"
-                                                title="从内置预设同步缺失的条目"
-                                            >
-                                                <RefreshCw size={15} strokeWidth={1.8} />
-                                                <span>同步条目</span>
-                                            </button>
                                             <button
                                                 type="button"
                                                 onClick={() => setConfirmDeleteId(preset.id)}
@@ -1684,25 +1672,6 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                     onCancel={() => setConfirmDeleteId(null)}
                 />
             )}
-            {/* Sync builtin prompts dialog */}
-            {syncPresetId && (() => {
-                const missing = findMissingBuiltinPrompts(syncPresetId);
-                const targetPreset = presets.find(p => p.id === syncPresetId);
-                if (!targetPreset) return null;
-                return (
-                    <SyncBuiltinDialog
-                        presetName={targetPreset.name}
-                        missingPrompts={missing}
-                        onSelect={(selectedIds) => {
-                            if (selectedIds.length > 0) {
-                                syncPresetFromBuiltin(syncPresetId, selectedIds);
-                            }
-                            setSyncPresetId(null);
-                        }}
-                        onCancel={() => setSyncPresetId(null)}
-                    />
-                );
-            })()}
             {/* Confirm delete entry dialog */}
             {confirmDeleteEntry !== null && editingId && (
                 <ConfirmDialog
@@ -1803,120 +1772,5 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                 );
             })()}
         </div>
-    );
-}
-
-// ── Sync Builtin Prompts Dialog ──
-
-function SyncBuiltinDialog({
-    presetName,
-    missingPrompts,
-    onSelect,
-    onCancel,
-}: {
-    presetName: string;
-    missingPrompts: Array<{ identifier: string; name: string; tags: string[]; enabled: boolean }>;
-    onSelect: (selectedIds: string[]) => void;
-    onCancel: () => void;
-}) {
-    const [selected, setSelected] = useState<Set<string>>(new Set());
-
-    // 按 tags 分组
-    const groups = useMemo(() => {
-        const map = new Map<string, typeof missingPrompts>();
-        for (const p of missingPrompts) {
-            const tag = p.tags[0] ?? "其他";
-            if (!map.has(tag)) map.set(tag, []);
-            map.get(tag)!.push(p);
-        }
-        return [...map.entries()];
-    }, [missingPrompts]);
-
-    const tagLabel = (tag: string) => {
-        const labels: Record<string, string> = {
-            reading: "阅读",
-            chat: "聊天",
-            annotate: "批注",
-            discuss: "讨论",
-            checkphone: "查手机",
-            dwelling: "小窝",
-            cocreate: "共创",
-            qa: "工坊",
-        };
-        return labels[tag] ?? tag;
-    };
-
-    const toggle = (id: string) => {
-        setSelected(prev => {
-            const next = new Set(prev);
-            if (next.has(id)) next.delete(id);
-            else next.add(id);
-            return next;
-        });
-    };
-
-    return (
-        <BottomSheet onClose={onCancel} title={`同步内置条目到「${presetName}」`}>
-            <div style={{ padding: "0.75rem 0" }}>
-                {missingPrompts.length === 0 ? (
-                    <p style={{ color: "var(--c-text-2)", textAlign: "center", padding: "2rem 0" }}>
-                        该预设已包含内置预设的所有条目，无需同步。
-                    </p>
-                ) : (
-                    <>
-                        <p style={{ fontSize: "0.8125rem", color: "var(--c-text-2)", marginBottom: "0.75rem" }}>
-                            以下条目存在于内置预设但缺失于该预设。勾选要添加的条目，将按相对位置插入。
-                        </p>
-                        {groups.map(([tag, items]) => (
-                            <div key={tag} style={{ marginBottom: "1rem" }}>
-                                <div style={{
-                                    fontSize: "0.75rem",
-                                    fontWeight: 700,
-                                    color: "var(--c-text-2)",
-                                    marginBottom: "0.375rem",
-                                    textTransform: "uppercase",
-                                }}>
-                                    {tagLabel(tag)}
-                                </div>
-                                {items.map(p => (
-                                    <label
-                                        key={p.identifier}
-                                        style={{
-                                            display: "flex",
-                                            alignItems: "center",
-                                            gap: "0.5rem",
-                                            padding: "0.5rem 0.75rem",
-                                            marginBottom: "0.25rem",
-                                            borderRadius: "0.5rem",
-                                            background: "var(--c-bg-2)",
-                                            cursor: "pointer",
-                                        }}
-                                    >
-                                        <input
-                                            type="checkbox"
-                                            checked={selected.has(p.identifier)}
-                                            onChange={() => toggle(p.identifier)}
-                                        />
-                                        <div>
-                                            <div style={{ fontSize: "0.875rem", fontWeight: 600 }}>{p.name}</div>
-                                            <div style={{ fontSize: "0.6875rem", color: "var(--c-text-2)" }}>{p.identifier}</div>
-                                        </div>
-                                    </label>
-                                ))}
-                            </div>
-                        ))}
-                        <button
-                            type="button"
-                            onClick={() => onSelect([...selected])}
-                            disabled={selected.size === 0}
-                            className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-[20px] bg-black text-sm font-bold text-white shadow-sm transition-all hover:bg-gray-800 active:scale-95 disabled:opacity-40"
-                        >
-                            <Check size={16} strokeWidth={2} />
-                            <span>添加 {selected.size > 0 ? `(${selected.size})` : ""}</span>
-                        </button>
-                    </>
-                )}
-            </div>
-        </BottomSheet>
     );
 }
