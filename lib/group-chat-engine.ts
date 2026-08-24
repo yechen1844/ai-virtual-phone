@@ -64,9 +64,10 @@ import {
     resolveStatusRegionComposition,
     resolveStatusRegionFullExample,
 } from "./chat-status-region";
-import { loadMemoryConfig } from "./memory-storage";
+import { loadMemoryConfig, incrementEventCounter } from "./memory-storage";
 import { retrieveCoreMemoriesForPrompt, retrieveMemoriesForPrompt } from "./memory-service";
 import { formatCoreMemories, formatLongTermMemories } from "./memory-injector";
+import { maybeRunSummarization } from "./memory-summarizer";
 import { prepareShortTermContext, prepareGroupShortTermContext } from "./short-term-assembler";
 import { parseActionTags, dispatchActions } from "./action-parser";
 import { getCustomStickerExample, loadCustomStickers } from "./custom-sticker-storage";
@@ -251,6 +252,31 @@ export function buildEditableGroupRoundText(
         .join("\n\n");
 }
 
+function scheduleGroupMemorySummarization(
+    participantIds: string[],
+    chars: ReturnType<typeof loadCharacters>,
+    history: ChatMessage[],
+    replyCount: number,
+): void {
+    const lastMessage = history[history.length - 1];
+    const userEventCount = lastMessage?.role === "user" ? 1 : 0;
+    const totalNewEvents = userEventCount + replyCount;
+    if (totalNewEvents <= 0) return;
+
+    const uniqueParticipantIds = [...new Set(participantIds)];
+    for (const characterId of uniqueParticipantIds) {
+        const character = chars.find(c => c.id === characterId);
+        if (!character) continue;
+
+        for (let i = 0; i < totalNewEvents; i++) {
+            incrementEventCounter(characterId);
+        }
+
+        maybeRunSummarization(characterId, character.name)
+            .catch(err => console.warn("[GroupChat] Memory counter/summarization failed:", err));
+    }
+}
+
 /**
  * Shared prompt builder for group chat — used by both generate and preview.
  */
@@ -260,10 +286,6 @@ export type GroupChatPromptBuildOptions = {
     disableTools?: boolean;
     promptProfile?: CustomAppPromptProfile | null;
     apiConfigId?: string;
-    /** 预览等只求看结果的场景置 true：跳过复杂记忆重排序（LLM），只做向量召回 */
-    skipMemoryRerank?: boolean;
-    /** 跳过重排时的向量召回条数上限（默认沿用 rerankKeepMax 配置） */
-    maxRecallEntries?: number;
 };
 
 async function buildGroupChatPromptMessages(
@@ -1056,6 +1078,10 @@ export async function generateGroupChatCompletion(
         }
     }
 
+    if (!options?.skipMemorySummarization) {
+        scheduleGroupMemorySummarization(participantIds, chars, history, finalResults.length);
+    }
+
     return finalResults;
 }
 
@@ -1079,9 +1105,6 @@ export async function generateGroupRawCompletion(
             disableTools: true,
             promptProfile: options?.promptProfile,
             apiConfigId: options?.apiConfigId,
-            // 自定义 APP 的多角色补全不属于会话聊天：跳过重排 LLM，向量召回最多 6 条（与单角色自定义 APP 同规则）
-            skipMemoryRerank: true,
-            maxRecallEntries: 6,
         },
     );
     const rawOutput = await sendLLMRequest(config, preset, llmMessages, regexes, {
@@ -1203,7 +1226,7 @@ export async function previewGroupPromptPayload(
     history: ChatMessage[],
 ): Promise<{ messages: LLMMessage[]; characterName: string; model: string; presetName: string }> {
     // Use the SAME shared builder as generateGroupChatCompletion
-    const { llmMessages, config, preset } = await buildGroupChatPromptMessages(session, history, { skipMemoryRerank: true });
+    const { llmMessages, config, preset } = await buildGroupChatPromptMessages(session, history);
 
     const apiMessages = previewMessagesForApi(config, preset, llmMessages);
 
@@ -1220,7 +1243,7 @@ export async function previewGroupPromptRequestSnapshot(
     history: ChatMessage[],
     options?: GroupChatPromptBuildOptions,
 ): Promise<DebugPromptSnapshot> {
-    const { llmMessages, config, preset, memberNames, enabledTools, userName, appTags } = await buildGroupChatPromptMessages(session, history, { ...options, skipMemoryRerank: true });
+    const { llmMessages, config, preset, memberNames, enabledTools, userName, appTags } = await buildGroupChatPromptMessages(session, history, { ...options });
     const requestMessages = toLlmRequestMessages(llmMessages);
     const meta = { characterName: `群聊:${session.groupName || "群聊"}`, userName };
 

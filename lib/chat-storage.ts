@@ -54,9 +54,6 @@ export type ChatSession = {
     /** 丢弃角色输出的无效表情包（名称不在角色表情包与内置表情中时直接滤除该消息） */
     discardInvalidStickers?: boolean;
     bilingualTranslationPrompt?: string;
-    /** 会话级双语投喂模式：决定把聊天记录喂给模型（短期上下文/记忆）时取哪种语言。
-     *  both=原文|译文都发（默认/不启用）；originalOnly=只发原文；translatedOnly=只发译文。不影响界面展示。 */
-    translationFeedMode?: "both" | "originalOnly" | "translatedOnly";
     offlineBilingualTranslationPrompt?: string;
     nativeExpandedToolSourceIds?: string[];
     visionImagePromptLimit?: number;
@@ -527,49 +524,6 @@ export function reindexSessionMessageOrdersByTime(sessionId: string): void {
         sessions[sessIdx].updatedAt = lastMsg.createdAt;
         saveChatSessions(sessions);
     }
-}
-
-/**
- * 批量导入聊天消息（外部角色记忆迁移用，如 Roche/Noir 备份转换后的导入包）。
- * 走与正常聊天完全相同的存储管线：内存缓存 + IndexedDB + 会话预览刷新。
- * - 保留调用方提供的 id / createdAt（历史时间线原样落库，显示顺序按时间正确）
- * - 按 id 幂等去重：重复导入同一会话不产生重复记录（Dexie put 按主键覆盖）
- * - order 由 reindexSessionMessageOrdersByTime 按时间统一重排
- */
-export function importChatMessages(
-    sessionId: string,
-    msgs: Array<{
-        id: string;
-        role: ChatMessageRole;
-        content: string;
-        createdAt: string;
-        mediaType?: ChatMessage["mediaType"];
-        mediaData?: ChatMessage["mediaData"];
-    }>,
-): { imported: number; skipped: number } {
-    const all = _loadAllMessages();
-    const existingIds = new Set(all.filter(m => m.sessionId === sessionId).map(m => m.id));
-    const fresh = msgs.filter(m => m.id && !existingIds.has(m.id) && m.content && m.createdAt);
-    if (fresh.length === 0) return { imported: 0, skipped: msgs.length };
-
-    const startOrder = getNextMessageOrder(sessionId);
-    const built: ChatMessage[] = fresh.map((m, i) => ({
-        id: m.id,
-        sessionId,
-        role: m.role,
-        content: m.content,
-        status: "sent",
-        createdAt: m.createdAt,
-        order: startOrder + i,
-        ...(m.mediaType ? { mediaType: m.mediaType } : {}),
-        ...(m.mediaData ? { mediaData: m.mediaData } : {}),
-    }));
-
-    _messagesCache = [..._messagesCache, ...built];
-    dbPutMessages(built);
-    reindexSessionMessageOrdersByTime(sessionId);
-
-    return { imported: built.length, skipped: msgs.length - built.length };
 }
 
 export function getLastVisibleSessionMessage(sessionId: string): ChatMessage | null {

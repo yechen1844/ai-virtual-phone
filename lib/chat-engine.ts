@@ -54,9 +54,10 @@ import {
 import { setDebugPromptSnapshot, type DebugPromptSnapshot } from "./debug-store";
 import { extractFinishReason } from "./api-helpers";
 import { fetchLlmPayload } from "./llm-http";
-import { loadMemoryConfig } from "./memory-storage";
+import { loadMemoryConfig, incrementEventCounter } from "./memory-storage";
 import { retrieveCoreMemoriesForPrompt, retrieveMemoriesForPrompt } from "./memory-service";
 import { formatCoreMemories, formatLongTermMemories } from "./memory-injector";
+import { maybeRunSummarization } from "./memory-summarizer";
 import { prepareShortTermContext } from "./short-term-assembler";
 import { parseActionTags, dispatchActions } from "./action-parser";
 import { findEnabledToolForSchema, getEnabledTools, type EnabledTool } from "./tool-storage";
@@ -349,8 +350,6 @@ type ChatPromptBuildOptions = {
     activateAllWorldBooks?: boolean;
     toolsAllowed?: boolean;
     forceEnableTools?: boolean;
-    /** 预览等只求看结果的场景置 true：跳过复杂记忆重排序（LLM），只做向量召回，避免等一次慢排序 */
-    skipMemoryRerank?: boolean;
 };
 
 function matchesPromptProfileRef(prompt: { identifier: string; name?: string }, refs: Set<string>): boolean {
@@ -1849,19 +1848,15 @@ export async function buildChatPromptMessages(
         }
     }
 
-    const [musicLocal, musicCloud] = await Promise.all([
+    const [memResults, coreResults, musicLocal, musicCloud] = await Promise.all([
+        retrieveMemoriesForPrompt(character.id, wbActivationContext, memConfig).catch(() => null),
+        retrieveCoreMemoriesForPrompt(character.id, memConfig).catch(() => null),
         buildMusicLocalMacro(),
         buildMusicCloudMacro(),
     ]);
 
-    let longTermMemories = "";
-    let coreMemories = "";
-    const [memResults, coreResults] = await Promise.all([
-        retrieveMemoriesForPrompt(character.id, wbActivationContext, memConfig).catch(() => null),
-        retrieveCoreMemoriesForPrompt(character.id, memConfig).catch(() => null),
-    ]);
-    longTermMemories = memResults ? formatLongTermMemories(memResults) : "";
-    coreMemories = coreResults ? formatCoreMemories(coreResults) : "";
+    const longTermMemories = memResults ? formatLongTermMemories(memResults) : "";
+    const coreMemories = coreResults ? formatCoreMemories(coreResults) : "";
     const scheduleSummary = buildCalendarScheduleMarker("character", character.id, getWeekStartIso(now));
     const currentSchedule = getCurrentCalendarScheduleForPrompt("character", character.id, now);
     const musicOnlineHint = isNeteaseConfigured() ? "- 你可以推荐任何歌曲，系统会在线搜索并播放。不局限于用户本地音乐库。\n" : "\n";
@@ -2650,6 +2645,17 @@ export async function generateChatCompletion(
         }
     }
 
+    // Memory: increment event counter + check if summarization needed (non-blocking)
+    (async () => {
+        try {
+            incrementEventCounter(character.id); // user message
+            incrementEventCounter(character.id); // AI reply
+            await maybeRunSummarization(character.id, character.name);
+        } catch (err) {
+            console.warn("[ChatEngine] Memory counter/summarization failed:", err);
+        }
+    })();
+
     return { parts };
 }
 
@@ -2709,7 +2715,7 @@ export async function previewPromptPayload(
     }
 
     // Use the SAME shared builder as generateChatCompletion
-    const { llmMessages, character, config, preset } = await buildChatPromptMessages(session, effectiveHistory, { ...options, skipMemoryRerank: true });
+    const { llmMessages, character, config, preset } = await buildChatPromptMessages(session, effectiveHistory, options);
 
     const apiMessages = previewMessagesForApi(config, preset, llmMessages);
 
@@ -2770,7 +2776,7 @@ export async function previewPromptRequestSnapshot(
         effectiveHistory = annotated;
     }
 
-    const { llmMessages, character, config, preset, userIdentity, toolsEnabled } = await buildChatPromptMessages(session, effectiveHistory, { ...options, skipMemoryRerank: true });
+    const { llmMessages, character, config, preset, userIdentity, toolsEnabled } = await buildChatPromptMessages(session, effectiveHistory, options);
     const requestMessages = toLlmRequestMessages(llmMessages);
     const enabledTools = toolsEnabled ? getEnabledTools(options?.appId ?? "chat") : [];
     const meta = { characterName: character.name, userName: userIdentity?.name };

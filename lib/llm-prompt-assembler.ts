@@ -1338,8 +1338,8 @@ export type RegexContext = {
     isEdit?: boolean;        // true when user is editing a message
     depth?: number;          // message depth (0 = latest)
     activeTags?: string[];   // current app tags used for tag-scoped rule filtering
-    macroEngine?: MacroEngine;  // for {{char}} etc. in findRegex & replaceString
     history?: boolean;       // true when the block is a chat history message (historyOnly rules only fire here)
+    macroEngine?: MacroEngine;  // for {{char}} etc. in findRegex & replaceString
 };
 
 /**

@@ -388,8 +388,6 @@ export function ChatSettingsPanel({
     const [visionImagePromptLimit, setVisionImagePromptLimit] = useState(() => normalizeVisionImagePromptLimit(session.visionImagePromptLimit));
     const [bilingualTranslationEnabled, setBilingualTranslationEnabled] = useState(session.bilingualTranslationEnabled !== false);
     const [collapseBilingualTranslation, setCollapseBilingualTranslation] = useState(session.collapseBilingualTranslation !== false);
-    // 记忆/总结投喂双语内容的取用方式：双语 / 仅原文 / 仅译文
-    const [translationFeedMode, setTranslationFeedMode] = useState<"both" | "originalOnly" | "translatedOnly">(session.translationFeedMode ?? "both");
     const [discardInvalidStickers, setDiscardInvalidStickers] = useState(session.discardInvalidStickers === true);
     // 流式生成：按会话区分（线上/线下），存 ChatSession 字段，默认关
     const [streamOnline, setStreamOnline] = useState(session.streamOnline === true);
@@ -1064,36 +1062,6 @@ export function ChatSettingsPanel({
                                         <ChevronRight size={16} />
                                     </div>
                                 </button>
-                                {!session.isGroup && (
-                                    <div className="menu-item">
-                                        <ChatInfoIcon icon={MessageSquare} color={BINDING_ACCENTS.memory} />
-                                        <div className="menu-label-group">
-                                            <span className="menu-label">记忆投喂</span>
-                                            <span className="menu-desc">事件/日记总结时如何取「原文|译文」</span>
-                                        </div>
-                                        <div className="menu-right">
-                                            <div className="feed-mode-seg">
-                                                {([
-                                                    { v: "both", t: "双语" },
-                                                    { v: "originalOnly", t: "仅原文" },
-                                                    { v: "translatedOnly", t: "仅译文" },
-                                                ] as { v: "both" | "originalOnly" | "translatedOnly"; t: string }[]).map((o) => (
-                                                    <button
-                                                        key={o.v}
-                                                        type="button"
-                                                        className={`feed-mode-btn ${translationFeedMode === o.v ? "is-active" : ""}`}
-                                                        onClick={() => {
-                                                            setTranslationFeedMode(o.v);
-                                                            updateSession({ translationFeedMode: o.v });
-                                                        }}
-                                                    >
-                                                        {o.t}
-                                                    </button>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    </div>
-                                )}
                             </>
                         )}
                         <div className="menu-item">

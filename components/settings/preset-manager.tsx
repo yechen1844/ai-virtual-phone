@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useContext, useCallback, useMemo } from "react";
-import { Plus, Upload, Download, Trash2, RotateCcw, ChevronLeft, ChevronDown, GripVertical, MessageSquare, AlertCircle, Maximize2, Copy, Replace, CheckSquare, Check } from "lucide-react";
+import { Plus, Upload, Download, Trash2, RotateCcw, ChevronLeft, ChevronDown, GripVertical, MessageSquare, AlertCircle, Maximize2, Copy, Replace } from "lucide-react";
 import {
     loadPresets,
     savePresets,
@@ -84,27 +84,6 @@ function matchMarkerByName(name: string): string | null {
     return MARKER_NAMES_NORMALIZED[normalizeMarkerName(name)] ?? null;
 }
 
-// 构建「有序 + 孤儿」的条目列表，并按 identifier 去重。
-// 若 prompt_order 含重复 entry 或 prompts 含重复 identifier，会导致同一条目渲染多次、
-// reorder 索引错位、touch 拖拽拖到错误的条目；这里统一保首个出现，保证渲染与重排视图唯一。
-function buildDisplayedPrompts(preset: PresetConfig): Prompt[] {
-    const seen = new Set<string>();
-    const out: Prompt[] = [];
-    const push = (p?: Prompt) => {
-        if (p && !seen.has(p.identifier)) {
-            seen.add(p.identifier);
-            out.push(p);
-        }
-    };
-    if (preset.prompt_order && preset.prompt_order.length > 0) {
-        for (const e of preset.prompt_order) {
-            push(preset.prompts.find(x => x.identifier === e.identifier));
-        }
-    }
-    for (const p of preset.prompts || []) push(p);
-    return out;
-}
-
 const MASCOT_PRESET_STORAGE_TOOL_NAMES = new Set([
     "创建剧情预设",
     "克隆内置预设",
@@ -151,10 +130,6 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
     const [expandTarget, setExpandTarget] = useState<{ identifier: string; field: string } | null>(null);
     const [importError, setImportError] = useState<string | null>(null);
     const [customApps, setCustomApps] = useState<InstalledCustomApp[]>([]);
-    // ── 多选模式（右滑选中 / 批量操作 / 多选拖拽） ──
-    const [selectMode, setSelectMode] = useState(false);
-    const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-    const [confirmDeleteSelected, setConfirmDeleteSelected] = useState(false);
 
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -477,122 +452,33 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
     };
 
     // ── Prompt reorder (shared by HTML5 drag & touch sort) ──
-    // 多选模式下拖动选中的条目 → 整组批量移动；否则单条目移动。
     const handlePromptReorder = useCallback((fromIndex: number, toIndex: number) => {
         if (!editingId) return;
         const preset = presets.find(p => p.id === editingId);
         if (!preset) return;
-        // Build full display list (same logic as render: ordered + orphans, deduped by identifier)
-        const displayed = buildDisplayedPrompts(preset);
-        const dragged = displayed[fromIndex];
-        if (!dragged) return;
-
-        let newDisplayed: Prompt[];
-        const isBulk = selectMode && selectedIds.size > 1 && dragged.identifier && selectedIds.has(dragged.identifier);
-        if (isBulk) {
-            // 整组选中条目一起移动（选中集内部相对顺序保持不变）
-            const selected = displayed.filter(p => selectedIds.has(p.identifier));
-            if (selected.length === displayed.length) return; // 全选时移动无意义
-            const rest = displayed.filter(p => !selectedIds.has(p.identifier));
-            // 锚点：向下拖时插到「原位置 > to 的第一个未选中条目」之前；向上拖同理用 >= to
-            const anchor = rest.find(p => {
-                const idx = displayed.indexOf(p);
-                return toIndex > fromIndex ? idx > toIndex : idx >= toIndex;
-            });
-            const insertPos = anchor ? rest.indexOf(anchor) : rest.length;
-            newDisplayed = [...rest.slice(0, insertPos), ...selected, ...rest.slice(insertPos)];
-        } else {
-            // 单条目移动（未选中条目 / 单选）
-            const [item] = displayed.splice(fromIndex, 1);
-            displayed.splice(toIndex, 0, item);
-            newDisplayed = displayed;
-        }
-        const newOrder = newDisplayed.map(p => ({
+        // Build full display list (same logic as render: ordered + orphans)
+        const ordered = preset.prompt_order && preset.prompt_order.length > 0
+            ? preset.prompt_order.map(e => preset.prompts.find(p => p.identifier === e.identifier)).filter((p): p is Prompt => !!p)
+            : [...preset.prompts];
+        const orderedIds = new Set(ordered.map(p => p.identifier));
+        const orphans = preset.prompts.filter(p => !orderedIds.has(p.identifier));
+        const displayed = [...ordered, ...orphans];
+        // Reorder
+        const [item] = displayed.splice(fromIndex, 1);
+        displayed.splice(toIndex, 0, item);
+        const newOrder = displayed.map(p => ({
             identifier: p.identifier,
             enabled: preset.prompt_order
                 ? (preset.prompt_order.find(o => o.identifier === p.identifier)?.enabled ?? p.enabled)
                 : p.enabled,
         }));
-        updatePreset(preset.id, { prompts: newDisplayed, prompt_order: newOrder });
-    }, [editingId, presets, selectMode, selectedIds]);
+        updatePreset(preset.id, { prompts: displayed, prompt_order: newOrder });
+    }, [editingId, presets]);
 
     const { containerRef: promptListRef, onTouchStart: onPromptTouchStart, onTouchMove: onPromptTouchMove, onTouchEnd: onPromptTouchEnd } = useTouchSort(handlePromptReorder);
 
     // ── 条目左滑操作（微信式：左滑露出「新增/删除」） ──
     const swipe = useSwipeActions();
-
-    // ── 多选模式：右滑选中 / 批量操作 / 多选拖拽 ──
-    const enterSelectMode = useCallback(() => {
-        setSelectMode(true);
-        setEditingPromptId(null); // 收起展开的编辑，避免手势冲突
-        swipe.close();
-    }, [swipe]);
-
-    const exitSelectMode = useCallback(() => {
-        setSelectMode(false);
-        setSelectedIds(new Set());
-        swipe.close();
-    }, [swipe]);
-
-    const toggleSelect = useCallback((identifier: string) => {
-        setSelectedIds(prev => {
-            const next = new Set(prev);
-            if (next.has(identifier)) next.delete(identifier);
-            else next.add(identifier);
-            return next;
-        });
-    }, []);
-
-    // 右滑条目 → 选中并进入多选模式；已处于多选模式时追加选中
-    const handleSwipeRightSelect = useCallback((identifier: string) => {
-        setSelectMode(true);
-        setEditingPromptId(null);
-        setSelectedIds(prev => {
-            const next = new Set(prev);
-            next.add(identifier);
-            return next;
-        });
-        swipe.close();
-    }, [swipe]);
-
-    const selectAllPrompts = useCallback(() => {
-        const preset = presets.find(p => p.id === editingId);
-        if (!preset) return;
-        setSelectedIds(new Set(preset.prompts.map(p => p.identifier)));
-    }, [presets, editingId]);
-
-    const bulkSetEnabled = useCallback((enabled: boolean) => {
-        const preset = presets.find(p => p.id === editingId);
-        if (!preset || selectedIds.size === 0) return;
-        const newPrompts = preset.prompts.map(p =>
-            selectedIds.has(p.identifier) ? { ...p, enabled } : p,
-        );
-        const newOrder = preset.prompt_order?.map(o =>
-            selectedIds.has(o.identifier) ? { ...o, enabled } : o,
-        );
-        updatePreset(preset.id, { prompts: newPrompts, ...(newOrder ? { prompt_order: newOrder } : {}) });
-    }, [presets, editingId, selectedIds]);
-
-    const bulkExportSelected = useCallback(async () => {
-        const preset = presets.find(p => p.id === editingId);
-        if (!preset || selectedIds.size === 0) return;
-        const selected = preset.prompts.filter(p => selectedIds.has(p.identifier));
-        const { downloadFile } = await import("@/lib/download-utils");
-        const blob = new Blob([JSON.stringify(selected, null, 2)], { type: "application/json" });
-        await downloadFile(blob, `${preset.name || "preset"}-entries.json`);
-    }, [presets, editingId, selectedIds]);
-
-    const deleteSelectedPrompts = useCallback(() => {
-        const preset = presets.find(p => p.id === editingId);
-        if (!preset || selectedIds.size === 0) return;
-        const newPrompts = preset.prompts.filter(p => !selectedIds.has(p.identifier));
-        const newOrder = (preset.prompt_order || []).filter(o => !selectedIds.has(o.identifier));
-        updatePreset(preset.id, { prompts: newPrompts, prompt_order: newOrder });
-        if (editingPromptId && selectedIds.has(editingPromptId)) setEditingPromptId(null);
-        setSelectedIds(new Set());
-        setConfirmDeleteSelected(false);
-        setSelectMode(false);
-    }, [presets, editingId, selectedIds, editingPromptId]);
 
     const insertPromptAfter = (preset: PresetConfig, afterIdentifier: string) => {
         const newPrompt = {
@@ -603,8 +489,13 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
             injection_depth: 0,
             enabled: true,
         };
-        // 与渲染一致的显示顺序（去重后的 prompt_order + 孤儿条目）
-        const displayed = buildDisplayedPrompts(preset);
+        // 与渲染一致的显示顺序（prompt_order + 孤儿条目）
+        const ordered = preset.prompt_order && preset.prompt_order.length > 0
+            ? preset.prompt_order.map(entry => preset.prompts.find(p => p.identifier === entry.identifier)).filter((p): p is Prompt => !!p)
+            : [...(preset.prompts || [])];
+        const orderedIds = new Set(ordered.map(p => p.identifier));
+        const orphans = (preset.prompts || []).filter(p => !orderedIds.has(p.identifier));
+        const displayed = [...ordered, ...orphans];
         const idx = displayed.findIndex(p => p.identifier === afterIdentifier);
         if (idx >= 0) displayed.splice(idx + 1, 0, newPrompt);
         else displayed.push(newPrompt);
@@ -893,16 +784,14 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                             <span>重置默认</span>
                                         </button>
                                     ) : (
-                                        <>
-                                            <button
-                                                type="button"
-                                                onClick={() => setConfirmDeleteId(preset.id)}
-                                                className="inline-flex h-10 items-center justify-center gap-1.5 rounded-[20px] border border-black/10 bg-white px-4 text-xs font-bold text-[var(--c-danger)] shadow-sm transition-all hover:bg-gray-50 hover:shadow-md active:scale-95"
-                                            >
-                                                <Trash2 size={15} strokeWidth={1.8} />
-                                                <span>删除预设</span>
-                                            </button>
-                                        </>
+                                        <button
+                                            type="button"
+                                            onClick={() => setConfirmDeleteId(preset.id)}
+                                            className="inline-flex h-10 items-center justify-center gap-1.5 rounded-[20px] border border-black/10 bg-white px-4 text-xs font-bold text-[var(--c-danger)] shadow-sm transition-all hover:bg-gray-50 hover:shadow-md active:scale-95"
+                                        >
+                                            <Trash2 size={15} strokeWidth={1.8} />
+                                            <span>删除预设</span>
+                                        </button>
                                     )}
                                 </div>
                                 <h2 className="mx-2 mb-0 mt-2 ts-20 font-bold leading-none text-black">Preset Info</h2>
@@ -1140,39 +1029,7 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
 
                                 {/* Prompts Section */}
                                 <div className="flex flex-col gap-4 mt-3">
-                                    <div className="mx-2 mb-0 mt-2 flex items-center justify-between">
-                                        <h2 className="ts-20 font-bold leading-none text-black">Prompt Entries ({preset.prompts?.length || 0})</h2>
-                                        {selectMode ? (
-                                            <div className="flex items-center gap-2">
-                                                <span className="menu-desc ts-12">已选 {selectedIds.size} 项</span>
-                                                <button
-                                                    type="button"
-                                                    onClick={selectAllPrompts}
-                                                    className="inline-flex h-8 items-center justify-center gap-1 rounded-full border border-black/10 bg-white px-3 text-xs font-bold text-gray-800 shadow-sm transition-all hover:bg-gray-50 active:scale-95"
-                                                >
-                                                    <CheckSquare size={14} strokeWidth={1.8} />
-                                                    <span>全选</span>
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={exitSelectMode}
-                                                    className="inline-flex h-8 items-center justify-center gap-1 rounded-full bg-black px-3 text-xs font-bold text-white shadow-sm transition-all hover:bg-gray-800 active:scale-95"
-                                                >
-                                                    <Check size={14} strokeWidth={2} />
-                                                    <span>完成</span>
-                                                </button>
-                                            </div>
-                                        ) : (
-                                            <button
-                                                type="button"
-                                                onClick={enterSelectMode}
-                                                className="inline-flex h-8 items-center justify-center gap-1 rounded-full border border-black/10 bg-white px-3 text-xs font-bold text-gray-800 shadow-sm transition-all hover:bg-gray-50 active:scale-95"
-                                            >
-                                                <CheckSquare size={14} strokeWidth={1.8} />
-                                                <span>多选</span>
-                                            </button>
-                                        )}
-                                    </div>
+                                    <h2 className="mx-2 mb-0 mt-2 ts-20 font-bold leading-none text-black">Prompt Entries ({preset.prompts?.length || 0})</h2>
 
                                     <div ref={promptListRef} className="flex flex-col gap-2"
                                         onTouchMove={onPromptTouchMove}
@@ -1180,8 +1037,16 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                         onTouchCancel={onPromptTouchEnd}
                                     >
                                         {(() => {
-                                            // 按 prompt_order + 孤儿构建唯一列表（identifier 去重，避免重复条目/索引错位/拖错条目）
-                                            return buildDisplayedPrompts(preset);
+                                            // Display prompts in prompt_order sequence
+                                            const orderedPrompts = preset.prompt_order && preset.prompt_order.length > 0
+                                                ? preset.prompt_order
+                                                    .map(entry => preset.prompts.find(p => p.identifier === entry.identifier))
+                                                    .filter((p): p is Prompt => !!p)
+                                                : preset.prompts || [];
+                                            // Append any prompts not in prompt_order (orphans)
+                                            const orderedIds = new Set(orderedPrompts.map(p => p.identifier));
+                                            const orphans = (preset.prompts || []).filter(p => !orderedIds.has(p.identifier));
+                                            return [...orderedPrompts, ...orphans];
                                         })().map((prompt, index) => {
                                             const isEditing = editingPromptId === prompt.identifier;
                                             // Effective enabled: prompt_order overrides prompt.enabled
@@ -1200,11 +1065,8 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                     controller={swipe}
                                                     id={prompt.identifier}
                                                     disabled={isEditing}
-                                                    leftSwipeDisabled={selectMode}
-                                                    rightSwipeEnabled
-                                                    onSwipeRight={() => handleSwipeRightSelect(prompt.identifier)}
                                                     onTouchStart={isEditing ? undefined : (e) => onPromptTouchStart(index, e)}
-                                                    actions={selectMode ? null : (
+                                                    actions={
                                                         <>
                                                             <button
                                                                 type="button"
@@ -1252,13 +1114,12 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                                 <Trash2 size={18} strokeWidth={2} />
                                                                 <span>删除</span>
                                                             </button>
-                                                        </>)
+                                                        </>
                                                     }
                                                 >
                                                     <div
                                                     className="ui-entry-card"
                                                     data-active={isEditing}
-                                                    data-selected={selectMode && selectedIds.has(prompt.identifier) ? "true" : undefined}
                                                     data-disabled={!effectiveEnabled}
                                                     style={{
                                                         gap: isEditing ? "12px" : "0px",
@@ -1274,31 +1135,14 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                                 swipe.close();
                                                                 return;
                                                             }
-                                                            if (selectMode) {
-                                                                toggleSelect(prompt.identifier);
-                                                                return;
-                                                            }
                                                             setEditingPromptId(isEditing ? null : prompt.identifier);
                                                         }}
                                                         className="flex justify-between items-start gap-2 cursor-pointer"
                                                     >
                                                         <div className="flex gap-3 flex-1 min-w-0 items-start" style={{ cursor: isEditing ? "default" : "grab" }}>
-                                                            {selectMode ? (
-                                                                <div
-                                                                    className="mt-[2px] flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2"
-                                                                    style={{
-                                                                        borderColor: selectedIds.has(prompt.identifier) ? "var(--c-icon-active)" : "rgba(0,0,0,0.25)",
-                                                                        background: selectedIds.has(prompt.identifier) ? "var(--c-icon-active)" : "transparent",
-                                                                        color: "#fff",
-                                                                    }}
-                                                                >
-                                                                    {selectedIds.has(prompt.identifier) && <Check size={13} strokeWidth={3} />}
-                                                                </div>
-                                                            ) : (
-                                                                <div className="ui-entry-icon mt-[2px]">
-                                                                    <MessageSquare size={20} />
-                                                                </div>
-                                                            )}
+                                                            <div className="ui-entry-icon mt-[2px]">
+                                                                <MessageSquare size={20} />
+                                                            </div>
                                                             <div className="flex flex-col gap-1 flex-1">
                                                                 <div className="flex items-center gap-[6px]">
                                                                     {/* Drag Handle shown subtly */}
@@ -1561,57 +1405,14 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                         )}
                                     </div>
 
-                                    {selectMode ? (
-                                        <div className="flex flex-col gap-2">
-                                            <div className="grid grid-cols-3 gap-2">
-                                                <button
-                                                    type="button"
-                                                    onClick={() => bulkSetEnabled(true)}
-                                                    disabled={selectedIds.size === 0}
-                                                    className="inline-flex h-10 items-center justify-center gap-1.5 rounded-[20px] border border-black/10 bg-white px-2 text-xs font-bold text-gray-800 shadow-sm transition-all hover:bg-gray-50 hover:shadow-md active:scale-95 focus:outline-none disabled:opacity-40"
-                                                >
-                                                    <Check size={15} strokeWidth={2} />
-                                                    启用
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => bulkSetEnabled(false)}
-                                                    disabled={selectedIds.size === 0}
-                                                    className="inline-flex h-10 items-center justify-center gap-1.5 rounded-[20px] border border-black/10 bg-white px-2 text-xs font-bold text-gray-800 shadow-sm transition-all hover:bg-gray-50 hover:shadow-md active:scale-95 focus:outline-none disabled:opacity-40"
-                                                >
-                                                    <RotateCcw size={15} strokeWidth={1.8} />
-                                                    禁用
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => bulkExportSelected()}
-                                                    disabled={selectedIds.size === 0}
-                                                    className="inline-flex h-10 items-center justify-center gap-1.5 rounded-[20px] border border-black/10 bg-white px-2 text-xs font-bold text-gray-800 shadow-sm transition-all hover:bg-gray-50 hover:shadow-md active:scale-95 focus:outline-none disabled:opacity-40"
-                                                >
-                                                    <Download size={15} strokeWidth={1.8} />
-                                                    导出
-                                                </button>
-                                            </div>
-                                            <button
-                                                type="button"
-                                                onClick={() => setConfirmDeleteSelected(true)}
-                                                disabled={selectedIds.size === 0}
-                                                className="inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-[20px] border border-black/10 bg-white px-4 text-xs font-bold text-[var(--c-danger)] shadow-sm transition-all hover:bg-gray-50 hover:shadow-md active:scale-95 focus:outline-none disabled:opacity-40"
-                                            >
-                                                <Trash2 size={15} strokeWidth={1.8} />
-                                                删除已选（{selectedIds.size}）
-                                            </button>
-                                        </div>
-                                    ) : (
-                                        <button
-                                            type="button"
-                                            onClick={() => setAddEntryMenuOpen(true)}
-                                            className="inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-[20px] bg-black px-4 text-xs font-bold text-white shadow-sm transition-all hover:bg-gray-800 hover:shadow-md active:scale-95 focus:outline-none"
-                                        >
-                                            <Plus size={15} strokeWidth={1.8} />
-                                            添加条目
-                                        </button>
-                                    )}
+                                    <button
+                                        type="button"
+                                        onClick={() => setAddEntryMenuOpen(true)}
+                                        className="inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-[20px] bg-black px-4 text-xs font-bold text-white shadow-sm transition-all hover:bg-gray-800 hover:shadow-md active:scale-95 focus:outline-none"
+                                    >
+                                        <Plus size={15} strokeWidth={1.8} />
+                                        添加条目
+                                    </button>
                                 </div>
                             </div>
                         )
@@ -1692,18 +1493,6 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                         setConfirmDeleteEntry(null);
                     }}
                     onCancel={() => setConfirmDeleteEntry(null)}
-                />
-            )}
-            {/* Confirm bulk delete selected entries */}
-            {confirmDeleteSelected && editingId && (
-                <ConfirmDialog
-                    title="确认批量删除？"
-                    message={`将删除已选的 ${selectedIds.size} 个条目，删除后无法恢复。是否继续？`}
-                    icon={AlertCircle}
-                    variant="danger"
-                    confirmLabel="确认删除"
-                    onConfirm={() => deleteSelectedPrompts()}
-                    onCancel={() => setConfirmDeleteSelected(false)}
                 />
             )}
 
