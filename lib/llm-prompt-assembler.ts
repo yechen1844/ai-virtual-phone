@@ -110,7 +110,6 @@ export interface AssemblerInput {
     chapterTitle?: string;
     chapterContent?: string;
     annotationHistory?: string;
-    readingSummary?: string;
     noteWallContext?: string;
     diaryEntryContext?: string;
     xiaohongshuFeedContext?: string;
@@ -700,7 +699,6 @@ export function assemblePromptPayload(input: AssemblerInput): LLMMessage[] {
         engine.chapterTitle = input.chapterTitle ?? "";
         engine.chapterContent = input.chapterContent ?? "";
         engine.annotationHistory = input.annotationHistory ?? "";
-        engine.readingSummary = input.readingSummary ?? "";
         engine.noteWallContext = input.noteWallContext ?? "";
         engine.diaryEntryContext = input.diaryEntryContext ?? "";
         engine.xiaohongshuFeedContext = input.xiaohongshuFeedContext ?? "";
