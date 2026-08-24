@@ -4268,13 +4268,19 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
             const onOfflineDelta = (delta: string) => {
                 if (!isCurrentOfflineRun()) return;
                 offlineStreamAccumRef.current += delta;
-                const parsed = parseOfflineResponse(offlineStreamAccumRef.current, "summary");
-                // 流式碎片阶段 XML 标签可能未闭合：content 提取不到时，剥掉开标签残片直接显示原文
-                const previewContent = parsed.content || offlineStreamAccumRef.current
-                    .replace(/<\/?(?:content|summary|thinking|thought)>/gi, "")
-                    .replace(/<[^>]+>/g, "")
-                    .trim();
-                setOfflineStreamPreview({ content: previewContent, summary: parsed.summary });
+                // 线下预览解析合并到 rAF 下一帧：每帧最多一次全文解析+setState（与首次发送路径对齐）
+                if (offlineStreamFrameRef.current) return;
+                offlineStreamFrameRef.current = window.requestAnimationFrame(() => {
+                    offlineStreamFrameRef.current = 0;
+                    if (!isCurrentOfflineRun()) return;
+                    const parsed = parseOfflineResponse(offlineStreamAccumRef.current, "summary");
+                    // 流式碎片阶段 XML 标签可能未闭合：content 提取不到时，剥掉开标签残片直接显示原文
+                    const previewContent = parsed.content || offlineStreamAccumRef.current
+                        .replace(/<\/?(?:content|summary|thinking|thought)>/gi, "")
+                        .replace(/<[^>]+>/g, "")
+                        .trim();
+                    setOfflineStreamPreview({ content: previewContent, summary: parsed.summary });
+                });
             };
             const result = session.isGroup
                 ? await generateGroupOfflineChatCompletion(session, history, { signal: offlineRun.controller.signal, onStreamDelta: onOfflineDelta })

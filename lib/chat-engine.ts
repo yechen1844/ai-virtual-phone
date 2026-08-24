@@ -787,23 +787,25 @@ export async function sendLLMStreamRequest(
         appId?: string;
         appTags?: string[];
         followUpCount?: number;
+        debugSessionId?: string;
         signal?: AbortSignal;
     },
     callbacks?: ChatCompletionStreamCallbacks,
 ): Promise<ChatCompletionStreamResult> {
     const pluginPurpose = options?.appId ?? "chat";
-    const afterPlugins = await applyChatPluginLlmRequest(preset, messages, pluginPurpose);
+    const afterPlugins = await applyChatPluginLlmRequest(preset, messages, pluginPurpose, options?.debugSessionId);
     const effectivePreset = afterPlugins.preset;
     const originalOnDelta = callbacks?.onDelta;
     const pluginCallbacks: ChatCompletionStreamCallbacks | undefined = callbacks ? {
         ...callbacks,
         onDelta: (text: string) => {
-            emitChatPluginEvent("llm.streamChunk", { chunk: text, purpose: pluginPurpose });
+            emitChatPluginEvent("llm.streamChunk", { chunk: text, sessionId: options?.debugSessionId, purpose: pluginPurpose });
             return originalOnDelta?.(text);
         },
     } : undefined;
     const requestMessages = toLlmRequestMessages(afterPlugins.messages);
     const request = buildProviderRequest(config, effectivePreset, requestMessages, { stream: true });
+    publishDebugPromptSnapshot({ request, config, preset: effectivePreset, meta, options, requestKind: "completion" });
     const llmAbort = new AbortController();
     const llmTimeout = setTimeout(() => llmAbort.abort(), 500_000);
     const detachExternalAbort = attachExternalAbort(llmAbort, options?.signal);
@@ -830,7 +832,7 @@ export async function sendLLMStreamRequest(
             throw new ChatEngineError("流式响应没有解析到文本增量。");
         }
         let rawOutput = options?.skipTimestampStrip ? streamedContent.trim() : stripHallucinatedTimestamps(streamedContent.trim());
-        rawOutput = await applyChatPluginLlmResponse(rawOutput, pluginPurpose);
+        rawOutput = await applyChatPluginLlmResponse(rawOutput, pluginPurpose, options?.debugSessionId);
 
         // Store API log entry — mirror sendLLMRequest so streaming calls also show up
         // in the "底层调用大模型日志" panel. reasoning 单独存思维链原文，供「查看原始」直接展示。
@@ -2041,6 +2043,7 @@ export async function generateOfflineChatCompletion(
         const streamResult = await sendLLMStreamRequest(config, preset, llmMessages, regexes, meta, {
             appId: "chat",
             appTags: ["chat", "offline"],
+            debugSessionId: session.id,
             signal: options?.signal,
         }, {
             onDelta: (text) => options.onStreamDelta?.(text),
@@ -2431,6 +2434,7 @@ export async function generateChatCompletion(
                     appId: options?.appId ?? "chat",
                     appTags: requestAppTags,
                     followUpCount: options?.followUpCount,
+                    debugSessionId: session.id,
                     signal: options?.signal,
                 }, {
                     onDelta: (text) => callbacks?.onStreamDelta?.(text),
@@ -2626,6 +2630,7 @@ export async function generateChatCompletion(
                             appId: options?.appId ?? "chat",
                             appTags: requestAppTags,
                             followUpCount: options?.followUpCount,
+                            debugSessionId: session.id,
                             signal: options?.signal,
                         }, {
                             onDelta: (text) => callbacks?.onStreamDelta?.(text),

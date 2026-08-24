@@ -1195,14 +1195,17 @@ export async function generateGroupOfflineChatCompletion(
         if (tagThinking) reasoning = tagThinking;
     }
 
-    // 摘要缺失时自动补提：拿上次完整输出做上下文，只要求模型补一段摘要，
-    // 避免「静默结束」导致该轮线下记录没有摘要、进不了短期记忆事件流。
+    // 摘要缺失时自动补提：只带最后一轮上下文（系统提示 + 最后一条用户消息 + 本次输出），
+    // 要求模型补一段摘要，避免「静默结束」导致该轮线下记录没有摘要、进不了短期记忆事件流。
+    // 不重发完整 llmMessages：长对话下 token/延迟成本高，且摘要本来就只针对本轮关键事件。
     const MAX_SUMMARY_RETRY = 2;
+    const lastUserMessage = [...llmMessages].reverse().find(m => m.role === "user");
     for (let attempt = 0; attempt < MAX_SUMMARY_RETRY; attempt += 1) {
         if (parsed.summary.trim()) break;
         if (!parsed.content.trim() && !rawOutput.trim()) break; // 连正文都没有，补提没有意义
         const retryMessages: LLMMessage[] = [
-            ...llmMessages,
+            ...(llmMessages[0]?.role === "system" ? [llmMessages[0]] : []),
+            ...(lastUserMessage ? [lastUserMessage] : []),
             { role: "assistant", content: rawOutput },
             {
                 role: "user",

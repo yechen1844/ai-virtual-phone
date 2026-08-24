@@ -1354,6 +1354,10 @@ const _regexFromStringCache = new Map<string, RegExp | null>();
 /**
  * Parse a regex string like `/pattern/flags` into a RegExp.
  * Returns null if invalid. Does NOT force any flags — uses exactly what the user wrote.
+ *
+ * 注意：缓存返回的是共享 RegExp 实例。带 g/y 标志的实例会携带 lastIndex 状态，
+ * 调用方若自行驱动匹配（exec/test 循环等），需在每次使用前 reset lastIndex 或复制实例；
+ * 直接用 replace/matchAll 等一次性 API 则无需处理。
  */
 function regexFromString(input: string): RegExp | null {
     if (_regexFromStringCache.has(input)) return _regexFromStringCache.get(input)!;
