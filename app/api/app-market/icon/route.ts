@@ -58,7 +58,8 @@ export async function GET(request: Request) {
     }
     const decoded = decodeDataUrl(stored);
     if (!decoded) return new Response(null, { status: 404 });
-    return new Response(decoded.bytes, {
+    // Buffer 不满足 BodyInit 类型（其 ArrayBufferLike 可能是 SharedArrayBuffer），转成普通 Uint8Array
+    return new Response(new Uint8Array(decoded.bytes), {
       status: 200,
       headers: { ...cacheHeaders, "Content-Type": decoded.mime, "Content-Length": String(decoded.bytes.length), "X-Content-Type-Options": "nosniff" },
     });
