@@ -67,9 +67,6 @@ import {
 import { loadMemoryConfig } from "./memory-storage";
 import { retrieveCoreMemoriesForPrompt, retrieveMemoriesForPrompt } from "./memory-service";
 import { formatCoreMemories, formatLongTermMemories } from "./memory-injector";
-import { recordCharacterActivity } from "./complex-memory/guard";
-import { isComplexMemoryEnabled } from "./complex-memory/config";
-import { buildMemoryContextBundle } from "./complex-memory/recall";
 import { prepareShortTermContext, prepareGroupShortTermContext } from "./short-term-assembler";
 import { parseActionTags, dispatchActions } from "./action-parser";
 import { getCustomStickerExample, loadCustomStickers } from "./custom-sticker-storage";
@@ -254,26 +251,6 @@ export function buildEditableGroupRoundText(
         .join("\n\n");
 }
 
-function scheduleGroupMemorySummarization(
-    participantIds: string[],
-    chars: ReturnType<typeof loadCharacters>,
-    history: ChatMessage[],
-    replyCount: number,
-): void {
-    const lastMessage = history[history.length - 1];
-    const userEventCount = lastMessage?.role === "user" ? 1 : 0;
-    const totalNewEvents = userEventCount + replyCount;
-    if (totalNewEvents <= 0) return;
-
-    const uniqueParticipantIds = [...new Set(participantIds)];
-    for (const characterId of uniqueParticipantIds) {
-        const character = chars.find(c => c.id === characterId);
-        if (!character) continue;
-
-        recordCharacterActivity(characterId, character.name, totalNewEvents);
-    }
-}
-
 /**
  * Shared prompt builder for group chat — used by both generate and preview.
  */
@@ -354,25 +331,12 @@ async function buildGroupChatPromptMessages(
         });
         let coreMemories = "", longTermMemories = "";
         try {
-            if (isComplexMemoryEnabled(charId)) {
-                const bundle = await buildMemoryContextBundle(charId, character.name, wbActivationContext, {
-                    skipRerank: options?.skipMemoryRerank,
-                    maxRecallEntries: options?.maxRecallEntries,
-                }).catch(() => null);
-                if (bundle) {
-                    coreMemories = bundle.coreMemory;
-                    longTermMemories = [bundle.fixedEvents, bundle.yesterdayDaily, bundle.specialDateDailies, bundle.activePeriods, bundle.recalled]
-                        .filter(Boolean)
-                        .join("\n\n");
-                }
-            } else {
-                const [coreResults, results] = await Promise.all([
-                    retrieveCoreMemoriesForPrompt(charId, memConfig),
-                    retrieveMemoriesForPrompt(charId, wbActivationContext, memConfig),
-                ]);
-                coreMemories = formatCoreMemories(coreResults);
-                longTermMemories = formatLongTermMemories(results);
-            }
+            const [coreResults, results] = await Promise.all([
+                retrieveCoreMemoriesForPrompt(charId, memConfig),
+                retrieveMemoriesForPrompt(charId, wbActivationContext, memConfig),
+            ]);
+            coreMemories = formatCoreMemories(coreResults);
+            longTermMemories = formatLongTermMemories(results);
         } catch { /* ignore */ }
         return {
             character,
@@ -1090,10 +1054,6 @@ export async function generateGroupChatCompletion(
         if (cleanText.trim()) {
             finalResults.push({ ...r, responseText: cleanText });
         }
-    }
-
-    if (!options?.skipMemorySummarization) {
-        scheduleGroupMemorySummarization(participantIds, chars, history, finalResults.length);
     }
 
     return finalResults;

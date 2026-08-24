@@ -57,9 +57,6 @@ import { fetchLlmPayload } from "./llm-http";
 import { loadMemoryConfig } from "./memory-storage";
 import { retrieveCoreMemoriesForPrompt, retrieveMemoriesForPrompt } from "./memory-service";
 import { formatCoreMemories, formatLongTermMemories } from "./memory-injector";
-import { recordCharacterActivity } from "./complex-memory/guard";
-import { isComplexMemoryEnabled } from "./complex-memory/config";
-import { buildMemoryContextBundle } from "./complex-memory/recall";
 import { prepareShortTermContext } from "./short-term-assembler";
 import { parseActionTags, dispatchActions } from "./action-parser";
 import { findEnabledToolForSchema, getEnabledTools, type EnabledTool } from "./tool-storage";
@@ -1859,29 +1856,12 @@ export async function buildChatPromptMessages(
 
     let longTermMemories = "";
     let coreMemories = "";
-    if (isComplexMemoryEnabled(character.id)) {
-        const isChatSession = resolvedAppId === "chat";
-        const bundle = await buildMemoryContextBundle(character.id, character.name, wbActivationContext, {
-            shortTermText: recentBlocks.map(b => b.content).filter(Boolean).join("\n"),
-            // 只在「单聊会话」触发重排（群聊走 group-chat-engine 单独处理）；预览或非会话 app（自定义/阅读等）
-            // 一律跳过重排，且非会话场景只放行最多 6 条向量召回结果，节省副 API 消耗
-            skipRerank: options?.skipMemoryRerank || !isChatSession,
-            maxRecallEntries: isChatSession ? undefined : 6,
-        }).catch(() => null);
-        if (bundle) {
-            coreMemories = bundle.coreMemory;
-            longTermMemories = [bundle.fixedEvents, bundle.yesterdayDaily, bundle.specialDateDailies, bundle.activePeriods, bundle.recalled]
-                .filter(Boolean)
-                .join("\n\n");
-        }
-    } else {
-        const [memResults, coreResults] = await Promise.all([
-            retrieveMemoriesForPrompt(character.id, wbActivationContext, memConfig).catch(() => null),
-            retrieveCoreMemoriesForPrompt(character.id, memConfig).catch(() => null),
-        ]);
-        longTermMemories = memResults ? formatLongTermMemories(memResults) : "";
-        coreMemories = coreResults ? formatCoreMemories(coreResults) : "";
-    }
+    const [memResults, coreResults] = await Promise.all([
+        retrieveMemoriesForPrompt(character.id, wbActivationContext, memConfig).catch(() => null),
+        retrieveCoreMemoriesForPrompt(character.id, memConfig).catch(() => null),
+    ]);
+    longTermMemories = memResults ? formatLongTermMemories(memResults) : "";
+    coreMemories = coreResults ? formatCoreMemories(coreResults) : "";
     const scheduleSummary = buildCalendarScheduleMarker("character", character.id, getWeekStartIso(now));
     const currentSchedule = getCurrentCalendarScheduleForPrompt("character", character.id, now);
     const musicOnlineHint = isNeteaseConfigured() ? "- 你可以推荐任何歌曲，系统会在线搜索并播放。不局限于用户本地音乐库。\n" : "\n";
@@ -2668,13 +2648,6 @@ export async function generateChatCompletion(
                 }
             }
         }
-    }
-
-    // Memory: record activity (complex memory ring buffer or float counter + summarization)
-    try {
-        recordCharacterActivity(character.id, character.name, 2); // user message + AI reply
-    } catch (err) {
-        console.warn("[ChatEngine] Memory counter/summarization failed:", err);
     }
 
     return { parts };

@@ -20,7 +20,6 @@ import { loadNativeTimeline, formatTimelineForSummarization, filterTimelineByAll
 import { generateEmbedding, resolveEmbeddingModel } from "./memory-embedding";
 import { simpleLLMCall } from "./api-helpers";
 import { maybeRunCoreMemoryPipeline } from "./core-memory-builder";
-import { isComplexMemoryEnabled } from "./complex-memory/config";
 
 /** Per-character lock to prevent concurrent summarization. */
 const summarizingSet = new Set<string>();
@@ -34,8 +33,6 @@ export async function maybeRunSummarization(
     characterId: string,
     characterName: string
 ): Promise<void> {
-    // 复杂记忆守卫：该角色已启用复杂记忆时，float 自动总结停摆，由镜像代劳
-    if (isComplexMemoryEnabled(characterId)) return;
     const config = loadMemoryConfig();
     if (!config.autoSummarizeEnabled) return;
 
