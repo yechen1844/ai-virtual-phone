@@ -12,7 +12,7 @@ import { addChatContact, createOrGetSession, loadChatMessages, pushChatMessage }
 import { generateChatCompletion, flattenCompletionResult } from "./chat-engine";
 import { loadCharacters } from "./character-storage";
 
-const CLOUD_URL = process.env.NEXT_PUBLIC_NAGI_CLOUD_URL || "https://nagi-bridge.luyi90720.workers.dev";
+const CLOUD_URL = process.env.NEXT_PUBLIC_NAGI_CLOUD_URL || "https://nagi.chajianreader.cc.cd";
 const CLOUD_KEY = process.env.NEXT_PUBLIC_NAGI_CLOUD_KEY || "nagi_bridge_2026";
 const POLL_MS = Number(process.env.NEXT_PUBLIC_NAGI_POLL_MS || 2000);
 

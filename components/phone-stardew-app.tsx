@@ -15,7 +15,7 @@ type NAGI_STATUS = "idle" | "running" | "checking";
 
 const KV_CHAR_KEY = "nagi_bridge_character_id";
 const KV_ENABLED_KEY = "nagi_bridge_enabled";
-const KV_BACKEND = "https://nagi-bridge.luyi90720.workers.dev";
+const KV_BACKEND = "https://nagi.chajianreader.cc.cd";
 
 type CharOption = { id: string; name: string };
 type LogEntry = { ts: string; text: string; ok: boolean };
