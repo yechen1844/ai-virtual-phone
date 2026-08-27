@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>传话管家 · 回复测试</title>
+<style>
+  :root {
+    --bg: #F7F7F8; --card: #FFFFFF; --text: #171717; --muted: #52525B;
+    --border: rgba(23,23,23,.12); --brand: #4B3FE3; --ok: #1DC981; --bad: #E8463A;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+    font: 15px/1.6 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  .card {
+    width: 100%; max-width: 420px; background: var(--card);
+    border: 1px solid var(--border); border-radius: 16px; padding: 28px;
+  }
+  h1 { font-size: 18px; margin: 0 0 6px; }
+  p.tip { margin: 0 0 18px; font-size: 13px; color: var(--muted); }
+  textarea {
+    width: 100%; height: 84px; resize: vertical; padding: 10px 12px;
+    border: 1px solid var(--border); border-radius: 10px;
+    font: inherit; outline: none;
+  }
+  textarea:focus { border-color: var(--brand); }
+  button {
+    margin-top: 12px; width: 100%; padding: 11px 0; border: 0; border-radius: 10px;
+    background: var(--brand); color: #fff; font-size: 15px; cursor: pointer;
+  }
+  button:disabled { opacity: .55; cursor: wait; }
+  #status { margin-top: 14px; min-height: 22px; font-size: 13px; }
+  #status.ok { color: var(--ok); }
+  #status.bad { color: var(--bad); }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>💬 char 说一句话</h1>
+  <p class="tip">输入的话会通过传话管家（localhost）送进游戏聊天框。先启动游戏和管家再用。</p>
+  <textarea id="text" placeholder="比如：今天浇水了吗？"></textarea>
+  <button id="send">发送到游戏</button>
+  <div id="status"></div>
+</div>
+<script>
+  const params = new URLSearchParams(location.search);
+  const port = params.get('port') || '7869';
+  const btn = document.getElementById('send');
+  const statusEl = document.getElementById('status');
+  btn.addEventListener('click', async () => {
+    const text = document.getElementById('text').value.trim();
+    if (!text) { statusEl.className = 'bad'; statusEl.textContent = '先写点什么再发～'; return; }
+    btn.disabled = true;
+    statusEl.className = '';
+    statusEl.textContent = '发送中…';
+    try {
+      const res = await fetch(`http://localhost:${port}/say`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text })
+      });
+      const data = await res.json();
+      if (data.ok) {
+        statusEl.className = 'ok';
+        statusEl.textContent = '✅ 已送达游戏聊天框';
+        document.getElementById('text').value = '';
+      } else {
+        throw new Error(data.error || ('HTTP ' + res.status));
+      }
+    } catch (e) {
+      statusEl.className = 'bad';
+      statusEl.textContent = '❌ 失败：' + e.message + '（管家在跑吗？端口是 ' + port + ' 吗？）';
+    } finally {
+      btn.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>

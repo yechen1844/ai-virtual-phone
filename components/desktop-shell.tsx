@@ -33,6 +33,7 @@ import { MascotFloat } from "@/components/mascot/mascot-float";
 import { MascotPreviewHost } from "@/components/mascot/mascot-preview-host";
 import { useMusicControlsOptional } from "@/lib/music-context";
 import { PhoneResourcesApp, type ResourceSubPage } from "@/components/phone-resources-app";
+import { PhoneStardewApp } from "@/components/phone-stardew-app";
 import { CheckPhoneApp } from "@/components/checkphone/checkphone-app";
 import { ShoppingApp } from "@/components/shopping/shopping-app";
 import { GameHubApp } from "@/components/game/game-hub-app";
@@ -3903,6 +3904,15 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
           onClose={() => setActiveApp(null)}
           onNotice={setNotice}
           initialPage={resourcesInitialPage}
+        />
+      );
+    }
+
+    if (activeApp === "stardew") {
+      return (
+        <PhoneStardewApp
+          onClose={() => setActiveApp(null)}
+          onNotice={setNotice}
         />
       );
     }

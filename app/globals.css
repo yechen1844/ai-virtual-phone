@@ -43,3 +43,153 @@
   --font-size-lg: 17px;  --font-size-xl: 20px;
   --font-size-2xl: 24px; --font-size-3xl: 30px;
 }
+
+/* ==== 星露谷联动 App ==== */
+.stardew-app-root {
+  padding: 16px 16px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.stardew-hero {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, rgba(43, 102, 40, 0.14), rgba(232, 175, 60, 0.12));
+  border: 1px solid var(--border);
+}
+.stardew-hero-icon {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
+  background: rgba(43, 102, 40, 0.18);
+  color: #2b6628;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.stardew-hero-title {
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  color: var(--text);
+}
+.stardew-hero-desc {
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.stardew-section {
+  padding: 14px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.stardew-label {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.stardew-select {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--surface-muted);
+  color: var(--text);
+  font-size: var(--font-size-base);
+  outline: none;
+}
+.stardew-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  border: none;
+  font-size: var(--font-size-base);
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.12s;
+}
+.stardew-toggle.on { background: #2b6628; color: #fff; }
+.stardew-toggle.off { background: var(--surface-muted); color: var(--text-muted); }
+.stardew-toggle:disabled { opacity: 0.6; cursor: wait; }
+.stardew-spin { animation: stardew-rotate 0.9s linear infinite; }
+@keyframes stardew-rotate { to { transform: rotate(360deg); } }
+.stardew-backend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  word-break: break-all;
+}
+.stardew-backend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #1dc981;
+  flex-shrink: 0;
+}
+.stardew-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.stardew-stat {
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+}
+.stardew-stat b {
+  color: var(--text);
+  font-size: var(--font-size-lg);
+}
+.stardew-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--surface-muted);
+  color: var(--text);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+.stardew-btn:disabled { opacity: 0.6; cursor: wait; }
+.stardew-logs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.stardew-log {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--font-size-sm);
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+}
+.stardew-log.ok { color: var(--text); }
+.stardew-log.err { color: var(--danger, #e8463a); }
+.stardew-log span { flex: 1; word-break: break-word; }
+.stardew-log em {
+  font-style: normal;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+

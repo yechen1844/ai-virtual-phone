@@ -1,0 +1,17 @@
+{
+  "nagibridgeUrl": "http://localhost:7842",
+  "charName": "Nagi",
+  "outboxFile": "outbox.jsonl",
+  "channelServer": {
+    "port": 9000
+  },
+  "replyServer": {
+    "port": 7869
+  },
+  "cloudRelay": {
+    "url": "https://nagi-bridge.luyi90720.workers.dev",
+    "key": "nagi_bridge_2026",
+    "pollIntervalMs": 1500
+  },
+  "relays": []
+}

@@ -1,0 +1,10 @@
+name = "nagi-bridge"
+main = "worker.js"
+compatibility_date = "2024-09-01"
+workers_dev = true
+
+account_id = "8108a0468f71ac9363ed580bedf9a4f7"
+
+[[kv_namespaces]]
+binding = "NAGI_KV"
+id = "ac664772a66340d4bfaf1efe52515a7d"

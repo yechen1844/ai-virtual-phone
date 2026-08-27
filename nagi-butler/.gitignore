@@ -1,0 +1,6 @@
+outbox.jsonl
+test/.tmp-*
+node_modules/
+downloads/
+test/.tmp-config.json
+test/.tmp-outbox.jsonl
