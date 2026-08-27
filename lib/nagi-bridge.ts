@@ -1,24 +1,93 @@
 // lib/nagi-bridge.ts
-// 星露谷联动信箱：把游戏里玩家说的话写成普通聊天消息，让 char 用原版人设+记忆回复，再把回复推回云端。
+// 星露谷联动：独立会话 + 工具隔离 + 记忆共享。
 //
-// 设计原则：
-// 1. 完全复用 float 现有机制（pushChatMessage / generateChatCompletion / createOrGetSession），
-//    不修改 char 的人设、预设、世界书、记忆体系。
-// 2. 手机端 float 页面运行时，自动轮询云端 Worker 拉取游戏消息；拉到后写入 char 聊天记录，
-//    触发 char 生成回复，回复再推回云端，由电脑端管家送进游戏聊天框。
-// 3. 云端地址与密钥可配置，部署时通过环境变量 NAGI_CLOUD_URL / NAGI_CLOUD_KEY 覆盖。
+// 设计：
+// 1. 记忆按 characterId 全局共享（char 的记忆/核心记忆/复杂记忆 / 人设 / 世界书 / 预设全部复用）。
+//    星露谷会话用同一个 characterId，因此 char 能延续同一套记忆——这正是用户希望的。
+// 2. 工具隔离：给星露谷会话传 appId="stardew"，getEnabledInternalCapabilities("stardew") 返回 []，
+//    于是主聊天那套内置能力（写记忆/音乐/日历/稍后联系…）不会加载；只暴露下面的星露谷工具。
+// 3. 会话独立：用独立的 session id（同 contactId），消息流和主聊天分开；
+//    但短期上下文（shortTermMemory）仍会带该 char 的近期时间线（用户明确希望共享短期记忆）。
+// 4. 云端中转：从 Cloudflare Worker 拉取游戏消息 → 写入星露谷会话 → char 回复 → 推回云端。
 
-import { addChatContact, createOrGetSession, loadChatMessages, pushChatMessage } from "./chat-storage";
+import { loadChatSessions, saveChatSessions, pushChatMessage, loadChatMessages } from "./chat-storage";
 import { generateChatCompletion, flattenCompletionResult } from "./chat-engine";
 import { loadCharacters } from "./character-storage";
+import { kvGet, kvSet } from "./kv-db";
 
 const CLOUD_URL = process.env.NEXT_PUBLIC_NAGI_CLOUD_URL || "https://nagi.chajianreader.cc.cd";
 const CLOUD_KEY = process.env.NEXT_PUBLIC_NAGI_CLOUD_KEY || "nagi_bridge_2026";
 const POLL_MS = Number(process.env.NEXT_PUBLIC_NAGI_POLL_MS || 2000);
 
+export const STARDEW_APP_ID = "stardew";
+const STARDEW_SESSION_PREFIX = "sess_stardew_";
+const KV_CHAR_KEY = "nagi_bridge_character_id";
+const KV_ENABLED_KEY = "nagi_bridge_enabled";
+
 type NagiEntry = { sender: string; text: string; ts?: string };
 
 let pollingStarted = false;
+
+// ── 星露谷专属工具（只读 + 聊天，用于工具隔离）──
+
+export type StardewToolDef = { name: string; description: string; parameterSchema: string };
+
+export function getStardewTools(): StardewToolDef[] {
+  return [
+    {
+      name: "stardew_get_state",
+      description: "查看玩家当前游戏状态：位置、时间、季节、金钱、体力、背包。用于了解农场现状。",
+      parameterSchema: "{}",
+    },
+    {
+      name: "stardew_get_surroundings",
+      description: "查看玩家周围环境：附近有哪些 NPC、怪物、可交互物体、作物。参数 radius 为扫描半径（默认 5）。",
+      parameterSchema: '{"type":"object","properties":{"radius":{"type":"number","description":"扫描半径"}},"additionalProperties":false}',
+    },
+    {
+      name: "stardew_speak_in_game",
+      description: "让 char 在星露谷游戏聊天框里说一句话（显示给玩家看）。参数 text 为要说的话。",
+      parameterSchema: '{"type":"object","properties":{"text":{"type":"string","description":"要说的内容"}},"required":["text"],"additionalProperties":false}',
+    },
+    {
+      name: "stardew_get_time",
+      description: "查看当前游戏内时间（今天几点、季节、第几天、第几年）。",
+      parameterSchema: "{}",
+    },
+  ];
+}
+
+// 由于 REST 工具不受 appId 过滤，星露谷工具通过 custom_app 机制按 appId 暴露。
+// 这里提供一种轻量方式：把星露谷工具包装成"星露谷 App 的工具"，通过 appId 过滤。
+// 具体过滤在 custom-app-sdk-registry 的 loadCustomAppToolsForContext(appId) 里发生：
+// 当 appId === "stardew"（或 "custom_app:stardew"）时，只加载该 app 自己的工具。
+
+// ── 独立会话管理 ──
+
+function isStardewSession(s: { id?: string }): boolean {
+  return typeof s?.id === "string" && s.id.startsWith(STARDEW_SESSION_PREFIX);
+}
+
+export function getOrCreateStardewSession(characterId: string) {
+  const sessions = loadChatSessions();
+  const existing = sessions.find((s) => s.contactId === characterId && isStardewSession(s));
+  if (existing) return existing;
+
+  const newSession: any = {
+    id: `${STARDEW_SESSION_PREFIX}${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    contactId: characterId,
+    unreadCount: 0,
+    updatedAt: new Date().toISOString(),
+    isPinned: false,
+    bilingualTranslationEnabled: true,
+    collapseBilingualTranslation: true,
+    visionImagePromptLimit: 1,
+  };
+  saveChatSessions([newSession, ...sessions]);
+  return newSession;
+}
+
+// ── 云端中转 ──
 
 async function cloudFetch(path: string, init?: RequestInit): Promise<any> {
   const res = await fetch(`${CLOUD_URL}${path}`, {
@@ -55,42 +124,25 @@ async function pushReply(sender: string, text: string): Promise<void> {
   }
 }
 
-/**
- * 处理一条来自游戏的消息：写入 char 聊天记录 → 触发 char 生成回复 → 回复推回云端。
- * @param characterId 要绑定的 char 的 characterId（在星露谷设置里选择）
- */
+// ── 核心：把游戏消息写入星露谷会话，生成回复 ──
+
 export async function ingestNagiGameMessage(characterId: string, msg: NagiEntry): Promise<string | null> {
   if (typeof window === "undefined") return null;
-  if (!characterId) {
-    console.warn("[NagiBridge] 未绑定角色，跳过游戏消息:", msg.text);
-    return null;
-  }
+  if (!characterId) return null;
 
-  let session;
-  try {
-    // 确保联系人存在，然后拿/建会话
-    addChatContact(characterId);
-    session = createOrGetSession(characterId);
-  } catch (e) {
-    console.warn("[NagiBridge] 初始化会话失败:", e);
-    return null;
-  }
+  const session = getOrCreateStardewSession(characterId);
 
-  // 1. 把玩家在游戏里的话写入聊天记录（复用现有入库，触发记忆/会话更新）
-  const userMsg = pushChatMessage({
+  pushChatMessage({
     sessionId: session.id,
     role: "user",
     content: msg.text,
     status: "sent",
   });
-  if (!userMsg) return null;
 
-  // 2. 触发 char 生成回复
   const history = loadChatMessages(session.id);
-  const replyText = await generateNagiReply(session, history);
+  const replyText = await generateStardewReply(session, history);
   if (!replyText) return null;
 
-  // 3. 把 char 的回复写回聊天记录
   pushChatMessage({
     sessionId: session.id,
     role: "assistant",
@@ -98,15 +150,15 @@ export async function ingestNagiGameMessage(characterId: string, msg: NagiEntry)
     status: "sent",
   });
 
-  // 4. 推回云端，让管家送进游戏聊天框
   await pushReply(characterId, replyText);
   return replyText;
 }
 
-async function generateNagiReply(session: any, history: any[]): Promise<string | null> {
+async function generateStardewReply(session: any, history: any[]): Promise<string | null> {
   try {
     const cr = await generateChatCompletion(session, history, {
-      appTags: ["chat"],
+      appId: STARDEW_APP_ID,
+      appTags: ["stardew"],
     });
     return flattenCompletionResult(cr);
   } catch (e) {
@@ -115,9 +167,8 @@ async function generateNagiReply(session: any, history: any[]): Promise<string |
   }
 }
 
-/**
- * 从云端拉取消息并逐条处理。返回处理条数。
- */
+// ── 轮询 ──
+
 export async function processNagiInbox(characterId: string): Promise<number> {
   if (typeof window === "undefined") return 0;
   const msgs = await pullGameMessages();
@@ -131,15 +182,10 @@ export async function processNagiInbox(characterId: string): Promise<number> {
   return count;
 }
 
-/**
- * 启动轮询：只要 float 页面开着，就周期性地从云端拉取游戏消息并让 char 回复。
- * @param characterId 要绑定的 char 的 characterId
- */
 export function startNagiPolling(characterId: string): void {
   if (typeof window === "undefined") return;
   if (pollingStarted) return;
   pollingStarted = true;
-
   const tick = async () => {
     try {
       if (characterId) await processNagiInbox(characterId);
@@ -151,12 +197,12 @@ export function startNagiPolling(characterId: string): void {
   tick();
 }
 
-/** 停止轮询（在页面卸载或切换绑定角色时调用） */
 export function stopNagiPolling(): void {
   pollingStarted = false;
 }
 
-/** 供 UI 设置页读取可绑定的角色列表 */
+// ── 供 UI 使用 ──
+
 export function listBindableCharacters(): { id: string; name: string }[] {
   if (typeof window === "undefined") return [];
   try {
@@ -164,4 +210,21 @@ export function listBindableCharacters(): { id: string; name: string }[] {
   } catch {
     return [];
   }
+}
+
+/** 星露谷会话当前绑定的 char */
+export function getStardewCharId(): string {
+  return kvGet(KV_CHAR_KEY) || "";
+}
+
+export function setStardewCharId(id: string): void {
+  kvSet(KV_CHAR_KEY, id);
+}
+
+export function isStardewEnabled(): boolean {
+  return typeof window !== "undefined" && kvGet(KV_ENABLED_KEY) === "1";
+}
+
+export function setStardewEnabled(on: boolean): void {
+  kvSet(KV_ENABLED_KEY, on ? "1" : "0");
 }

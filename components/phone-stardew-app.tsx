@@ -1,17 +1,25 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Sprout, Loader2, Play, Square, RefreshCw, MessageSquare } from "lucide-react";
+import { Sprout, Loader2, Play, Square, RefreshCw, MessageSquare, Send } from "lucide-react";
 import { PageShell } from "./ui/page-shell";
 import { kvGet, kvSet } from "@/lib/kv-db";
+import { BilingualTextBlock } from "./chat/message-bubble";
+import { shouldSendChatInputOnEnter } from "@/lib/chat-input-keyboard";
+import { useChatBottomReserve } from "./chat/use-chat-bottom-reserve";
 import {
-    listBindableCharacters,
-    startNagiPolling,
-    stopNagiPolling,
-    processNagiInbox,
+  listBindableCharacters,
+  startNagiPolling,
+  stopNagiPolling,
+  processNagiInbox,
+  getOrCreateStardewSession,
+  STARDEW_APP_ID,
 } from "@/lib/nagi-bridge";
+import { loadChatMessages, pushChatMessage, type ChatMessage, type ChatSession } from "@/lib/chat-storage";
+import { generateChatCompletion, flattenCompletionResult } from "@/lib/chat-engine";
 
 type NAGI_STATUS = "idle" | "running" | "checking";
+type StardewPage = "settings" | "chat";
 
 const KV_CHAR_KEY = "nagi_bridge_character_id";
 const KV_ENABLED_KEY = "nagi_bridge_enabled";
@@ -21,6 +29,7 @@ type CharOption = { id: string; name: string };
 type LogEntry = { ts: string; text: string; ok: boolean };
 
 export function PhoneStardewApp({ onClose, onNotice }: { onClose: () => void; onNotice?: (msg: string) => void }) {
+    const [page, setPage] = useState<StardewPage>("settings");
     const [chars, setChars] = useState<CharOption[]>([]);
     const [charId, setCharId] = useState<string>("");
     const [enabled, setEnabled] = useState<boolean>(false);
@@ -29,7 +38,6 @@ export function PhoneStardewApp({ onClose, onNotice }: { onClose: () => void; on
     const [inboxCount, setInboxCount] = useState<number>(0);
     const statusRef = useRef<NAGI_STATUS>("idle");
 
-    // 读取当前 char 列表 + 已保存的绑定/开关
     useEffect(() => {
         setChars(listBindableCharacters());
         const savedChar = kvGet(KV_CHAR_KEY) || "";
@@ -110,73 +118,228 @@ export function PhoneStardewApp({ onClose, onNotice }: { onClose: () => void; on
     }, [charId, enabled, onNotice, pushLog]);
 
     return (
-        <PageShell title="星露谷联动" onBack={onClose} >
-            <div className="stardew-app-root">
-                <div className="stardew-hero">
-                    <div className="stardew-hero-icon"><Sprout size={26} /></div>
-                    <div className="stardew-hero-info">
-                        <div className="stardew-hero-title">星露谷物语</div>
-                        <div className="stardew-hero-desc">手机与电脑实时联动 · char 陪你种田聊天</div>
-                    </div>
-                </div>
+        <PageShell title={page === "chat" ? "星露谷聊天" : "星露谷联动"} onBack={page === "chat" ? () => setPage("settings") : onClose}>
+            {page === "settings" ? (
+                <SettingsPage
+                    chars={chars}
+                    charId={charId}
+                    enabled={enabled}
+                    status={status}
+                    inboxCount={inboxCount}
+                    logs={logs}
+                    KV_BACKEND={KV_BACKEND}
+                    onBindChar={handleBindChar}
+                    onToggle={handleToggle}
+                    onPullNow={handlePullNow}
+                    onEnterChat={() => setPage("chat")}
+                    charName={chars.find((c) => c.id === charId)?.name}
+                />
+            ) : (
+                <StardewChatPage charId={charId} charName={chars.find((c) => c.id === charId)?.name} onNotice={onNotice} />
+            )}
+        </PageShell>
+    );
+}
 
-                <div className="stardew-section">
-                    <div className="stardew-label">绑定角色</div>
-                    <select
-                        className="stardew-select"
-                        value={charId}
-                        onChange={(e) => handleBindChar(e.target.value)}
-                    >
-                        <option value="">— 选择要绑定的 char —</option>
-                        {chars.map((c) => (
-                            <option key={c.id} value={c.id}>{c.name}</option>
-                        ))}
-                    </select>
+function SettingsPage(props: {
+    chars: CharOption[];
+    charId: string;
+    enabled: boolean;
+    status: NAGI_STATUS;
+    inboxCount: number;
+    logs: LogEntry[];
+    KV_BACKEND: string;
+    onBindChar: (id: string) => void;
+    onToggle: () => void;
+    onPullNow: () => void;
+    onEnterChat: () => void;
+    charName?: string;
+}) {
+    const { chars, charId, enabled, status, inboxCount, logs, KV_BACKEND, onBindChar, onToggle, onPullNow, onEnterChat, charName } = props;
+    return (
+        <div className="stardew-app-root">
+            <div className="stardew-hero">
+                <div className="stardew-hero-icon"><Sprout size={26} /></div>
+                <div className="stardew-hero-info">
+                    <div className="stardew-hero-title">星露谷物语</div>
+                    <div className="stardew-hero-desc">手机与电脑实时联动 · char 陪你种田聊天</div>
                 </div>
+            </div>
 
+            {charId && (
                 <div className="stardew-section">
-                    <div className="stardew-label">联动开关</div>
-                    <button
-                        className={`stardew-toggle ${enabled ? "on" : "off"}`}
-                        onClick={handleToggle}
-                        disabled={status === "checking"}
-                    >
-                        {status === "checking" ? <Loader2 size={18} className="stardew-spin" /> : enabled ? <Play size={18} /> : <Square size={18} />}
-                        <span>{enabled ? "联动已开启 · 实时串联中" : "联动已关闭"}</span>
+                    <button className="stardew-btn stardew-btn-block" onClick={onEnterChat}>
+                        <MessageSquare size={16} />
+                        进入聊天（{charName || charId}）
                     </button>
                 </div>
+            )}
 
+            <div className="stardew-section">
+                <div className="stardew-label">绑定角色</div>
+                <select className="stardew-select" value={charId} onChange={(e) => onBindChar(e.target.value)}>
+                    <option value="">— 选择要绑定的 char —</option>
+                    {chars.map((c) => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                </select>
+            </div>
+
+            <div className="stardew-section">
+                <div className="stardew-label">联动开关</div>
+                <button className={`stardew-toggle ${enabled ? "on" : "off"}`} onClick={onToggle} disabled={status === "checking"}>
+                    {status === "checking" ? <Loader2 size={18} className="stardew-spin" /> : enabled ? <Play size={18} /> : <Square size={18} />}
+                    <span>{enabled ? "联动已开启 · 实时串联中" : "联动已关闭"}</span>
+                </button>
+            </div>
+
+            <div className="stardew-section">
+                <div className="stardew-label">云端状态</div>
+                <div className="stardew-backend"><span className="stardew-backend-dot" />{KV_BACKEND}</div>
+                <div className="stardew-row">
+                    <div className="stardew-stat">已处理 <b>{inboxCount}</b> 条</div>
+                    <button className="stardew-btn" onClick={onPullNow} disabled={status === "checking"}>
+                        <RefreshCw size={14} className={status === "checking" ? "stardew-spin" : ""} />立即拉取
+                    </button>
+                </div>
+            </div>
+
+            {logs.length > 0 && (
                 <div className="stardew-section">
-                    <div className="stardew-label">云端状态</div>
-                    <div className="stardew-backend">
-                        <span className="stardew-backend-dot" />
-                        {KV_BACKEND}
-                    </div>
-                    <div className="stardew-row">
-                        <div className="stardew-stat">已处理 <b>{inboxCount}</b> 条</div>
-                        <button className="stardew-btn" onClick={handlePullNow} disabled={status === "checking"}>
-                            <RefreshCw size={14} className={status === "checking" ? "stardew-spin" : ""} />
-                            立即拉取
-                        </button>
+                    <div className="stardew-label">最近动态</div>
+                    <div className="stardew-logs">
+                        {logs.map((l, i) => (
+                            <div className={`stardew-log ${l.ok ? "ok" : "err"}`} key={i}>
+                                <MessageSquare size={12} /><span>{l.text}</span><em>{l.ts}</em>
+                            </div>
+                        ))}
                     </div>
                 </div>
+            )}
+        </div>
+    );
+}
 
-                {logs.length > 0 && (
-                    <div className="stardew-section">
-                        <div className="stardew-label">最近动态</div>
-                        <div className="stardew-logs">
-                            {logs.map((l, i) => (
-                                <div className={`stardew-log ${l.ok ? "ok" : "err"}`} key={i}>
-                                    <MessageSquare size={12} />
-                                    <span>{l.text}</span>
-                                    <em>{l.ts}</em>
+function StardewChatPage({ charId, charName, onNotice }: { charId: string; charName?: string; onNotice?: (msg: string) => void }) {
+    const [messages, setMessages] = useState<ChatMessage[]>([]);
+    const [inputValue, setInputValue] = useState("");
+    const [isThinking, setIsThinking] = useState(false);
+    const wrapperRef = useRef<HTMLDivElement | null>(null);
+    const scrollRef = useRef<HTMLDivElement | null>(null);
+    const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+    const sessionRef = useRef<ChatSession | null>(null);
+
+    useChatBottomReserve(wrapperRef, scrollRef, "stardew-chat");
+
+    useEffect(() => {
+        if (!charId) return;
+        try {
+            const session = getOrCreateStardewSession(charId);
+            sessionRef.current = session;
+            setMessages(loadChatMessages(session.id));
+        } catch (e) {
+            console.warn("[StardewChat] 初始化会话失败:", e);
+        }
+    }, [charId]);
+
+    const scrollToBottom = useCallback(() => {
+        requestAnimationFrame(() => {
+            if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+        });
+    }, []);
+
+    useEffect(() => {
+        scrollToBottom();
+    }, [messages, isThinking, scrollToBottom]);
+
+    const handleSend = useCallback(async () => {
+        const text = inputValue.trim();
+        if (!text || isThinking || !sessionRef.current) return;
+        const session = sessionRef.current;
+        setInputValue("");
+        setIsThinking(true);
+
+        const userMsg = pushChatMessage({ sessionId: session.id, role: "user", content: text, status: "sent" });
+        setMessages((prev) => [...prev, userMsg]);
+        scrollToBottom();
+
+        try {
+            const history = loadChatMessages(session.id);
+            const cr = await generateChatCompletion(session, history, {
+                appId: STARDEW_APP_ID,
+                appTags: ["stardew"],
+            });
+            const replyText = flattenCompletionResult(cr);
+            if (replyText) {
+                const aiMsg = pushChatMessage({ sessionId: session.id, role: "assistant", content: replyText, status: "sent" });
+                setMessages((prev) => [...prev, aiMsg]);
+            }
+        } catch (e) {
+            console.warn("[StardewChat] 生成回复失败:", e);
+            onNotice?.("回复生成失败，请稍后再试");
+        } finally {
+            setIsThinking(false);
+            scrollToBottom();
+        }
+    }, [inputValue, isThinking, onNotice, scrollToBottom]);
+
+    const onInputKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+        if (shouldSendChatInputOnEnter(e, true)) {
+            e.preventDefault();
+            void handleSend();
+        }
+    }, [handleSend]);
+
+    const autoGrow = useCallback((el: HTMLTextAreaElement) => {
+        el.style.height = "auto";
+        el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+    }, []);
+
+    return (
+        <div className="stardew-chat-room" ref={wrapperRef}>
+            <div className="stardew-chat-scroll" ref={scrollRef}>
+                {messages.length === 0 && (
+                    <div className="stardew-chat-empty">和 {charName || "char"} 聊聊星露谷吧～</div>
+                )}
+                {messages.map((msg) => {
+                    const isUser = msg.role === "user";
+                    return (
+                        <div className="chat-msg-wrapper" data-role={isUser ? "user" : "assistant"} key={msg.id}>
+                            <div className={`chat-msg-content-wrap ${isUser ? "ml-auto" : ""}`} style={{ maxWidth: "72%" }}>
+                                <div className={`${isUser ? "chat-bubble-role-user" : "chat-bubble-role-assistant"} rounded-md break-words`}>
+                                    <BilingualTextBlock text={msg.content} mode="markdown" defaultExpanded />
                                 </div>
-                            ))}
+                            </div>
+                        </div>
+                    );
+                })}
+                {isThinking && (
+                    <div className="chat-msg-wrapper" data-role="assistant">
+                        <div className="chat-bubble-role-assistant rounded-md mascot-thinking">
+                            思考中<span className="mascot-dot"></span><span className="mascot-dot"></span><span className="mascot-dot"></span>
                         </div>
                     </div>
                 )}
+                <div style={{ overflowAnchor: "auto", height: 1 }} />
             </div>
-        </PageShell>
+
+            <div className="chat-input-bar chat-room-main-pane flex flex-col" data-ui="input">
+                <textarea
+                    ref={textareaRef}
+                    className="chat-input-textarea"
+                    rows={1}
+                    value={inputValue}
+                    placeholder={`和 ${charName || "char"} 聊星露谷…`}
+                    onChange={(e) => { setInputValue(e.target.value); autoGrow(e.target); }}
+                    onKeyDown={onInputKeyDown}
+                />
+                <div className="chat-input-actions">
+                    <button className="stardew-btn" onClick={handleSend} disabled={isThinking || !inputValue.trim()}>
+                        <Send size={16} /> 发送
+                    </button>
+                </div>
+            </div>
+        </div>
     );
 }
 
