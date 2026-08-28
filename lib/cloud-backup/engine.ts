@@ -459,6 +459,10 @@ async function runCloudBackupInternal(
     const sourceHashes: string[] = [];
     let moduleBytes = 0;
     let moduleRecords = 0;
+    // 该模块上次健康备份的记录数：用于判断"以前有数据、这次却为空"。
+    // 注意是模块级合计，而不是单个数据源——某些数据源（如答疑、媒体缓存）
+    // 本来就可能为空，不能拿一个空数据源去中止整个备份。
+    const healthyModuleRecords = healthy?.modules.find((m) => m.id === dataModule.id)?.records ?? 0;
 
     for (let sourceIndex = 0; sourceIndex < dataModule.sources.length; sourceIndex += 1) {
       const sourceLabel = dataModule.sources[sourceIndex].label ?? `数据源 ${sourceIndex + 1}`;
@@ -476,11 +480,6 @@ async function runCloudBackupInternal(
         // 非关键模块报警 → 跳过该数据源，收集 warning，不拖垮整个备份
         moduleWarnings.push(...built.warnings.map((w) => `[${label}] ${w}`));
         continue;
-      }
-      // 关键模块 0 记录：非首次备份（此前有过健康备份）时，若关键模块突然为 0，
-      // 说明数据可能异常丢失（IndexedDB 能打开但是空的），不应静默报成功
-      if (dataModule.critical && built.records === 0 && healthy) {
-        throw new Error(`「${dataModule.label}」导出了 0 条记录——该模块此前有数据，现在却为空，说明备份不完整，已中止本次备份。`);
       }
       let json: string | null = JSON.stringify(built.payload);
       built.payload = null as unknown as typeof built.payload;
@@ -539,6 +538,13 @@ async function runCloudBackupInternal(
     if (sourceManifests.length === 0) {
       moduleWarnings.push(`[${label}] 该模块没有任何数据源被成功备份，已跳过。`);
       continue;
+    }
+
+    // 关键模块整体 0 记录：模块所有数据源合计都为空，且此前健康备份有过数据
+    // → 说明数据可能异常丢失（IndexedDB 能打开但是空的），不应静默报成功。
+    // 若此前也没有数据（healthyModuleRecords === 0），则本来就是空库，不算异常。
+    if (dataModule.critical && moduleRecords === 0 && healthyModuleRecords > 0) {
+      throw new Error(`「${label}」整个模块导出了 0 条记录（此前健康备份有 ${healthyModuleRecords} 条）——说明数据可能已丢失或读取异常，已中止本次备份以保护数据。`);
     }
 
     const hash = await sha256TextHex(sourceHashes.join("|"));

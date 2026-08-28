@@ -225,9 +225,13 @@ export async function buildSingleSourcePayload(
   if (stripping) sourcePayload = stripMediaFromSource(sourcePayload);
   const records = countSourceRecords(sourcePayload);
   const payload: ModulePayload = { moduleId: dataModule.id, sources: [sourcePayload] };
-  const warnings = sourcePayload.type === "indexeddb" && sourcePayload.error
-    ? [`「${dataModule.label}」${sourcePayload.error}`]
-    : [];
+  const warnings = [] as string[];
+  if (sourcePayload.type === "indexeddb" && sourcePayload.error) {
+    warnings.push(`「${dataModule.label}」${sourcePayload.error}`);
+  }
+  if (sourcePayload.type === "kv" && sourcePayload.error) {
+    warnings.push(`「${dataModule.label}」${sourcePayload.error}`);
+  }
   return { payload, records, warnings };
 }
 
