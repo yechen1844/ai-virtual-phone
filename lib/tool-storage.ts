@@ -32,6 +32,16 @@ registerKvMigration(COMPOSITE_TOOLS_KEY);
 registerKvMigration(COMPOSITE_TOOL_PACKAGES_KEY);
 registerKvMigration(MCP_SERVERS_KEY);
 
+/** 星露谷专用工具 id：仅当 appId === "stardew" 时才暴露和可执行 */
+export const STARDEW_APP_ID = "stardew";
+export function isStardewToolName(name: string | undefined): boolean {
+  return typeof name === "string" && name.startsWith("stardew_");
+}
+/** 星露谷工具是否应在当前 appId 下暴露 */
+export function stardewVisibleForApp(appId: string | undefined): boolean {
+  return appId === STARDEW_APP_ID;
+}
+
 const LEGACY_AUTO_REST_PACKAGE_IDS = new Set([
     "rest_package_user_default",
     "rest_package_builtin",
@@ -373,6 +383,18 @@ export function getEnabledTools(appId?: string): EnabledTool[] {
     for (const t of restTools) {
         if (!t.enabled) continue;
         if (t.packageId && restPackageIds.has(t.packageId)) continue;
+        // 星露谷工具按 appId 隔离：非 stardew 场景隐藏；stardew 场景只暴露这些
+        if (isStardewToolName(t.name)) {
+            if (!stardewVisibleForApp(appId)) continue;
+            tools.push({
+                name: t.name,
+                description: t.description,
+                parameterSchema: t.parameterSchema,
+                source: "rest",
+                sourceId: t.id,
+            });
+            continue;
+        }
         tools.push({
             name: t.name,
             description: t.description,

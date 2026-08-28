@@ -14,6 +14,11 @@ import { loadChatSessions, saveChatSessions, pushChatMessage, loadChatMessages }
 import { generateChatCompletion, flattenCompletionResult } from "./chat-engine";
 import { loadCharacters } from "./character-storage";
 import { kvGet, kvSet } from "./kv-db";
+import {
+  createRestTool,
+  saveRestTools,
+  loadRestTools,
+} from "./tool-storage";
 
 const CLOUD_URL = process.env.NEXT_PUBLIC_NAGI_CLOUD_URL || "https://nagi.chajianreader.cc.cd";
 const CLOUD_KEY = process.env.NEXT_PUBLIC_NAGI_CLOUD_KEY || "nagi_bridge_2026";
@@ -61,6 +66,47 @@ export function getStardewTools(): StardewToolDef[] {
 // 这里提供一种轻量方式：把星露谷工具包装成"星露谷 App 的工具"，通过 appId 过滤。
 // 具体过滤在 custom-app-sdk-registry 的 loadCustomAppToolsForContext(appId) 里发生：
 // 当 appId === "stardew"（或 "custom_app:stardew"）时，只加载该 app 自己的工具。
+
+/** 把 4 个星露谷工具注册成真实 REST 工具（endpoint 指向云端 Worker），供执行器 tryRest 命中 */
+export function ensureStardewToolsRegistered(): void {
+  if (typeof window === "undefined") return;
+  let changed = false;
+  const existing = loadRestTools();
+  const defs = getStardewTools();
+  for (const def of defs) {
+    const found = existing.find((t) => t.name === def.name);
+    if (found) continue; // 已存在
+    const tool = createRestTool(def.name);
+    tool.description = def.description;
+    tool.parameterSchema = def.parameterSchema;
+    tool.enabled = true;
+    tool.packageId = undefined; // 星露谷工具独立，不入包，靠 name 前缀按 appId 过滤
+    tool.directFetch = true;
+
+    if (def.name === "stardew_get_state") {
+      tool.endpoint = `${CLOUD_URL}/state`;
+      tool.method = "GET";
+    } else if (def.name === "stardew_get_surroundings") {
+      tool.endpoint = `${CLOUD_URL}/surroundings`;
+      tool.method = "GET";
+    } else if (def.name === "stardew_speak_in_game") {
+      tool.endpoint = `${CLOUD_URL}/game-say`;
+      tool.method = "POST";
+      tool.bodyTemplate = `{"sender":"Nagi","text":"{{text}}"}`;
+    } else if (def.name === "stardew_get_time") {
+      tool.endpoint = `${CLOUD_URL}/state`;
+      tool.method = "GET";
+    }
+    existing.push(tool);
+    changed = true;
+  }
+  if (changed) saveRestTools(existing);
+}
+
+/** 判断某个 REST 工具是否属于星露谷（按 name 前缀识别） */
+export function isStardewRestTool(tool: { packageId?: string; name?: string }): boolean {
+  return typeof tool?.name === "string" && tool.name.startsWith("stardew_");
+}
 
 // ── 独立会话管理 ──
 
@@ -156,6 +202,7 @@ export async function ingestNagiGameMessage(characterId: string, msg: NagiEntry)
 
 async function generateStardewReply(session: any, history: any[]): Promise<string | null> {
   try {
+    ensureStardewToolsRegistered();
     const cr = await generateChatCompletion(session, history, {
       appId: STARDEW_APP_ID,
       appTags: ["stardew"],

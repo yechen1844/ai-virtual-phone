@@ -33,7 +33,7 @@ try {
   appendFileSync(outboxPath, '', 'utf8');
 } catch {}
 
-const stats = { received: 0, uploaded: 0, replies: 0, delivered: 0, startedAt: new Date().toISOString() };
+const stats = { received: 0, uploaded: 0, replies: 0, delivered: 0, updates: 0, startedAt: new Date().toISOString() };
 
 const log = (msg) =>
   console.log(`[${new Date().toLocaleTimeString('zh-CN', { hour12: false })}] ${msg}`);
@@ -114,6 +114,38 @@ async function checkGame() {
     return d.worldReady === true;
   } catch {
     return false;
+  }
+}
+
+// 采集 NagiBridge 真实状态，上传到云端 Worker，供 float 工具读取
+async function collectGameSnapshot() {
+  if (!cloudEnabled || !gameReady) return;
+  try {
+    // 玩家状态（含时间/位置/财富/背包）
+    const stRes = await fetch(`${nagiUrl}/state`, { signal: AbortSignal.timeout(6000) });
+    if (stRes.ok) {
+      const state = await stRes.json();
+      await fetch(`${cloudUrl}/state`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-Nagi-Key': cloudKey },
+        body: JSON.stringify({ player: state.player, location: state.location, time: state.time, inventory: state.inventory }),
+        signal: AbortSignal.timeout(8000),
+      });
+      stats.updates += 1;
+    }
+    // 周围环境（半径 5 足够聊天用）
+    const suRes = await fetch(`${nagiUrl}/surroundings?radius=5`, { signal: AbortSignal.timeout(6000) });
+    if (suRes.ok) {
+      const surroundings = await suRes.json();
+      await fetch(`${cloudUrl}/surroundings`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-Nagi-Key': cloudKey },
+        body: JSON.stringify(surroundings),
+        signal: AbortSignal.timeout(8000),
+      });
+    }
+  } catch (e) {
+    // 静默，避免刷屏；下次循环再试
   }
 }
 
@@ -248,6 +280,7 @@ async function gameCheckLoop() {
       log(`⏳ 还没连上游戏（${nagiUrl}）。请确认游戏已启动并进入存档。`);
     }
   }
+  if (gameReady) await collectGameSnapshot();
   setTimeout(gameCheckLoop, 5000);
 }
 gameCheckLoop();

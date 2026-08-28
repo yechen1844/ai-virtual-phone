@@ -14,6 +14,7 @@ import {
   processNagiInbox,
   getOrCreateStardewSession,
   STARDEW_APP_ID,
+  ensureStardewToolsRegistered,
 } from "@/lib/nagi-bridge";
 import { loadChatMessages, pushChatMessage, type ChatMessage, type ChatSession } from "@/lib/chat-storage";
 import { generateChatCompletion, flattenCompletionResult } from "@/lib/chat-engine";
@@ -264,6 +265,7 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
         scrollToBottom();
 
         try {
+            ensureStardewToolsRegistered();
             const history = loadChatMessages(session.id);
             const cr = await generateChatCompletion(session, history, {
                 appId: STARDEW_APP_ID,
