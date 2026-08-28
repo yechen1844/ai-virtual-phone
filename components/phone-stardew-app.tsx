@@ -15,6 +15,8 @@ import {
   getOrCreateStardewSession,
   ensureStardewToolsRegistered,
   sendGameMessageViaCloud,
+  startThinkProcessor,
+  stopThinkProcessor,
 } from "@/lib/nagi-bridge";
 import { loadChatMessages, pushChatMessage, type ChatMessage, type ChatSession } from "@/lib/chat-storage";
 
@@ -49,9 +51,11 @@ export function PhoneStardewApp({ onClose, onNotice }: { onClose: () => void; on
             setStatus("running");
             statusRef.current = "running";
             startNagiPolling(savedChar);
+            startThinkProcessor(savedChar);
         }
         return () => {
             stopNagiPolling();
+            stopThinkProcessor();
         };
     }, []);
 

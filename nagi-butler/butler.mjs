@@ -35,6 +35,11 @@ try {
 
 const stats = { received: 0, uploaded: 0, replies: 0, delivered: 0, updates: 0, startedAt: new Date().toISOString() };
 
+// ── think 中转：char_agent → 管家 → float 浏览器 → 管家 → char_agent ──
+const thinkPending = new Map();   // id → {messages, tools, maxTurns, ts}
+const thinkResults = new Map();   // id → {text, toolCalls, ts}
+let thinkCounter = 0;
+
 const log = (msg) =>
   console.log(`[${new Date().toLocaleTimeString('zh-CN', { hour12: false })}] ${msg}`);
 
@@ -252,6 +257,60 @@ const replyServer = createServer(async (req, res) => {
       stats.replies += 1;
       log(`📤 [${sender}] ${text} → 已送进游戏聊天框`);
       return sendJson(res, 200, { ok: true, game: gameReply });
+    }
+    // ── think 中转端点 ──
+    // char_agent POST /think → 存队列，返回 id
+    if (url.pathname === '/think' && req.method === 'POST') {
+      const body = await readBody(req);
+      const id = `think_${++thinkCounter}`;
+      thinkPending.set(id, { messages: body.messages || [], tools: body.tools || [], maxTurns: body.maxTurns || 10, ts: Date.now() });
+      log(`🧠 think 请求 #${id} (${(body.messages||[]).length} 条消息)`);
+      return sendJson(res, 200, { ok: true, id });
+    }
+    // char_agent GET /think-result?id=xxx → 拿 float 处理结果（阻塞等 60s）
+    if (url.pathname === '/think-result' && req.method === 'GET') {
+      const id = url.searchParams.get('id');
+      if (!id) return sendJson(res, 400, { ok: false, error: 'missing id' });
+      // 最多等 60 秒
+      const deadline = Date.now() + 60000;
+      const check = () => {
+        if (thinkResults.has(id)) {
+          const result = thinkResults.get(id);
+          thinkResults.delete(id);
+          return sendJson(res, 200, { ok: true, ...result });
+        }
+        if (Date.now() > deadline) {
+          return sendJson(res, 504, { ok: false, error: 'think timeout (float 未响应)' });
+        }
+        setTimeout(check, 500);
+      };
+      check();
+      return;
+    }
+    // float 浏览器 GET /think-pending → 拉一个待处理的 think 请求
+    if (url.pathname === '/think-pending' && req.method === 'GET') {
+      for (const [id, req] of thinkPending) {
+        thinkPending.delete(id);
+        return sendJson(res, 200, { ok: true, id, ...req });
+      }
+      return sendJson(res, 200, { ok: true, empty: true });
+    }
+    // float 浏览器 POST /think-result → 提交处理结果
+    if (url.pathname === '/think-result' && req.method === 'POST') {
+      const body = await readBody(req);
+      const id = body.id;
+      if (!id || !thinkPending.has(id) && !thinkResults.has(id)) {
+        // id 可能已经被拉走了，仍然存结果
+      }
+      thinkResults.set(id, { text: body.text || '', toolCalls: body.toolCalls || [], ts: Date.now() });
+      log(`🧠 think 结果 #${id} → ${body.toolCalls?.length || 0} 个工具调用`);
+      return sendJson(res, 200, { ok: true });
+    }
+    // float 浏览器 POST /memory → 回写记忆（简单存 outbox）
+    if (url.pathname === '/memory' && req.method === 'POST') {
+      const body = await readBody(req);
+      writeOutbox({ ts: new Date().toISOString(), from: 'agent', ...body });
+      return sendJson(res, 200, { ok: true });
     }
     return sendJson(res, 404, { ok: false, error: 'not found' });
   } catch (e) {

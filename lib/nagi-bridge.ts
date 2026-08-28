@@ -23,6 +23,7 @@ import {
 const CLOUD_URL = process.env.NEXT_PUBLIC_NAGI_CLOUD_URL || "https://nagi.chajianreader.cc.cd";
 const CLOUD_KEY = process.env.NEXT_PUBLIC_NAGI_CLOUD_KEY || "nagi_bridge_2026";
 const POLL_MS = Number(process.env.NEXT_PUBLIC_NAGI_POLL_MS || 2000);
+const BUTLER_URL = process.env.NEXT_PUBLIC_NAGI_BUTLER_URL || "http://localhost:7869";
 
 export const STARDEW_APP_ID = "stardew";
 const STARDEW_SESSION_PREFIX = "sess_stardew_";
@@ -294,4 +295,109 @@ export function isStardewEnabled(): boolean {
 
 export function setStardewEnabled(on: boolean): void {
   kvSet(KV_ENABLED_KEY, on ? "1" : "0");
+}
+
+// ── Think 处理器：float 浏览器作为 char 大脑，处理 char_agent 的思考请求 ──
+
+let thinkProcessorStarted = false;
+
+/**
+ * 启动 think 处理器：轮询管家 /think-pending，
+ * 拉到后调 generateChatCompletion（char 大脑）生成决策，
+ * 结果（文本 + 工具调用）推回管家 /think-result。
+ *
+ * 需要已绑定 charId（用作 session.contactId）。
+ */
+export function startThinkProcessor(characterId: string): void {
+  if (typeof window === "undefined") return;
+  if (thinkProcessorStarted) return;
+  thinkProcessorStarted = true;
+
+  const tick = async () => {
+    if (!thinkProcessorStarted) return;
+    try {
+      const res = await fetch(`${BUTLER_URL}/think-pending`, {
+        headers: { "content-type": "application/json" },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.ok && !data.empty && data.id) {
+          await processThinkRequest(characterId, data.id, data.messages || [], data.tools || []);
+        }
+      }
+    } catch (e) {
+      // 静默：管家可能没开或没请求
+    }
+    if (thinkProcessorStarted) setTimeout(tick, 1500);
+  };
+  tick();
+}
+
+export function stopThinkProcessor(): void {
+  thinkProcessorStarted = false;
+}
+
+async function processThinkRequest(
+  characterId: string,
+  thinkId: string,
+  messages: any[],
+  tools: any[],
+): Promise<void> {
+  try {
+    ensureStardewToolsRegistered();
+    const session = getOrCreateStardewSession(characterId);
+
+    // 把 char_agent 发来的 history 转成 float 的 ChatMessage[] 格式
+    // char_agent 的 messages 是 OpenAI 风格：{role, content, tool_calls?, name?}
+    // float 的 generateChatCompletion 需要 ChatMessage[]（含 sessionId/role/content/status）
+    const history: any[] = messages
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .map((m) => ({
+        sessionId: session.id,
+        role: m.role,
+        content: typeof m.content === "string" ? m.content : JSON.stringify(m.content || ""),
+        status: "sent" as const,
+      }));
+
+    // 调 char 大脑生成决策
+    const cr = await generateChatCompletion(session, history, {
+      appId: STARDEW_APP_ID,
+      appTags: ["stardew"],
+    });
+
+    // flattenCompletionResult 返回纯文本，但 char_agent 需要 tool_calls
+    // generateChatCompletion 的返回是 { parts: [{text}] }，工具调用在内部循环里已执行
+    // 这里我们需要拿到"char 想调什么工具"——但 generateChatCompletion 的设计是
+    // 工具调用在内部循环执行完了，最终只返回文本。
+    //
+    // 所以对于 char_agent 场景，我们需要一个"只思考不执行"的模式。
+    // 临时方案：把 char 的文本回复返回，工具调用由 char_agent 侧的 LLM 自行决定
+    //（char_agent 仍然有它自己的 LLM 调用能力作为兜底）
+    const text = flattenCompletionResult(cr);
+
+    // 推回管家
+    await fetch(`${BUTLER_URL}/think-result`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: thinkId,
+        text,
+        toolCalls: [],  // 见上注释：工具调用暂不由此路径返回
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+    console.log(`[NagiBridge] think #${thinkId} 已处理 → 回复: ${text?.slice(0, 60)}`);
+  } catch (e) {
+    console.warn(`[NagiBridge] think #${thinkId} 处理失败:`, e);
+    // 推回错误，让 char_agent 不卡死
+    try {
+      await fetch(`${BUTLER_URL}/think-result`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: thinkId, text: "(思考失败)", toolCalls: [] }),
+        signal: AbortSignal.timeout(5000),
+      });
+    } catch {}
+  }
 }
