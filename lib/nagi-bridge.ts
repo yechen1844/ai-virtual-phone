@@ -24,6 +24,7 @@ const CLOUD_URL = process.env.NEXT_PUBLIC_NAGI_CLOUD_URL || "https://nagi.chajia
 const CLOUD_KEY = process.env.NEXT_PUBLIC_NAGI_CLOUD_KEY || "nagi_bridge_2026";
 const POLL_MS = Number(process.env.NEXT_PUBLIC_NAGI_POLL_MS || 2000);
 const BUTLER_URL = process.env.NEXT_PUBLIC_NAGI_BUTLER_URL || "http://localhost:7869";
+const NAGIBRIDGE_URL = process.env.NEXT_PUBLIC_NAGIBRIDGE_URL || "http://localhost:7842";
 
 export const STARDEW_APP_ID = "stardew";
 const STARDEW_SESSION_PREFIX = "sess_stardew_";
@@ -40,26 +41,22 @@ export type StardewToolDef = { name: string; description: string; parameterSchem
 
 export function getStardewTools(): StardewToolDef[] {
   return [
-    {
-      name: "stardew_get_state",
-      description: "查看玩家当前游戏状态：位置、时间、季节、金钱、体力、背包。用于了解农场现状。",
-      parameterSchema: "{}",
-    },
-    {
-      name: "stardew_get_surroundings",
-      description: "查看玩家周围环境：附近有哪些 NPC、怪物、可交互物体、作物。参数 radius 为扫描半径（默认 5）。",
-      parameterSchema: '{"type":"object","properties":{"radius":{"type":"number","description":"扫描半径"}},"additionalProperties":false}',
-    },
-    {
-      name: "stardew_speak_in_game",
-      description: "让 char 在星露谷游戏聊天框里说一句话（显示给玩家看）。参数 text 为要说的话。",
-      parameterSchema: '{"type":"object","properties":{"text":{"type":"string","description":"要说的内容"}},"required":["text"],"additionalProperties":false}',
-    },
-    {
-      name: "stardew_get_time",
-      description: "查看当前游戏内时间（今天几点、季节、第几天、第几年）。",
-      parameterSchema: "{}",
-    },
+    { name: "stardew_get_state", description: "查看玩家当前游戏状态：位置、时间、季节、金钱、体力、背包。用于了解农场现状。", parameterSchema: "{}" },
+    { name: "stardew_get_surroundings", description: "查看玩家周围环境：附近有哪些 NPC、怪物、可交互物体、作物。参数 radius 为扫描半径（默认 5）。", parameterSchema: '{"type":"object","properties":{"radius":{"type":"number","description":"扫描半径"}},"additionalProperties":false}' },
+    { name: "stardew_speak_in_game", description: "让 char 在星露谷游戏聊天框里说一句话（显示给玩家看）。参数 text 为要说的话。", parameterSchema: '{"type":"object","properties":{"text":{"type":"string","description":"要说的内容"}},"required":["text"],"additionalProperties":false}' },
+    { name: "stardew_get_time", description: "查看当前游戏内时间（今天几点、季节、第几天、第几年）。", parameterSchema: "{}" },
+    { name: "stardew_warp", description: "传送到一个地点。常用：Farm, Town, Beach, Mountain, Forest, Mine, BusStop, Desert。参数 location 为地点名。", parameterSchema: '{"type":"object","properties":{"location":{"type":"string"},"x":{"type":"integer"},"y":{"type":"integer"}},"required":["location"],"additionalProperties":false}' },
+    { name: "stardew_move_to", description: "走到一个格子坐标。参数 x 和 y 为目标格子坐标。", parameterSchema: '{"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"}},"required":["x","y"],"additionalProperties":false}' },
+    { name: "stardew_use_tool", description: "挥动一个工具（斧头/镐子/锄头/水壶等），参数 name 为工具名或 'current'。", parameterSchema: '{"type":"object","properties":{"name":{"type":"string","default":"current"}},"additionalProperties":false}' },
+    { name: "stardew_select_item", description: "选择背包里的一个物品（工具/种子/作物等），参数 name 为物品名。", parameterSchema: '{"type":"object","properties":{"name":{"type":"string"}},"required":["name"],"additionalProperties":false}' },
+    { name: "stardew_interact", description: "与面前的物体/NPC 交互。", parameterSchema: "{}" },
+    { name: "stardew_face", description: "设置面朝方向：0=上 1=右 2=下 3=左。", parameterSchema: '{"type":"object","properties":{"direction":{"type":"integer","enum":[0,1,2,3]}},"required":["direction"],"additionalProperties":false}' },
+    { name: "stardew_use_item", description: "使用/放置当前手持物品（种子、物体等）。", parameterSchema: "{}" },
+    { name: "stardew_press_key", description: "模拟按键。可用：confirm, cancel, skip, ok, F1-F12。", parameterSchema: '{"type":"object","properties":{"key":{"type":"string"},"count":{"type":"integer","default":1}},"required":["key"],"additionalProperties":false}' },
+    { name: "stardew_run_script", description: "运行农场自动化脚本。可用：farm_row, water_crops, harvest, mine_run, chop_trees, clear_area, pet_animals, keg_manager, furnace_manager。参数 script 为脚本名，args 为命令行参数。", parameterSchema: '{"type":"object","properties":{"script":{"type":"string"},"args":{"type":"string"}},"required":["script"],"additionalProperties":false}' },
+    { name: "stardew_sleep", description: "上床睡觉结束今天。自动找床，不需要先回家。检查结果：state=slept 表示过夜了；state=ready 表示已上床但需等所有人就绪——此时不要再移动/warp/起床，否则会卡死所有人。", parameterSchema: "{}" },
+    { name: "stardew_get_machines", description: "扫描当前地点所有机器（酒桶/熔炉等）的状态。", parameterSchema: "{}" },
+    { name: "stardew_get_animals", description: "查看所有农场动物：是否已摸、好感度、心情、产品就绪。", parameterSchema: "{}" },
   ];
 }
 
@@ -84,19 +81,30 @@ export function ensureStardewToolsRegistered(): void {
     tool.packageId = undefined; // 星露谷工具独立，不入包，靠 name 前缀按 appId 过滤
     tool.directFetch = true;
 
-    if (def.name === "stardew_get_state") {
-      tool.endpoint = `${CLOUD_URL}/state`;
-      tool.method = "GET";
-    } else if (def.name === "stardew_get_surroundings") {
-      tool.endpoint = `${CLOUD_URL}/surroundings`;
-      tool.method = "GET";
-    } else if (def.name === "stardew_speak_in_game") {
-      tool.endpoint = `${CLOUD_URL}/game-say`;
-      tool.method = "POST";
-      tool.bodyTemplate = `{"sender":"Nagi","text":"{{text}}"}`;
-    } else if (def.name === "stardew_get_time") {
-      tool.endpoint = `${CLOUD_URL}/state`;
-      tool.method = "GET";
+    // 根据工具名映射到 NagiBridge HTTP API 端点
+    const endpointMap: Record<string, { endpoint: string; method: "GET" | "POST"; bodyTemplate?: string }> = {
+      stardew_get_state:        { endpoint: `${NAGIBRIDGE_URL}/state`, method: "GET" },
+      stardew_get_surroundings: { endpoint: `${NAGIBRIDGE_URL}/surroundings`, method: "GET" },
+      stardew_speak_in_game:    { endpoint: `${NAGIBRIDGE_URL}/chat/push`, method: "POST", bodyTemplate: `{"sender":"Nagi","message":"{{text}}"}` },
+      stardew_get_time:         { endpoint: `${NAGIBRIDGE_URL}/state`, method: "GET" },
+      stardew_warp:             { endpoint: `${NAGIBRIDGE_URL}/warp`, method: "POST" },
+      stardew_move_to:          { endpoint: `${NAGIBRIDGE_URL}/move`, method: "POST" },
+      stardew_use_tool:         { endpoint: `${NAGIBRIDGE_URL}/tool`, method: "POST" },
+      stardew_select_item:      { endpoint: `${NAGIBRIDGE_URL}/select`, method: "POST" },
+      stardew_interact:         { endpoint: `${NAGIBRIDGE_URL}/interact`, method: "POST" },
+      stardew_face:             { endpoint: `${NAGIBRIDGE_URL}/face`, method: "POST" },
+      stardew_use_item:         { endpoint: `${NAGIBRIDGE_URL}/use`, method: "POST" },
+      stardew_press_key:        { endpoint: `${NAGIBRIDGE_URL}/key`, method: "POST" },
+      stardew_run_script:       { endpoint: `${NAGIBRIDGE_URL}/queue`, method: "POST" },
+      stardew_sleep:            { endpoint: `${NAGIBRIDGE_URL}/sleep`, method: "POST" },
+      stardew_get_machines:     { endpoint: `${NAGIBRIDGE_URL}/machines`, method: "GET" },
+      stardew_get_animals:      { endpoint: `${NAGIBRIDGE_URL}/animals`, method: "GET" },
+    };
+    const mapping = endpointMap[def.name];
+    if (mapping) {
+      tool.endpoint = mapping.endpoint;
+      tool.method = mapping.method;
+      if (mapping.bodyTemplate) tool.bodyTemplate = mapping.bodyTemplate;
     }
     existing.push(tool);
     changed = true;
