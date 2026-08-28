@@ -170,6 +170,26 @@ async function pushReply(sender: string, text: string): Promise<void> {
   }
 }
 
+/**
+ * 把一条消息发进星露谷游戏（通过云端 Worker → 管家 → NagiBridge /chat/push）。
+ * 用于星露谷聊天页的"回车发送"：只发送，不触发模型回复。
+ */
+export async function sendGameMessageViaCloud(text: string, sender: string = "玩家"): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return false;
+  try {
+    await cloudFetch("/message", {
+      method: "POST",
+      body: JSON.stringify({ sender, text: trimmed, ts: Date.now() }),
+    });
+    return true;
+  } catch (e) {
+    console.warn("[NagiBridge] 发消息进游戏失败:", e);
+    return false;
+  }
+}
+
 // ── 核心：把游戏消息写入星露谷会话，生成回复 ──
 
 export async function ingestNagiGameMessage(characterId: string, msg: NagiEntry): Promise<string | null> {

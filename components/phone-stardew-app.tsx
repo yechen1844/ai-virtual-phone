@@ -13,11 +13,10 @@ import {
   stopNagiPolling,
   processNagiInbox,
   getOrCreateStardewSession,
-  STARDEW_APP_ID,
   ensureStardewToolsRegistered,
+  sendGameMessageViaCloud,
 } from "@/lib/nagi-bridge";
 import { loadChatMessages, pushChatMessage, type ChatMessage, type ChatSession } from "@/lib/chat-storage";
-import { generateChatCompletion, flattenCompletionResult } from "@/lib/chat-engine";
 
 type NAGI_STATUS = "idle" | "running" | "checking";
 type StardewPage = "settings" | "chat";
@@ -45,7 +44,8 @@ export function PhoneStardewApp({ onClose, onNotice }: { onClose: () => void; on
         setCharId(savedChar);
         const savedEnabled = kvGet(KV_ENABLED_KEY) === "1";
         setEnabled(savedEnabled);
-        if (savedEnabled && savedChar) {
+        // 打开星露谷 App 就自动开始轮询（如果已绑定 char），无需手动开开关
+        if (savedChar) {
             setStatus("running");
             statusRef.current = "running";
             startNagiPolling(savedChar);
@@ -221,10 +221,21 @@ function SettingsPage(props: {
     );
 }
 
+// 复刻主聊天的多气泡划分：按空行(\n\s*\n+)把 AI 回复拆成多个段落，每段一个气泡
+function splitOfflineParagraphs(text: string): string[] {
+    const normalized = (text || "").replace(/\r\n?/g, "\n").trim();
+    if (!normalized) return [];
+    return normalized
+        .split(/\n\s*\n+/)
+        .map((part) => part.trim())
+        .filter(Boolean);
+}
+
 function StardewChatPage({ charId, charName, onNotice }: { charId: string; charName?: string; onNotice?: (msg: string) => void }) {
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [inputValue, setInputValue] = useState("");
     const [isThinking, setIsThinking] = useState(false);
+    const [replying, setReplying] = useState(false);
     const wrapperRef = useRef<HTMLDivElement | null>(null);
     const scrollRef = useRef<HTMLDivElement | null>(null);
     const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -232,12 +243,25 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
 
     useChatBottomReserve(wrapperRef, scrollRef, "stardew-chat");
 
+    // 初始化会话 + 监听会话新消息（轮询在后台写入的 AI 回复要同步显示）
     useEffect(() => {
         if (!charId) return;
+        let cancelled = false;
         try {
             const session = getOrCreateStardewSession(charId);
             sessionRef.current = session;
             setMessages(loadChatMessages(session.id));
+            const handler = () => {
+                if (cancelled) return;
+                setMessages(loadChatMessages(session.id));
+            };
+            window.addEventListener("storage", handler);
+            const timer = setInterval(handler, 2000);
+            return () => {
+                cancelled = true;
+                window.removeEventListener("storage", handler);
+                clearInterval(timer);
+            };
         } catch (e) {
             console.warn("[StardewChat] 初始化会话失败:", e);
         }
@@ -253,37 +277,42 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
         scrollToBottom();
     }, [messages, isThinking, scrollToBottom]);
 
+    // 回车 / 发送按钮 = 只把消息发进游戏（game-say），不触发模型回复
     const handleSend = useCallback(async () => {
         const text = inputValue.trim();
-        if (!text || isThinking || !sessionRef.current) return;
+        if (!text || isThinking || replying || !sessionRef.current) return;
         const session = sessionRef.current;
         setInputValue("");
-        setIsThinking(true);
 
+        // 写入本地会话，作为一条"我发的话"
         const userMsg = pushChatMessage({ sessionId: session.id, role: "user", content: text, status: "sent" });
         setMessages((prev) => [...prev, userMsg]);
         scrollToBottom();
 
+        // 发进星露谷游戏（通过云端 → 管家 → NagiBridge）
+        const ok = await sendGameMessageViaCloud(text, "玩家");
+        if (!ok) onNotice?.("发送到游戏失败，请检查云端/管家连接");
+    }, [inputValue, isThinking, replying, onNotice, scrollToBottom]);
+
+    // 回复按钮 = 从 Worker 拉取游戏消息，触发 char 生成回复并推回
+    const handleReply = useCallback(async () => {
+        if (replying || isThinking || !charId) return;
+        setReplying(true);
+        setIsThinking(true);
         try {
             ensureStardewToolsRegistered();
-            const history = loadChatMessages(session.id);
-            const cr = await generateChatCompletion(session, history, {
-                appId: STARDEW_APP_ID,
-                appTags: ["stardew"],
-            });
-            const replyText = flattenCompletionResult(cr);
-            if (replyText) {
-                const aiMsg = pushChatMessage({ sessionId: session.id, role: "assistant", content: replyText, status: "sent" });
-                setMessages((prev) => [...prev, aiMsg]);
-            }
+            const n = await processNagiInbox(charId);
+            setMessages(loadChatMessages(sessionRef.current?.id || ""));
+            if (n === 0 && charId) onNotice?.("没有新的游戏消息可回复");
         } catch (e) {
-            console.warn("[StardewChat] 生成回复失败:", e);
-            onNotice?.("回复生成失败，请稍后再试");
+            console.warn("[StardewChat] 回复失败:", e);
+            onNotice?.("回复失败，请稍后再试");
         } finally {
+            setReplying(false);
             setIsThinking(false);
             scrollToBottom();
         }
-    }, [inputValue, isThinking, onNotice, scrollToBottom]);
+    }, [charId, replying, isThinking, onNotice, scrollToBottom]);
 
     const onInputKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
         if (shouldSendChatInputOnEnter(e, true)) {
@@ -305,20 +334,28 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
                 )}
                 {messages.map((msg) => {
                     const isUser = msg.role === "user";
+                    const paragraphs = isUser ? [msg.content] : splitOfflineParagraphs(msg.content);
                     return (
                         <div className="chat-msg-wrapper" data-role={isUser ? "user" : "assistant"} key={msg.id}>
                             <div className={`chat-msg-content-wrap ${isUser ? "ml-auto" : ""}`} style={{ maxWidth: "72%" }}>
-                                <div className={`${isUser ? "chat-bubble-role-user" : "chat-bubble-role-assistant"} rounded-md break-words`}>
-                                    <BilingualTextBlock text={msg.content} mode="markdown" defaultExpanded />
-                                </div>
+                                {paragraphs.map((p, i) => (
+                                    <div
+                                        className={`${isUser ? "chat-bubble-role-user" : "chat-bubble-role-assistant"} rounded-md stardew-msg ${i > 0 ? "stardew-msg-gap" : ""}`}
+                                        key={`${msg.id}-${i}`}
+                                    >
+                                        <BilingualTextBlock text={p} mode="plain" defaultExpanded />
+                                    </div>
+                                ))}
                             </div>
                         </div>
                     );
                 })}
                 {isThinking && (
                     <div className="chat-msg-wrapper" data-role="assistant">
-                        <div className="chat-bubble-role-assistant rounded-md mascot-thinking">
-                            思考中<span className="mascot-dot"></span><span className="mascot-dot"></span><span className="mascot-dot"></span>
+                        <div className="chat-offline-paragraph">
+                            <div className="chat-bubble-role-assistant rounded-md mascot-thinking">
+                                思考中<span className="mascot-dot"></span><span className="mascot-dot"></span><span className="mascot-dot"></span>
+                            </div>
                         </div>
                     </div>
                 )}
@@ -335,8 +372,11 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
                     onChange={(e) => { setInputValue(e.target.value); autoGrow(e.target); }}
                     onKeyDown={onInputKeyDown}
                 />
-                <div className="chat-input-actions">
-                    <button className="stardew-btn" onClick={handleSend} disabled={isThinking || !inputValue.trim()}>
+                <div className="chat-input-actions stardew-input-actions">
+                    <button className="stardew-btn" onClick={handleReply} disabled={replying || isThinking}>
+                        <Loader2 size={14} className={replying ? "stardew-spin" : ""} /> 回复
+                    </button>
+                    <button className="stardew-btn" onClick={handleSend} disabled={isThinking || replying || !inputValue.trim()}>
                         <Send size={16} /> 发送
                     </button>
                 </div>
