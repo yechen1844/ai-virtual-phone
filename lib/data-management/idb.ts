@@ -340,8 +340,9 @@ async function exportIndexedDbSource(
   }
 }
 
-async function readKvRecords(source: KvSource): Promise<{ key: string; value: string }[]> {
+async function readKvRecords(source: KvSource): Promise<{ records: { key: string; value: string }[]; error?: string }> {
   const byKey = new Map<string, { key: string; value: string }>();
+  let readError: string | undefined;
   const db = await openDb("AiPhoneKvDB");
   if (db && Array.from(db.objectStoreNames).includes("entries")) {
     try {
@@ -359,8 +360,9 @@ async function readKvRecords(source: KvSource): Promise<{ key: string; value: st
         transaction.onerror = () => reject(transaction.error);
         transaction.onabort = () => reject(transaction.error);
       });
-    } catch {
-      // Fall back to cache-only below.
+    } catch (e) {
+      // 不再静默——标记读取失败，回退到内存缓存但告知调用方可能缺数据
+      readError = `KV 读取失败（${e instanceof Error ? e.message : String(e)}），已回退到内存缓存，备份数据可能不完整`;
     } finally {
       db.close();
     }
@@ -369,16 +371,16 @@ async function readKvRecords(source: KvSource): Promise<{ key: string; value: st
   for (const record of kvEntries()) {
     if (matchesKey(record.key, source)) byKey.set(record.key, record);
   }
-  return Array.from(byKey.values()).sort((a, b) => a.key.localeCompare(b.key));
+  return { records: Array.from(byKey.values()).sort((a, b) => a.key.localeCompare(b.key)), error: readError };
 }
 
 async function exportKvSource(source: KvSource, collector?: MediaCollector): Promise<KvSourceBackup> {
-  const records = await readKvRecords(source);
-  if (!collector) return { type: "kv", records };
+  const { records, error } = await readKvRecords(source);
+  if (!collector) return { type: "kv", records, error };
   for (let index = 0; index < records.length; index += 1) {
     records[index] = { ...records[index], value: await serializeStorageString(records[index].value, collector) };
   }
-  return { type: "kv", records };
+  return { type: "kv", records, error };
 }
 
 async function exportLocalStorageSource(source: LocalStorageSource, collector?: MediaCollector): Promise<LocalStorageSourceBackup> {
@@ -698,7 +700,7 @@ export async function clearSource(source: DataSource): Promise<ClearResult> {
   }
 
   if (source.type === "kv") {
-    const records = await readKvRecords(source);
+    const { records } = await readKvRecords(source);
     const db = await openDb("AiPhoneKvDB");
     if (!db || !Array.from(db.objectStoreNames).includes("entries")) return result;
     const removedKeys: string[] = [];

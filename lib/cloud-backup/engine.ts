@@ -107,6 +107,8 @@ export type CloudBackupRunResult = {
   totalBytes: number;
   totalRecords: number;
   manifestName: string;
+  /** 备份过程中被跳过的非关键数据源/模块的警告信息（不阻断备份，但应被展示） */
+  warnings?: string[];
 };
 
 export function loadCloudBackupState(): CloudBackupState {
@@ -338,6 +340,27 @@ async function latestHealthyManifest(config: CloudBackupConfig): Promise<CloudBa
   return null;
 }
 
+/** 备份提交后回读验证：确认刚写入的清单可解析、内容一致、且至少能确定一个
+ *  数据分片在云端确实可读。防止“上传被静默吞掉 / 对象损坏”时仍报告成功。 */
+async function verifyBackup(config: CloudBackupConfig, manifest: CloudBackupManifest, manifestName: string): Promise<void> {
+  const reread = await loadManifest(config, manifestName);
+  if (!reread) {
+    throw new Error(`回读验证失败：云端备份清单 ${manifestName} 无法读取。`);
+  }
+  if (reread.combinedHash !== manifest.combinedHash) {
+    throw new Error("回读验证失败：云端备份清单内容与上传前不一致。");
+  }
+  const largestModule = [...manifest.modules].sort((a, b) => b.records - a.records)[0];
+  const partPath = largestModule
+    ? (largestModule.sources?.find((s) => s.parts.length > 0)?.parts[0] ?? largestModule.parts[0])
+    : undefined;
+  if (!partPath) return; // 没有任何数据分片（纯元数据备份），仅清单验证即可
+  const blob = await getObject(config, partPath);
+  if (!blob || blob.size === 0) {
+    throw new Error(`回读验证失败：数据分片 ${partPath} 在云端不可读。`);
+  }
+}
+
 // ── the backup run ──
 
 /** Progress callback payload for cloud backup/restore (percent is 0-100). */
@@ -347,6 +370,8 @@ export type CloudBackupOptions = {
   moduleIds?: DataModuleId[];
   force?: boolean;
   excludeMedia?: boolean;
+  /** 备份写入清单后，回读验证清单与抽样数据确实可读。默认开启。 */
+  verify?: boolean;
   onProgress?: (p: CloudProgress) => void;
 };
 
@@ -413,6 +438,7 @@ async function runCloudBackupInternal(
   }
 
   const uploadedModuleIds = new Set<DataModuleId>();
+  const moduleWarnings: string[] = [];
   let totalBytes = 0;
   let totalRecords = 0;
   const moduleHashes: string[] = [];
@@ -442,7 +468,20 @@ async function runCloudBackupInternal(
 
       const collector = createMediaCollector();
       const built = await buildSingleSourcePayload(dataModule, sourceIndex, { excludeMedia: options.excludeMedia }, collector);
-      if (built.warnings.length > 0) throw new Error(built.warnings.join("；"));
+      if (built.warnings.length > 0) {
+        // 关键模块报警 → 中止（数据可能丢失，不能继续）
+        if (dataModule.critical) {
+          throw new Error(built.warnings.join("；"));
+        }
+        // 非关键模块报警 → 跳过该数据源，收集 warning，不拖垮整个备份
+        moduleWarnings.push(...built.warnings.map((w) => `[${label}] ${w}`));
+        continue;
+      }
+      // 关键模块 0 记录：非首次备份（此前有过健康备份）时，若关键模块突然为 0，
+      // 说明数据可能异常丢失（IndexedDB 能打开但是空的），不应静默报成功
+      if (dataModule.critical && built.records === 0 && healthy) {
+        throw new Error(`「${dataModule.label}」导出了 0 条记录——该模块此前有数据，现在却为空，说明备份不完整，已中止本次备份。`);
+      }
       let json: string | null = JSON.stringify(built.payload);
       built.payload = null as unknown as typeof built.payload;
       const hash = await sha256TextHex(json);
@@ -496,6 +535,12 @@ async function runCloudBackupInternal(
       completedSources += 1;
     }
 
+    // 非关键模块的所有数据源都被跳过（如读取异常）→ 不写入 manifest，仅记 warning
+    if (sourceManifests.length === 0) {
+      moduleWarnings.push(`[${label}] 该模块没有任何数据源被成功备份，已跳过。`);
+      continue;
+    }
+
     const hash = await sha256TextHex(sourceHashes.join("|"));
     totalBytes += moduleBytes;
     totalRecords += moduleRecords;
@@ -519,7 +564,7 @@ async function runCloudBackupInternal(
   // uploads happened — so skipping here leaves no orphan objects.)
   if (!options.force && state.lastCombinedHash && state.lastCombinedHash === combinedHash && uploadedModuleIds.size === 0) {
     saveCloudBackupState({ ...state, lastResult: "skipped", lastError: undefined });
-    return { status: "skipped", uploadedModules: 0, totalBytes, totalRecords, manifestName: state.lastManifestName ?? "" };
+    return { status: "skipped", uploadedModules: 0, totalBytes, totalRecords, manifestName: state.lastManifestName ?? "", warnings: moduleWarnings };
   }
 
   // Anomaly check vs the last HEALTHY backup (prefer cloud truth, fall back to local).
@@ -548,6 +593,13 @@ async function runCloudBackupInternal(
   const manifestName = anomaly ? `manifests/quarantine-${stamp}.json` : `manifests/${stamp}.json`;
   await putObject(config, manifestName, JSON.stringify(manifest), "application/json");
 
+  // 5.1 回读验证：确认清单与抽样数据确实可读，避免“上传被静默吞掉”却报成功。
+  if (options.verify !== false) {
+    onProgress({ percent: 97, detail: "回读验证…" });
+    await verifyBackup(config, manifest, manifestName);
+    onProgress({ percent: 98, detail: "回读验证通过" });
+  }
+
   // 6. Rotation + GC only when this backup is healthy.
   if (!anomaly) {
     onProgress({ percent: 98, detail: "清理旧备份…" });
@@ -555,7 +607,14 @@ async function runCloudBackupInternal(
     // a transient listing/delete failure must not report a completed backup as
     // failed or make the scheduler immediately repeat the whole upload.
     await rotateAndGc(config, config.keepCount, manifestName).catch((error) => {
+      const msg = error instanceof Error ? error.message : String(error);
       console.warn("[CloudBackup] rotation/GC failed after commit:", error);
+      // 备份清单已成功写入，备份本身有效；但清理旧备份失败应让用户知道，
+      // 否则旧备份会在云端无限堆积，最终可能超出配额导致后续备份失败。
+      moduleWarnings.push(`[清理旧备份] ${msg}`);
+      if (typeof window !== "undefined") {
+        window.postMessage({ type: "OS_CMD", action: "show_notice", message: `⚠️ 备份已保存，但清理旧备份失败：${msg}` }, "*");
+      }
     });
   }
   onProgress({ percent: 100, detail: "完成" });
@@ -578,6 +637,7 @@ async function runCloudBackupInternal(
     totalBytes,
     totalRecords,
     manifestName,
+    warnings: moduleWarnings,
   };
 }
 

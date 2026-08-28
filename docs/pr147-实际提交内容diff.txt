@@ -1,0 +1,1057 @@
+﻿diff --git a/components/chat/chat-room.tsx b/components/chat/chat-room.tsx
+index c3e0848..c277a15 100644
+--- a/components/chat/chat-room.tsx
++++ b/components/chat/chat-room.tsx
+@@ -2,6 +2,7 @@
+ 
+ import { forwardRef, Fragment, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+ import { ChatSession, ChatMessage, CHAT_APP_SETTINGS_UPDATED_EVENT, CHAT_INITIAL_VISIBLE_MESSAGE_COUNT, CHAT_LOAD_MORE_MESSAGE_COUNT, CHAT_REQUEST_REPLY_EVENT, loadChatAppSettings, loadChatMessages, loadChatContacts, loadChatSessions, saveChatSessions, pushChatMessage, updateChatMessage, deleteChatMessage, deleteChatMessagesFrom, deleteChatMessagesByIds, retractChatMessage, editChatMessage, updateMessageMediaData, replaceResponseBatchWithParts, replaceGroupResponseRound, isReadingDiscussMessage, isSystemInstructionMessage, createResponseBatchId, createResponseRoundId, getLatestStateValues, getLatestCharacterStateValues, compareChatMessages } from "@/lib/chat-storage";
++import { cleanStreamText } from "@/lib/stream-preview";
+ import type { StateValue } from "@/lib/chat-storage";
+ import { parseStateValues, mergeStateValues } from "@/lib/state-value-parser";
+ import { parseAIResponse, type ParsedMessagePart } from "@/lib/rich-message-parser";
+@@ -43,7 +44,7 @@ import { ConfirmDialog } from "@/components/ui/modal";
+ import { deleteWeixinCloudMessagesFromCloud } from "@/lib/weixin-cloud-sync";
+ import { loadBindingConfig, loadRegexes, resolveBinding, resolveUserIdentity } from "@/lib/settings-storage";
+ import { generateGroupChatCompletion, generateGroupOfflineChatCompletion, parseGroupChatResponse, buildEditableGroupRoundText } from "@/lib/group-chat-engine";
+-import { appendChatOfflineTurn, deleteChatOfflineTurn, deleteChatOfflineTurnsFrom, loadChatOfflineTurns, parseOfflineResponse, saveChatOfflineTurns, updateChatOfflineTurn, type ChatOfflineTurn } from "@/lib/chat-offline-storage";
++import { appendChatOfflineTurn, deleteChatOfflineTurn, deleteChatOfflineTurnsFrom, extractThinkingTag, loadChatOfflineTurns, parseOfflineResponse, saveChatOfflineTurns, updateChatOfflineTurn, type ChatOfflineTurn } from "@/lib/chat-offline-storage";
+ import { applyDisplayRegex, applyEditRegex } from "@/lib/llm-prompt-assembler";
+ import { scheduleFollowUp, cancelFollowUp } from "@/lib/follow-up-service";
+ import { useKeyboardDismissAutoSend } from "@/components/chat/use-keyboard-dismiss-auto-send";
+@@ -620,7 +621,7 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
+     onOpenCustomPlusAction: (action: RegisteredCustomAppChatPlusAction) => void;
+     onStartVideoCall: () => void;
+     onStartVoiceCall: () => void;
+-    onSendText: (text: string) => boolean;
++    onSendText: (text: string, options?: { autoReply?: boolean }) => boolean;
+     onStopGeneration: () => void;
+     onTriggerAIResponse: () => void;
+ 	onSendSticker: (name: string, url?: string) => void;
+@@ -766,7 +767,11 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
+                 <StickerSearchSuggest
+                     query={inputText}
+                     characterIds={suggestCharacterIds}
+-                    onSend={(name, url) => onSendSticker(name, url)}
++                    onSend={(name, url) => {
++                        onSendSticker(name, url);
++                        setInputText("");
++                        resetTextareaHeight();
++                    }}
+                     onClose={() => setSuggestClosed(true)}
+                 />
+             )}
+@@ -847,7 +852,23 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
+                     )}
+                 </button>
+                 {!isGenerating && (
+-                    <button className="ui-bare-btn text-[var(--c-text)]" onClick={() => { onTriggerAIResponse(); onClosePanels(); }}>
++                    <button
++                        className="ui-bare-btn text-[var(--c-text)]"
++                        title={!inputLocked && inputText.trim() ? "发送输入框内容并触发回复" : "触发 AI 主动回复"}
++                        onClick={() => {
++                            const trimmed = inputText.trim();
++                            // 输入框已有文字：发送输入框内容并立即触发模型回复（一次按键完成），
++                            // 避免「打完字却忘记发送」；没文字时才只触发 AI 主动回复
++                            if (!inputLocked && trimmed) {
++                                if (!onSendText(trimmed, { autoReply: true })) return;
++                                setInputText("");
++                                resetTextareaHeight();
++                            } else {
++                                onTriggerAIResponse();
++                            }
++                            onClosePanels();
++                        }}
++                    >
+                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                             <path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.582a.5.5 0 0 1 0 .963L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z" />
+                             <path d="M20 3v4" /><path d="M22 5h-4" />
+@@ -1069,6 +1090,18 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
+     const [offlineVisibleCount, setOfflineVisibleCount] = useState(OFFLINE_INITIAL_LOAD);
+     const [pendingOfflineUserText, setPendingOfflineUserText] = useState("");
+     const [isOfflineGenerating, setIsOfflineGenerating] = useState(false);
++    // 流式生成预览：线上（单聊/群聊）与线下各一份，生成中实时刷新，结束后清空
++    const [streamPreview, setStreamPreview] = useState<null | {
++        text?: string;
++        parts?: { characterId: string; characterName: string; text: string }[];
++    }>(null);
++    const [offlineStreamPreview, setOfflineStreamPreview] = useState<null | { content: string; summary: string }>(null);
++    const streamAccumRef = useRef("");
++    const offlineStreamAccumRef = useRef("");
++    // 群聊/单聊流式预览解析的 rAF 合并帧（限频：一帧最多解析一次全文）
++    const streamParseFrameRef = useRef(0);
++    // 线下模式流式预览解析的 rAF 合并帧（独立于线上，避免互相干扰）
++    const offlineStreamFrameRef = useRef(0);
+     const [activeOfflineTarget, setActiveOfflineTarget] = useState<OfflineActionTarget | null>(null);
+     const [editingOfflineTarget, setEditingOfflineTarget] = useState<OfflineActionTarget | null>(null);
+     const [editingOfflineContent, setEditingOfflineContent] = useState("");
+@@ -1966,6 +1999,47 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
+         if (el) el.scrollTop = el.scrollHeight;
+     }, [offlineMode, offlineTurns.length, isOfflineGenerating, pendingOfflineUserText]);
+ 
++    // 流式预览增量更新时跟随滚动到底：仅在用户本来就停在底部附近时跟随，
++    // 用户上翻历史/查看旧消息时绝不拽回底部（否则长回复生成中根本无法阅读）。
++    const isNearBottomRef = useRef(true);
++    useEffect(() => {
++        const el = scrollRef.current;
++        if (!el) return;
++        const onScroll = () => {
++            // 距底部 < 120px 视为"在底部附近"；用户上翻即停用自动跟随
++            isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
++        };
++        el.addEventListener("scroll", onScroll, { passive: true });
++        return () => el.removeEventListener("scroll", onScroll);
++    }, []);
++    // 只在接近底部时才跟随，且用 rAF 合并到下一帧，避免每帧 setState 后 layout 抖动
++    const streamFollowRef = useRef(0);
++    const followStreamScroll = useCallback(() => {
++        if (streamFollowRef.current) return;
++        streamFollowRef.current = window.requestAnimationFrame(() => {
++            streamFollowRef.current = 0;
++            if (!isNearBottomRef.current) return;
++            const el = scrollRef.current;
++            if (el) el.scrollTop = el.scrollHeight;
++        });
++    }, []);
++    useLayoutEffect(() => {
++        if (!streamPreview && !offlineStreamPreview) return;
++        followStreamScroll();
++    }, [streamPreview, offlineStreamPreview, offlineMode, followStreamScroll]);
++
++    // 卸载时清理挂起的流式预览 rAF 帧，防止切会话后回调残留触发 setState
++    useEffect(() => {
++        return () => {
++            if (streamParseFrameRef.current) cancelAnimationFrame(streamParseFrameRef.current);
++            if (offlineStreamFrameRef.current) cancelAnimationFrame(offlineStreamFrameRef.current);
++            if (streamFollowRef.current) cancelAnimationFrame(streamFollowRef.current);
++            streamParseFrameRef.current = 0;
++            offlineStreamFrameRef.current = 0;
++            streamFollowRef.current = 0;
++        };
++    }, []);
++
+     // Sync current session+messages to debug store for DebugPromptPanel
+     useEffect(() => {
+         setDebugChatState({ session, messages });
+@@ -3109,7 +3183,37 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
+                 const results = await generateGroupChatCompletion(
+                     session,
+                     history,
+-                    { onReasoning: (t) => { roundReasoning = t; } },
++                    {
++                        onReasoning: (t) => { roundReasoning = t; },
++                        onStreamDelta: (delta) => {
++                            if (!isCurrentGeneration()) return;
++                            streamAccumRef.current += delta;
++                            // 群聊全文解析较重：合并到 rAF 下一帧执行，避免一帧多段增量重复解析
++                            if (streamParseFrameRef.current) return;
++                            streamParseFrameRef.current = window.requestAnimationFrame(() => {
++                                streamParseFrameRef.current = 0;
++                                if (!isCurrentGeneration()) return;
++                                const nameToId = new Map(groupCharacters.map(item => [item.name, item.id]));
++                                const rawParts = parseGroupChatResponse(streamAccumRef.current, nameToId);
++                                const parts = rawParts
++                                    .filter(item => item.responseText.trim())
++                                    .map(item => ({
++                                        characterId: item.characterId,
++                                        characterName: item.characterName,
++                                        text: cleanStreamText(item.responseText),
++                                    }));
++                                setStreamPreview({ parts });
++                            });
++                        },
++                        onTextPart: () => {
++                            if (streamParseFrameRef.current) {
++                                cancelAnimationFrame(streamParseFrameRef.current);
++                                streamParseFrameRef.current = 0;
++                            }
++                            streamAccumRef.current = "";
++                            setStreamPreview(null);
++                        },
++                    },
+                     {
+                         signal: generationRun.controller.signal,
+                         appTags: theaterMode ? ["group_chat"] : undefined,
+@@ -3126,7 +3230,28 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
+                         appTags: theaterMode ? ["chat"] : ["chat", "text"],
+                         signal: generationRun.controller.signal,
+                     },
+-                    { onReasoning: (t) => { capturedReasoning = t; } },
++                    {
++                        onReasoning: (t) => { capturedReasoning = t; },
++                        onStreamDelta: (delta) => {
++                            if (!isCurrentGeneration()) return;
++                            streamAccumRef.current += delta;
++                            // 预览更新合并到 rAF 下一帧：每帧最多一次全文净化+setState，避免高频增量卡顿
++                            if (streamParseFrameRef.current) return;
++                            streamParseFrameRef.current = window.requestAnimationFrame(() => {
++                                streamParseFrameRef.current = 0;
++                                if (!isCurrentGeneration()) return;
++                                setStreamPreview({ text: cleanStreamText(streamAccumRef.current) });
++                            });
++                        },
++                        onTextPart: () => {
++                            if (streamParseFrameRef.current) {
++                                cancelAnimationFrame(streamParseFrameRef.current);
++                                streamParseFrameRef.current = 0;
++                            }
++                            streamAccumRef.current = "";
++                            setStreamPreview(null);
++                        },
++                    },
+                 );
+                 if (!isCurrentGeneration()) return;
+                 const result = await splitAndSaveAIMessages(flattenCompletionResult(cr), { ...generationGuard, reasoningText: capturedReasoning });
+@@ -3397,6 +3522,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
+         setIsGenerating(true);
+         setPendingGenerate(false);
+         setGenerationLock(session.id);
++        streamAccumRef.current = "";
++        setStreamPreview(null);
+         try {
+             const latestMessages = loadChatMessages(session.id);
+             if (session.isGroup) {
+@@ -3405,8 +3532,35 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
+                 let pendingGroupReasoning: string | undefined;
+                 const results = await generateGroupChatCompletion(session, latestMessages, {
+                     onReasoning: (t) => { pendingGroupReasoning = t; },
++                    onStreamDelta: (delta) => {
++                        if (!isCurrentGeneration()) return;
++                        streamAccumRef.current += delta;
++                        // 群聊全文解析较重：合并到 rAF 下一帧执行，避免一帧多段增量重复解析
++                        if (streamParseFrameRef.current) return;
++                        streamParseFrameRef.current = window.requestAnimationFrame(() => {
++                            streamParseFrameRef.current = 0;
++                            if (!isCurrentGeneration()) return;
++                            const nameToId = new Map(groupCharacters.map(item => [item.name, item.id]));
++                            const rawParts = parseGroupChatResponse(streamAccumRef.current, nameToId);
++                            const parts = rawParts
++                                .filter(item => item.responseText.trim())
++                                .map(item => ({
++                                    characterId: item.characterId,
++                                    characterName: item.characterName,
++                                    text: cleanStreamText(item.responseText),
++                                }));
++                            setStreamPreview({ parts });
++                        });
++                    },
+                     onTextPart: async (text, senderInfo, options) => {
+                         if (!isCurrentGeneration()) return;
++                        // 本轮群聊内容经 onTextPart 落库后重置，供下一轮（工具轮）重新预览
++                        if (streamParseFrameRef.current) {
++                            cancelAnimationFrame(streamParseFrameRef.current);
++                            streamParseFrameRef.current = 0;
++                        }
++                        streamAccumRef.current = "";
++                        setStreamPreview(null);
+                         if (!text.trim() || !senderInfo) return;
+                         const cleanedEditableText = cleanEditableAssistantText(text);
+                         if (!cleanedEditableText) return;
+@@ -3554,8 +3708,27 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
+                     signal: generationRun.controller.signal,
+                 }, {
+                     onReasoning: (t) => { pendingReasoning = t; },
++                    onStreamDelta: (delta) => {
++                        if (!isCurrentGeneration()) return;
++                        streamAccumRef.current += delta;
++                        // 预览更新合并到 rAF 下一帧：每帧最多一次全文净化+setState，避免高频增量卡顿
++                        if (streamParseFrameRef.current) return;
++                        streamParseFrameRef.current = window.requestAnimationFrame(() => {
++                            streamParseFrameRef.current = 0;
++                            if (!isCurrentGeneration()) return;
++                            setStreamPreview({ text: cleanStreamText(streamAccumRef.current) });
++                        });
++                    },
+                     onTextPart: async (text, _senderInfo, options) => {
+                         if (!isCurrentGeneration()) return;
++                        // 本轮流式已结束且内容经 splitAndSaveAIMessages 落库：清掉预览、重置累积，
++                        // 供下一轮（工具轮）重新累积预览
++                        if (streamParseFrameRef.current) {
++                            cancelAnimationFrame(streamParseFrameRef.current);
++                            streamParseFrameRef.current = 0;
++                        }
++                        streamAccumRef.current = "";
++                        setStreamPreview(null);
+                         if (text.trim()) {
+                             const reasoningText = pendingReasoning;
+                             pendingReasoning = undefined;
+@@ -3719,7 +3892,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
+         return true;
+     };
+ 
+-    const handleSendText = (text: string): boolean => {
++    const handleSendText = (text: string, options?: { autoReply?: boolean }): boolean => {
+         if (!ensureGroupSpeakPermission()) return false;
+         if (isGenerating) {
+             showChatToast("请先等待对方回复");
+@@ -3764,6 +3937,9 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
+                 setMessages(prev => [...prev, diceAside]);
+             }
+             setPendingGenerate(true);
++            // 按回复键发送：消息落库后立即触发模型回复（无论插件是否异步改写，
++            // 都在消息真正写入后触发，避免回复基于旧上下文）
++            if (options?.autoReply) void triggerAIResponse();
+         };
+ 
+         // 聊天插件织入点 user.beforeSend：无插件时走原同步路径，
+@@ -3930,6 +4106,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
+         setPendingOfflineUserText(currentText);
+         offlineGenerationInputRef.current = currentText;
+         setIsOfflineGenerating(true);
++        offlineStreamAccumRef.current = "";
++        setOfflineStreamPreview(null);
+         const offlineRun = createOfflineGenerationRun(session.id);
+         const offlineRunId = offlineRun.runId;
+         const isCurrentOfflineRun = () => isOfflineGenerationRunActive(session.id, offlineRunId);
+@@ -3937,9 +4115,26 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
+         void (async () => {
+             try {
+                 const history = buildOfflinePromptHistory(offlineTurns, currentText);
++                const onOfflineDelta = (delta: string) => {
++                    if (!isCurrentOfflineRun()) return;
++                    offlineStreamAccumRef.current += delta;
++                    // 线下预览解析合并到 rAF 下一帧：每帧最多一次全文解析+setState
++                    if (offlineStreamFrameRef.current) return;
++                    offlineStreamFrameRef.current = window.requestAnimationFrame(() => {
++                        offlineStreamFrameRef.current = 0;
++                        if (!isCurrentOfflineRun()) return;
++                        const parsed = parseOfflineResponse(offlineStreamAccumRef.current, "summary");
++                        // 流式碎片阶段 XML 标签可能未闭合：content 提取不到时，剥掉开标签残片直接显示原文
++                        const previewContent = parsed.content || offlineStreamAccumRef.current
++                            .replace(/<\/?(?:content|summary|thinking|thought)>/gi, "")
++                            .replace(/<[^>]+>/g, "")
++                            .trim();
++                        setOfflineStreamPreview({ content: previewContent, summary: parsed.summary });
++                    });
++                };
+                 const result = session.isGroup
+-                    ? await generateGroupOfflineChatCompletion(session, history, { signal: offlineRun.controller.signal })
+-                    : await generateOfflineChatCompletion(session, history, { signal: offlineRun.controller.signal });
++                    ? await generateGroupOfflineChatCompletion(session, history, { signal: offlineRun.controller.signal, onStreamDelta: onOfflineDelta })
++                    : await generateOfflineChatCompletion(session, history, { signal: offlineRun.controller.signal, onStreamDelta: onOfflineDelta });
+                 if (!isCurrentOfflineRun()) return;
+                 const assistantContent = result.content.trim() || result.rawText.trim();
+                 if (!assistantContent) throw new Error("AI 没有返回线下正文");
+@@ -3952,6 +4147,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
+                     summaryTag: result.summaryTag,
+                     rawText: result.rawText,
+                     reasoningText: result.reasoning,
++                    thinkingText: result.thinking,
++                    thinkingTag: result.thinkingTag,
+                 });
+                 setOfflineTurns(prev => [...prev, saved]);
+             } catch (error: any) {
+@@ -3963,6 +4160,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
+                 setPendingOfflineUserText("");
+                 offlineGenerationInputRef.current = "";
+                 setIsOfflineGenerating(false);
++                offlineStreamAccumRef.current = "";
++                setOfflineStreamPreview(null);
+             }
+         })();
+         return true;
+@@ -3999,11 +4198,18 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
+             return;
+         }
+         if (!parsed.summary.trim()) showChatToast(`未提取到 <${parsed.summaryTag}> 摘要`);
++        // 思维链：parseOfflineResponse 已回归官方两参数（不再提取 thinking）。
++        // 若该条原本带标签思维链（预设开启线下标签解析），按原标签从编辑后的正文重新提取，否则保持无。
++        const editedThinking = turn.thinkingText !== undefined
++            ? (extractThinkingTag(nextContent, turn.thinkingTag) || undefined)
++            : undefined;
+         const updated = updateChatOfflineTurn(session.id, turn.id, {
+             assistantContent,
+             summary: parsed.summary.trim(),
+             summaryTag: parsed.summaryTag,
+             rawText: parsed.rawText,
++            thinkingText: editedThinking,
++            thinkingTag: editedThinking !== undefined ? turn.thinkingTag : undefined,
+         });
+         if (updated) setOfflineTurns(prev => prev.map(item => item.id === updated.id ? updated : item));
+         setEditingOfflineTarget(null);
+@@ -4046,15 +4252,28 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
+         setPendingOfflineUserText(retryInput);
+         offlineGenerationInputRef.current = retryInput;
+         setIsOfflineGenerating(true);
++        offlineStreamAccumRef.current = "";
++        setOfflineStreamPreview(null);
+         const offlineRun = createOfflineGenerationRun(session.id);
+         const offlineRunId = offlineRun.runId;
+         const isCurrentOfflineRun = () => isOfflineGenerationRunActive(session.id, offlineRunId);
+ 
+         try {
+             const history = buildOfflinePromptHistory(baseTurns, retryInput);
++            const onOfflineDelta = (delta: string) => {
++                if (!isCurrentOfflineRun()) return;
++                offlineStreamAccumRef.current += delta;
++                const parsed = parseOfflineResponse(offlineStreamAccumRef.current, "summary");
++                // 流式碎片阶段 XML 标签可能未闭合：content 提取不到时，剥掉开标签残片直接显示原文
++                const previewContent = parsed.content || offlineStreamAccumRef.current
++                    .replace(/<\/?(?:content|summary|thinking|thought)>/gi, "")
++                    .replace(/<[^>]+>/g, "")
++                    .trim();
++                setOfflineStreamPreview({ content: previewContent, summary: parsed.summary });
++            };
+             const result = session.isGroup
+-                ? await generateGroupOfflineChatCompletion(session, history, { signal: offlineRun.controller.signal })
+-                : await generateOfflineChatCompletion(session, history, { signal: offlineRun.controller.signal });
++                ? await generateGroupOfflineChatCompletion(session, history, { signal: offlineRun.controller.signal, onStreamDelta: onOfflineDelta })
++                : await generateOfflineChatCompletion(session, history, { signal: offlineRun.controller.signal, onStreamDelta: onOfflineDelta });
+             if (!isCurrentOfflineRun()) return;
+             const assistantContent = result.content.trim() || result.rawText.trim();
+             if (!assistantContent) throw new Error("AI 没有返回线下正文");
+@@ -4067,6 +4286,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
+                 summaryTag: result.summaryTag,
+                 rawText: result.rawText,
+                 reasoningText: result.reasoning,
++                thinkingText: result.thinking,
++                thinkingTag: result.thinkingTag,
+             });
+             setOfflineTurns([...baseTurns, saved]);
+         } catch (error: any) {
+@@ -4078,6 +4299,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
+             setPendingOfflineUserText("");
+             offlineGenerationInputRef.current = "";
+             setIsOfflineGenerating(false);
++            offlineStreamAccumRef.current = "";
++            setOfflineStreamPreview(null);
+         }
+     };
+ 
+@@ -5278,16 +5501,16 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
+                                             </button>
+                                         ) : null}
+                                     </div>
+-                                    {/* 思维链触发条（线下模式，Claude app 风格） */}
+-                                    {turn.reasoningText && (
++                                    {/* 思维链触发条（线下模式，Claude app 风格）：优先展示预设格式 <thinking> 解析结果，缺省回退模型 API 原生思考 */}
++                                    {(turn.thinkingText || turn.reasoningText) && (
+                                         <button
+                                             type="button"
+                                             className="chat-reasoning-trigger"
+-                                            onClick={(e) => { e.stopPropagation(); setReasoningSheetText(turn.reasoningText || null); }}
++                                            onClick={(e) => { e.stopPropagation(); setReasoningSheetText(turn.thinkingText || turn.reasoningText || null); }}
+                                             aria-label="查看思考过程"
+                                         >
+                                             <Clock size={13} strokeWidth={1.8} className="chat-reasoning-trigger-icon" />
+-                                            <span className="chat-reasoning-trigger-text">{reasoningPreviewLine(turn.reasoningText)}</span>
++                                            <span className="chat-reasoning-trigger-text">{reasoningPreviewLine(turn.thinkingText || turn.reasoningText || "")}</span>
+                                             <ChevronRight size={14} strokeWidth={1.8} className="chat-reasoning-trigger-icon" />
+                                         </button>
+                                     )}
+@@ -5346,7 +5569,16 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
+                                         />
+                                     </div>
+                                 </div>
+-                                <div className="chat-offline-generating">线下回复生成中</div>
++                                <div className="chat-offline-generating">
++                                    <span>线下回复生成中</span>
++                                    {offlineStreamPreview?.content && (
++                                        <div className="chat-offline-stream-preview">
++                                            {/* 流式预览用轻量 pre-wrap 渲染：避免每帧跑 markdown/双语解析导致闪烁卡顿 */}
++                                            <div className="chat-stream-text whitespace-pre-wrap break-words">{offlineStreamPreview.content}</div>
++                                            <span className="chat-stream-cursor" aria-hidden="true" />
++                                        </div>
++                                    )}
++                                </div>
+                             </div>
+                         )}
+                     </div>
+@@ -5828,6 +6060,48 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
+                         </div>
+                     );
+                 })}
++                {/* 流式生成预览：生成中实时显示原文增量，结束后由正式消息替换 */}
++                {!offlineMode && streamPreview && (
++                    <div className="chat-stream-preview" data-ui="stream-preview">
++                        {session.isGroup && streamPreview.parts && streamPreview.parts.length > 0 ? (
++                            streamPreview.parts.map((part, i) => {
++                                const senderChar = groupCharMap.get(part.characterId) || character;
++                                return (
++                                    <div key={`stream-${part.characterId}-${i}`} className="chat-msg-wrapper" data-role="assistant">
++                                        <div className="chat-msg-avatar flex flex-col items-center gap-1 shrink-0">
++                                            <div className="w-[40px] h-[40px] rounded-[20px] bg-[var(--c-input)] overflow-hidden">
++                                                {senderChar?.avatar ? <img src={senderChar.avatar} className="w-full h-full object-cover" alt="" /> : <ChatFallbackAvatar />}
++                                            </div>
++                                        </div>
++                                        <div className="chat-msg-content-wrap flex flex-col min-w-0 max-w-[70%]">
++                                            <span className="chat-group-sender-name">{part.characterName}</span>
++                                            <div className="chat-bubble-role-assistant chat-stream-bubble break-words rounded-md px-3 py-2">
++                                                {/* 流式预览用轻量 pre-wrap 渲染：避免每帧跑 markdown/双语解析导致闪烁卡顿 */}
++                                                <div className="chat-stream-text whitespace-pre-wrap break-words">{part.text}</div>
++                                                <span className="chat-stream-cursor" aria-hidden="true" />
++                                            </div>
++                                        </div>
++                                    </div>
++                                );
++                            })
++                        ) : streamPreview.text ? (
++                            <div className="chat-msg-wrapper" data-role="assistant">
++                                <div className="chat-msg-avatar flex flex-col items-center gap-1 shrink-0">
++                                    <div className="w-[40px] h-[40px] rounded-[20px] bg-[var(--c-input)] overflow-hidden">
++                                        {character?.avatar ? <img src={character.avatar} className="w-full h-full object-cover" alt="" /> : <ChatFallbackAvatar />}
++                                    </div>
++                                </div>
++                                <div className="chat-msg-content-wrap flex flex-col min-w-0 max-w-[70%]">
++                                    <div className="chat-bubble-role-assistant chat-stream-bubble break-words rounded-md px-3 py-2">
++                                        {/* 流式预览用轻量 pre-wrap 渲染：避免每帧跑 markdown/双语解析导致闪烁卡顿 */}
++                                        <div className="chat-stream-text whitespace-pre-wrap break-words">{streamPreview.text}</div>
++                                        <span className="chat-stream-cursor" aria-hidden="true" />
++                                    </div>
++                                </div>
++                            </div>
++                        ) : null}
++                    </div>
++                )}
+                 {/* Scroll anchor: browser keeps this in view when content above changes height */}
+                 <div style={{ overflowAnchor: 'auto', height: 1 }} />
+             </div>
+diff --git a/components/chat/chat-settings-panel.tsx b/components/chat/chat-settings-panel.tsx
+index 2499a0b..03f19fd 100644
+--- a/components/chat/chat-settings-panel.tsx
++++ b/components/chat/chat-settings-panel.tsx
+@@ -389,6 +389,9 @@ export function ChatSettingsPanel({
+     const [bilingualTranslationEnabled, setBilingualTranslationEnabled] = useState(session.bilingualTranslationEnabled !== false);
+     const [collapseBilingualTranslation, setCollapseBilingualTranslation] = useState(session.collapseBilingualTranslation !== false);
+     const [discardInvalidStickers, setDiscardInvalidStickers] = useState(session.discardInvalidStickers === true);
++    // 流式生成：按会话区分（线上/线下），存 ChatSession 字段，默认关
++    const [streamOnline, setStreamOnline] = useState(session.streamOnline === true);
++    const [streamOffline, setStreamOffline] = useState(session.streamOffline === true);
+     const defaultBilingualPrompt = session.isGroup ? DEFAULT_GROUP_CHAT_BILINGUAL_PROMPT : DEFAULT_CHAT_BILINGUAL_PROMPT;
+     const defaultOfflineBilingualPrompt = session.isGroup ? DEFAULT_GROUP_OFFLINE_CHAT_BILINGUAL_PROMPT : DEFAULT_OFFLINE_CHAT_BILINGUAL_PROMPT;
+     const [bilingualTranslationPrompt, setBilingualTranslationPrompt] = useState(session.bilingualTranslationPrompt || defaultBilingualPrompt);
+@@ -1077,6 +1080,38 @@ export function ChatSettingsPanel({
+                                 />
+                             </div>
+                         </div>
++                        <div className="menu-item">
++                            <ChatInfoIcon icon={Sparkles} color={BINDING_ACCENTS.api} />
++                            <div className="menu-label-group">
++                                <span className="menu-label">线上流式生成</span>
++                                <span className="menu-desc">仅当前会话：线上 AI 回复边生成边显示；关闭则整段返回</span>
++                            </div>
++                            <div className="menu-right">
++                                <Toggle
++                                    checked={streamOnline}
++                                    onChange={c => {
++                                        setStreamOnline(c);
++                                        updateSession({ streamOnline: c });
++                                    }}
++                                />
++                            </div>
++                        </div>
++                        <div className="menu-item">
++                            <ChatInfoIcon icon={Sparkles} color={BINDING_ACCENTS.preset} />
++                            <div className="menu-label-group">
++                                <span className="menu-label">线下流式生成</span>
++                                <span className="menu-desc">仅当前会话：线下 AI 回复边生成边显示；关闭则整段返回</span>
++                            </div>
++                            <div className="menu-right">
++                                <Toggle
++                                    checked={streamOffline}
++                                    onChange={c => {
++                                        setStreamOffline(c);
++                                        updateSession({ streamOffline: c });
++                                    }}
++                                />
++                            </div>
++                        </div>
+                         <button className="menu-item" onClick={() => setShowScreenEffects(true)}>
+                             <ChatInfoIcon icon={Sparkles} color={BINDING_ACCENTS.preset} />
+                             <div className="menu-label-group">
+diff --git a/components/phone-qa-app.tsx b/components/phone-qa-app.tsx
+index c622d0a..1eb2e92 100644
+--- a/components/phone-qa-app.tsx
++++ b/components/phone-qa-app.tsx
+@@ -4,7 +4,8 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExterna
+ import ReactMarkdown from "react-markdown";
+ import remarkGfm from "remark-gfm";
+ import remarkBreaks from "remark-breaks";
+-import { AppWindow, ArrowUp, BrushCleaning, Check, ChevronLeft, ChevronRight, Copy, Drama, Gamepad2, Github, Loader2, Menu, Pencil, Play, Plus, Square, Trash2, Wrench, X } from "lucide-react";
++import { AppWindow, ArrowUp, BrushCleaning, Check, ChevronLeft, ChevronRight, Copy, Drama, FileCode2, Gamepad2, Github, Loader2, Menu, Pencil, Play, Plus, Square, Trash2, Wrench, X } from "lucide-react";
++import { getQaApiLogs, clearQaApiLogs, type DebugInfo } from "@/lib/api-log-store";
+ import { QaFileCard } from "@/components/qa-file-card";
+ import { parseQaFileMarker } from "@/lib/qa-computer-tools";
+ import { mdiHammerWrench } from "@mdi/js";
+@@ -733,6 +734,7 @@ export function PhoneQaApp({ onClose, onNotice }: PhoneQaAppProps) {
+   const [repoConnected, setRepoConnected] = useState(false);
+   const [clearToolsOpen, setClearToolsOpen] = useState(false);
+   const [settingsOpen, setSettingsOpen] = useState(false);
++  const [apiLogOpen, setApiLogOpen] = useState(false);
+   const [pendingImages, setPendingImages] = useState<string[]>([]);
+   const [viewerImage, setViewerImage] = useState<string | null>(null);
+   const [editingMsg, setEditingMsg] = useState<QaMsg | null>(null);
+@@ -915,6 +917,15 @@ export function PhoneQaApp({ onClose, onNotice }: PhoneQaAppProps) {
+           {repoConnected && <span className="qa-header-sub">已连接仓库</span>}
+         </div>
+         <div className="qa-header-right">
++          <button
++            type="button"
++            className="qa-icon-btn"
++            onClick={() => setApiLogOpen(true)}
++            aria-label="调用记录"
++            title="查看工坊的 AI 调用记录"
++          >
++            <FileCode2 size={17} strokeWidth={1.75} />
++          </button>
+           <button
+             type="button"
+             className="qa-icon-btn"
+@@ -1158,6 +1169,10 @@ export function PhoneQaApp({ onClose, onNotice }: PhoneQaAppProps) {
+         <QaSettingsSheet onClose={() => setSettingsOpen(false)} onNotice={onNotice} />
+       )}
+ 
++      {apiLogOpen && (
++        <QaApiLogSheet onClose={() => setApiLogOpen(false)} onNotice={onNotice} />
++      )}
++
+       {repoSheetOpen && (
+         <QaRepoSheet onClose={() => setRepoSheetOpen(false)} onSaved={refreshComposerMeta} />
+       )}
+@@ -1228,3 +1243,105 @@ export function PhoneQaApp({ onClose, onNotice }: PhoneQaAppProps) {
+     </div>
+   );
+ }
++
++/* ══════════════════════════════════════════
++   工坊调用记录面板：右上角「调用记录」按钮进入，
++   只展示工坊自己的 LLM 调用（与聊天页底层日志完全独立）。
++   ══════════════════════════════════════════ */
++function QaApiLogSheet({ onClose, onNotice }: { onClose: () => void; onNotice?: (msg: string) => void }) {
++  const [logs, setLogs] = useState<DebugInfo[]>(() => [...getQaApiLogs()].reverse());
++  const [expandedId, setExpandedId] = useState<string | null>(null);
++
++  const refresh = useCallback(() => setLogs([...getQaApiLogs()].reverse()), []);
++  useEffect(() => { refresh(); }, [refresh]);
++
++  const handleClear = () => {
++    clearQaApiLogs();
++    setLogs([]);
++    onNotice?.("已清空工坊调用记录");
++  };
++
++  const formatTime = (ts: string) => {
++    const d = new Date(ts);
++    return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
++  };
++
++  return (
++    <div className="qa-sheet-backdrop" onClick={onClose}>
++      <div className="qa-sheet" onClick={(e) => e.stopPropagation()}>
++        <div className="qa-sheet-head">
++          <span className="qa-sheet-title">
++            <FileCode2 size={16} /> 调用记录
++          </span>
++          <div className="qa-sheet-head-actions">
++            {logs.length > 0 && (
++              <button type="button" className="qa-sheet-btn" onClick={handleClear}>
++                <Trash2 size={14} /> 清空
++              </button>
++            )}
++            <button type="button" className="qa-icon-btn" onClick={onClose} aria-label="关闭">
++              <X size={16} />
++            </button>
++          </div>
++        </div>
++        <div className="qa-sheet-body hide-scrollbar qa-log-body">
++          {logs.length === 0 ? (
++            <p className="qa-sheet-note">
++              还没有工坊的 AI 调用记录。调用过模型后，这里会显示每次请求的 Prompt 与 AI 原始回复（含思维链），供排查用。
++            </p>
++          ) : (
++            <>
++              <p className="qa-sheet-note">
++                工坊每次调用大模型的记录，与聊天页「底层调用大模型日志」互相独立，互不混入。
++              </p>
++              <div className="qa-log-list">
++                {logs.map((log) => {
++                  const isOpen = expandedId === log.id;
++                  return (
++                    <div key={log.id} className="qa-log-item">
++                      <button
++                        type="button"
++                        className="qa-log-item-head"
++                        onClick={() => setExpandedId(isOpen ? null : log.id)}
++                      >
++                        <div className="qa-log-item-meta">
++                          <span className="qa-log-item-time">{formatTime(log.timestamp)}</span>
++                          <span className="qa-log-item-detail">
++                            {log.model ? `Model: ${log.model}` : ""}
++                            {log.model && log.messages.length ? " · " : ""}
++                            {log.messages.length} 条消息
++                            {log.usage ? ` · Tokens: ${log.usage.prompt_tokens ?? "—"} / ${log.usage.completion_tokens ?? "—"} / ${log.usage.total_tokens ?? "—"}` : ""}
++                          </span>
++                        </div>
++                        <ChevronRight size={15} className={isOpen ? "qa-log-chevron-open" : ""} />
++                      </button>
++                      {isOpen && (
++                        <div className="qa-log-item-body">
++                          <div className="qa-log-label">Prompt（{log.messages.length} 条消息）</div>
++                          {log.messages.map((m, i) => (
++                            <div key={i} className="qa-log-entry" data-role={m.role}>
++                              <div className="qa-log-entry-role">[{i}] {m.role}</div>
++                              <div className="qa-log-entry-content">{m.content}</div>
++                            </div>
++                          ))}
++                          {log.reasoning && (
++                            <>
++                              <div className="qa-log-label">思维链（Reasoning）</div>
++                              <pre className="qa-log-response">{log.reasoning}</pre>
++                            </>
++                          )}
++                          <div className="qa-log-label is-danger">AI 原始回复</div>
++                          <pre className="qa-log-response">{log.rawResponse}</pre>
++                        </div>
++                      )}
++                    </div>
++                  );
++                })}
++              </div>
++            </>
++          )}
++        </div>
++      </div>
++    </div>
++  );
++}
+diff --git a/lib/qa-agent-engine.ts b/lib/qa-agent-engine.ts
+index 3dfa0c7..6127286 100644
+--- a/lib/qa-agent-engine.ts
++++ b/lib/qa-agent-engine.ts
+@@ -9,6 +9,7 @@ import {
+     type LlmToolCall,
+ } from "./llm-provider-adapter";
+ import { sendLLMToolStreamRequest, type LLMToolRequestResult } from "./chat-engine";
++import { pushApiLog } from "./api-log-store";
+ import type { LLMContentPart } from "./llm-prompt-assembler";
+ import { loadApiConfigs, loadBindingConfig } from "./settings-storage";
+ import type { ApiConfig } from "./settings-types";
+@@ -335,10 +336,26 @@ async function requestQaCompletion(
+     // 输出护栏：配置了「单次最大输出 token」时每次请求带 max_tokens，
+     // 写超被服务端安全截断（agent 循环里会自动续接），而不是拖垮整轮
+     const maxTokens = getQaMaxOutputTokens() ?? undefined;
++    // 工坊调用记录：与角色聊天/记忆等底层日志隔离，只进工坊右上角「调用记录」
++    const logQaCall = (entry: { model: string; messages: { role: string; content: string | LLMContentPart[]; marker?: string }[]; rawResponse: string; reasoning?: string }) => {
++        pushApiLog({
++            characterName: "工坊",
++            source: "qa",
++            channel: "qa",
++            model: entry.model,
++            messages: entry.messages.map(m => ({
++                role: m.role,
++                content: typeof m.content === "string" ? m.content : "[vision: 含图片的多模态消息]",
++            })),
++            rawResponse: entry.rawResponse,
++            reasoning: entry.reasoning?.trim() || undefined,
++        });
++    };
+     try {
+         const streamRequest = buildProviderRequest(apiConfig, null, messages, { stream: true, maxTokens });
+         const result = await streamQaProviderRequest(streamRequest, { signal: options?.signal }, options?.callbacks);
+         if (!result.content.trim()) throw new Error("LLM 返回了空内容");
++        logQaCall({ model: apiConfig.defaultModel, messages: streamRequest.messagesForLog, rawResponse: result.content, reasoning: result.reasoning });
+         return result;
+     } catch (streamError) {
+         if (options?.signal?.aborted) throw streamError;
+@@ -356,6 +373,7 @@ async function requestQaCompletion(
+         if (!content) throw new Error("LLM 返回了空内容");
+         const visible = stripThinkBlocks(content);
+         if (visible) await options?.callbacks?.onDelta?.(visible);
++        logQaCall({ model: apiConfig.defaultModel, messages: request.messagesForLog, rawResponse: content, reasoning: parsed.reasoning });
+         return { content, reasoning: parsed.reasoning || "" };
+     }
+ }
+diff --git a/styles/chat.css b/styles/chat.css
+index 650078f..78e66ae 100644
+--- a/styles/chat.css
++++ b/styles/chat.css
+@@ -1024,9 +1024,12 @@
+ 
+ /* ── Context menu ── */
+ .ctx-menu {
+-  background: var(--ctx-menu-bg, #2c2c2c);
+-  border-radius: 8px;
+-  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
++  background: rgba(25, 25, 25, 0.8);
++  -webkit-backdrop-filter: blur(16px) saturate(180%);
++  backdrop-filter: blur(16px) saturate(180%);
++  border: 0.5px solid rgba(255, 255, 255, 0.15);
++  border-radius: 14px;
++  box-shadow: 0 10px 30px rgba(0,0,0,0.25), 0 4px 12px rgba(0,0,0,0.15);
+   z-index: 50;
+   white-space: nowrap;
+ }
+@@ -1057,19 +1060,24 @@
+   border: none;
+   color: #fff;
+   padding: 0 12px;
+-  font-size: calc(12.6px*var(--app-text-scale,1));
++  font-size: calc(14px*var(--app-text-scale,1));
++  font-weight: 500;
++  line-height: 1.2;
++  border-radius: 999px;
+   cursor: pointer;
++  transition: background 0.2s ease, transform 0.2s ease;
++}
++.ctx-menu-btn:active {
++  background: rgba(255, 255, 255, 0.15);
++  transform: scale(0.96);
+ }
+ .ctx-menu-btn-danger {
+   color: var(--c-danger);
+ }
+-.ctx-menu-btn:not(:last-of-type) {
+-  border-right: 1px solid rgba(255,255,255,0.1);
+-}
++/* 胶囊化后按钮间用留白区分，不再画竖分隔线 */
++/* 悬浮胶囊卡片：隐藏指向箭头 */
+ .ctx-menu-triangle {
+-  border-left: 6px solid transparent;
+-  border-right: 6px solid transparent;
+-  border-bottom: 6px solid var(--ctx-menu-bg, #2c2c2c);
++  display: none;
+ }
+ 
+ /* ══════════════════════════════════════════
+@@ -6644,6 +6652,34 @@
+   color: var(--c-danger, #e5484d);
+ }
+ 
++/* ── 底层调用日志：「查看原始」按钮 + 思维链 / 真实原始响应 ── */
++.api-log-raw-tag {
++  display: inline-flex;
++  align-items: center;
++  padding: 3px 9px;
++  border: 1px solid color-mix(in srgb, var(--c-icon-active) 45%, transparent);
++  border-radius: 999px;
++  background: color-mix(in srgb, var(--c-icon-active) 10%, transparent);
++  color: var(--c-icon-active);
++  font-size: calc(11px * var(--app-text-scale, 1));
++  line-height: 1.4;
++  cursor: pointer;
++  white-space: nowrap;
++  user-select: none;
++}
++.api-log-raw-tag:active {
++  opacity: 0.65;
++}
++.api-log-reasoning {
++  padding: 8px;
++  border-radius: 6px;
++  white-space: pre-wrap;
++  word-break: break-all;
++  line-height: 1.4;
++  background: rgba(255,149,0,0.12);
++  border-left: 3px solid var(--c-warning);
++}
++
+ /* ── 全屏特效设置弹窗（底部全宽弹层）── */
+ .screen-fx-sheet {
+   background: var(--c-page-body-bg);
+@@ -7008,3 +7044,69 @@
+   object-fit: cover;
+   display: block;
+ }
++
++/* ── 流式生成预览 ──
++   开启「流式生成」后，线上/线下、单聊/群聊回复在生成过程中实时显示。
++   预览气泡复用普通气泡底色，末尾带闪烁光标提示仍在生成。 */
++.chat-stream-preview {
++  display: flex;
++  flex-direction: column;
++  gap: 16px;
++  opacity: 0.92;
++}
++
++.chat-stream-bubble {
++  position: relative;
++  background: var(--c-bubble-other, #FFFFFF);
++  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
++}
++
++/* 流式预览正文：轻量渲染，避免每帧 markdown/双语解析导致闪烁卡顿。
++   保留换行与基础间距观感，与正式气泡（BilingualTextBlock）视觉接近。 */
++.chat-stream-text {
++  font-size: calc(14px * var(--app-text-scale, 1));
++  line-height: 1.7;
++  color: var(--c-text-title, var(--c-text));
++  overflow-wrap: break-word;
++}
++
++.chat-stream-bubble .chat-stream-cursor {
++  display: inline-block;
++  width: 2px;
++  height: 1em;
++  margin-left: 2px;
++  vertical-align: -0.15em;
++  border-radius: 1px;
++  background: currentColor;
++  animation: chat-stream-cursor-blink 1s steps(2, start) infinite;
++}
++
++@keyframes chat-stream-cursor-blink {
++  0%, 100% { opacity: 1; }
++  50% { opacity: 0; }
++}
++
++/* 线下模式生成中的实时正文预览：比普通文案稍浅，区分「未落库」 */
++.chat-offline-stream-preview {
++  margin-top: 8px;
++  max-height: 40vh;
++  overflow-y: auto;
++  padding: 10px 12px;
++  border-radius: 12px;
++  background: var(--c-input, rgba(0, 0, 0, 0.04));
++  color: var(--c-text, inherit);
++  text-align: left;
++  line-height: 1.6;
++  word-break: break-word;
++}
++
++.chat-offline-stream-preview .chat-stream-cursor {
++  display: inline-block;
++  width: 2px;
++  height: 1em;
++  margin-left: 2px;
++  vertical-align: -0.15em;
++  border-radius: 1px;
++  background: currentColor;
++  animation: chat-stream-cursor-blink 1s steps(2, start) infinite;
++}
+diff --git a/styles/qa.css b/styles/qa.css
+index 01698b7..f1aa044 100644
+--- a/styles/qa.css
++++ b/styles/qa.css
+@@ -1449,8 +1449,6 @@
+ /* ── 消息操作菜单（长按 / 右键弹出：复制、编辑）── */
+ .qa-msg-wrap {
+   position: relative;
+-  /* 消息级懒渲染：视口外的消息跳过布局与绘制，降低长对话在输入框聚焦和视口 resize 时的开销。
+-     浏览器首次跳过内容时使用预估高度，渲染后记住实际高度；不支持时自动回退。 */
+   content-visibility: auto;
+   contain-intrinsic-size: auto 80px;
+ }
+@@ -1678,3 +1676,123 @@
+   font-weight: 600;
+   cursor: pointer;
+ }
++
++/* ── 工坊调用记录面板 ── */
++.qa-sheet-head-actions {
++  display: flex;
++  align-items: center;
++  gap: 8px;
++}
++.qa-sheet-head-actions .qa-sheet-btn {
++  display: inline-flex;
++  align-items: center;
++  gap: 5px;
++  padding: 5px 10px;
++  width: auto;
++  font-size: 12.5px;
++  border-radius: 9px;
++}
++.qa-log-body {
++  padding-top: 10px;
++}
++.qa-log-list {
++  display: flex;
++  flex-direction: column;
++  gap: 8px;
++}
++.qa-log-item {
++  border: 1px solid var(--qa-border-subtle);
++  border-radius: 12px;
++  background: color-mix(in srgb, var(--qa-bg-overlay) 55%, transparent);
++  overflow: hidden;
++}
++.qa-log-item-head {
++  width: 100%;
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 10px;
++  padding: 10px 12px;
++  border: 0;
++  background: none;
++  cursor: pointer;
++  color: var(--qa-text-primary);
++  text-align: left;
++}
++.qa-log-item-head:hover {
++  background: var(--qa-state-hover);
++}
++.qa-log-item-meta {
++  display: flex;
++  flex-direction: column;
++  gap: 2px;
++  min-width: 0;
++}
++.qa-log-item-time {
++  font-size: 13px;
++  font-weight: 600;
++}
++.qa-log-item-detail {
++  font-size: 11.5px;
++  color: var(--qa-text-secondary);
++  white-space: nowrap;
++  overflow: hidden;
++  text-overflow: ellipsis;
++}
++.qa-log-chevron-open {
++  transform: rotate(90deg);
++}
++.qa-log-item-body {
++  padding: 4px 12px 12px;
++  border-top: 1px solid var(--qa-border-subtle);
++}
++.qa-log-label {
++  margin: 12px 0 6px;
++  font-size: 12px;
++  font-weight: 600;
++  color: var(--qa-accent, #5b7b64);
++}
++.qa-log-label.is-danger {
++  color: var(--c-danger, #d33);
++}
++.qa-log-entry {
++  margin-bottom: 8px;
++  padding: 8px 10px;
++  border-radius: 9px;
++  background: color-mix(in srgb, var(--qa-text-primary) 5%, transparent);
++}
++.qa-log-entry[data-role="system"] {
++  border-left: 3px solid var(--qa-accent, #5b7b64);
++}
++.qa-log-entry[data-role="user"] {
++  border-left: 3px solid #4a7ba6;
++}
++.qa-log-entry[data-role="assistant"] {
++  border-left: 3px solid #a67a3d;
++}
++.qa-log-entry-role {
++  font-size: 11px;
++  font-weight: 700;
++  margin-bottom: 4px;
++  opacity: 0.75;
++}
++.qa-log-entry-content {
++  font-size: 12px;
++  line-height: 1.6;
++  white-space: pre-wrap;
++  word-break: break-all;
++  color: var(--qa-text-primary);
++}
++.qa-log-response {
++  margin: 0;
++  padding: 10px 12px;
++  border-radius: 9px;
++  background: color-mix(in srgb, var(--qa-text-primary) 5%, transparent);
++  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
++  font-size: 12px;
++  line-height: 1.6;
++  white-space: pre-wrap;
++  word-break: break-all;
++  color: var(--qa-text-primary);
++  overflow-x: hidden;
++}

@@ -43,8 +43,12 @@ export function CloudBackupScheduler() {
         try {
           // Cloud uploads are chunked, so large media is fine — always back up in full.
           await runCloudBackup(config, { excludeMedia: false });
-        } catch {
-          /* silent — surfaced in the data page status on next open */
+        } catch (error) {
+          // 不再静默吞掉——通知用户备份失败了
+          const msg = error instanceof Error ? error.message : String(error);
+          console.error("[CloudBackup] 自动备份失败:", msg);
+          // 通过 postMessage 触发桌面通知（desktop-shell 监听 OS_CMD/show_notice）
+          window.postMessage({ type: "OS_CMD", action: "show_notice", message: `☁️ 自动备份失败：${msg}` }, "*");
         } finally {
           backupRunning = false;
         }

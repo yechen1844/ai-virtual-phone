@@ -1,0 +1,58 @@
+﻿=== 盗版关键文件 ===
+游戏本体: True
+SMAPI: True
+smapi-internal: True
+Mods: True
+
+=== 盗版 Mods 顶层 ===
+Yomi's Romantic Tricolor Flower Furniture-17624-1-0-0-1690749906
+不可婚转可婚可能有bug
+前置
+功能
+地图
+多妻
+夜城
+大型拓展
+新增npc
+新增事件
+新增对话
+法师
+衣服
+高清肖像美化
+
+=== Nagi 相关目录 ===
+
+=== NagiBridge dll ===
+
+=== 版本对比 ===
+盗版游戏dll版本: 1.6.8, , 24119, 1.6.6
+正版游戏dll版本: 1.6.15, , 24356, 
+SMAPI版本: 4.0.8+f2701f12cec1b9c996b2bc1456a7c9e9209b6e3a
+
+=== 盗版 smapi-internal 文件 ===
+i18n
+0Harmony.dll
+0Harmony.xml
+config.json
+metadata.json
+Mono.Cecil.dll
+Mono.Cecil.Mdb.dll
+Mono.Cecil.Pdb.dll
+MonoMod.Common.dll
+Newtonsoft.Json.dll
+Pathoschild.Http.Client.dll
+Pintail.dll
+SMAPI.Toolkit.CoreInterfaces.dll
+SMAPI.Toolkit.CoreInterfaces.xml
+SMAPI.Toolkit.dll
+SMAPI.Toolkit.xml
+StardewModdingAPI.update.marker
+System.Configuration.ConfigurationManager.dll
+System.Management.dll
+System.Net.Http.Formatting.dll
+System.Runtime.Caching.dll
+System.Security.Permissions.dll
+TMXTile.dll
+VdfConverter.dll
+
+=== NagiBridge manifest（若存在）===

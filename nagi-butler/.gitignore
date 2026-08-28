@@ -4,3 +4,5 @@ node_modules/
 downloads/
 test/.tmp-config.json
 test/.tmp-outbox.jsonl
+__pycache__/
+*.pyc

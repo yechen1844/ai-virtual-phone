@@ -1,0 +1,369 @@
+﻿diff --git a/components/chat/sticker-search-suggest.tsx b/components/chat/sticker-search-suggest.tsx
+index c7c6e14..ada64ad 100644
+--- a/components/chat/sticker-search-suggest.tsx
++++ b/components/chat/sticker-search-suggest.tsx
+@@ -1,7 +1,7 @@
+ "use client";
+ 
+ // 表情包搜索联想：输入时按名称模糊匹配本地表情包，横向列表浮在输入框正上方，
+-// 点击直接发送（复用 onSendSticker 的 sticker 消息通道）。
++// 点击直接发送（复用 onSendSticker 的 sticker 消息通道），发送后由父组件清空输入。
+ // 数据源 = 内置表情包（sticker-data，emoji 兜底）+ 当前会话角色绑定的自定义贴纸包（IndexedDB 解析出 url）。
+ 
+ import { useEffect, useMemo, useRef, useState } from "react";
+@@ -115,7 +115,7 @@ export function StickerSearchSuggest({ query, characterIds, onSend, onClose }: S
+       onMouseDown={(event) => event.preventDefault()}
+     >
+       <div
+-        className="flex items-stretch gap-1.5 overflow-x-auto px-2.5 py-2 rounded-2xl hide-scrollbar"
++        className="flex items-stretch gap-2 overflow-x-auto px-3 py-2.5 rounded-2xl hide-scrollbar"
+         style={{
+           background: "color-mix(in srgb, var(--c-card) 96%, transparent)",
+           border: "1px solid var(--c-card-border)",
+@@ -133,20 +133,20 @@ export function StickerSearchSuggest({ query, characterIds, onSend, onClose }: S
+               onSend(item.name, item.url);
+               onClose();
+             }}
+-            className="shrink-0 flex flex-col items-center gap-1 px-2 py-1.5 rounded-xl bg-transparent border-none cursor-pointer transition-transform active:scale-95"
+-            style={{ minWidth: 52 }}
++            className="shrink-0 flex flex-col items-center gap-1 px-2.5 py-2 rounded-xl bg-transparent border-none cursor-pointer transition-transform active:scale-95"
++            style={{ minWidth: 64 }}
+             title={item.name}
+           >
+-            <span className="w-10 h-10 flex items-center justify-center overflow-hidden">
++            <span className="w-14 h-14 flex items-center justify-center overflow-hidden">
+               {item.url ? (
+-                <img src={item.url} alt={item.name} className="w-10 h-10 object-contain" draggable={false} />
++                <img src={item.url} alt={item.name} className="w-14 h-14 object-contain" draggable={false} />
+               ) : item.emoji ? (
+-                <span className="text-[26px] leading-none">{item.emoji}</span>
++                <span className="text-[32px] leading-none">{item.emoji}</span>
+               ) : (
+-                <span className="ts-10 text-[var(--c-text)] w-full text-center truncate">{item.name}</span>
++                <span className="ts-11 text-[var(--c-text)] w-full text-center truncate">{item.name}</span>
+               )}
+             </span>
+-            <span className="ts-10 text-[var(--c-text)] opacity-75 max-w-[56px] truncate leading-tight">{item.name}</span>
++            <span className="ts-11 text-[var(--c-text)] opacity-75 max-w-[64px] truncate leading-tight">{item.name}</span>
+           </button>
+         ))}
+       </div>
+diff --git a/components/chat/user-profile-panel.tsx b/components/chat/user-profile-panel.tsx
+index c5b3484..ec7a884 100644
+--- a/components/chat/user-profile-panel.tsx
++++ b/components/chat/user-profile-panel.tsx
+@@ -1,6 +1,6 @@
+ "use client";
+ 
+-import { useState, useEffect, type CSSProperties } from "react";
++import { useState, useEffect, useMemo, type CSSProperties } from "react";
+ import CSSSchemeBar from "@/components/ui/css-scheme-picker";
+ import {
+     loadFollowUpConfig,
+@@ -514,7 +514,6 @@ function FollowUpSettingsEditor({ onBack }: { onBack: () => void }) {
+         setConfig(next);
+         saveFollowUpConfig(next);
+     };
+-
+     const handleResetDefaults = () => {
+         setConfig(defaults);
+         saveFollowUpConfig(defaults);
+@@ -598,11 +597,40 @@ function FollowUpSettingsEditor({ onBack }: { onBack: () => void }) {
+ function ApiLogViewer({ onBack }: { onBack: () => void }) {
+     const [logs, setLogs] = useState<DebugInfo[]>([]);
+     const [expandedId, setExpandedId] = useState<string | null>(null);
++    // 来源过滤：hiddenSources 里记录被取消勾选的来源；空集 = 全部显示
++    const [hiddenSources, setHiddenSources] = useState<Set<string>>(new Set());
+ 
+     useEffect(() => {
+         setLogs([...getApiLogs()].reverse());
+     }, []);
+ 
++    // 从日志里提取所有来源（聊天角色名 / 记忆总结·角色名 等标签）
++    const allSources = useMemo(() => {
++        const set = new Set<string>();
++        for (const log of logs) set.add(log.characterName || "未标注来源");
++        return [...set].sort();
++    }, [logs]);
++
++    const toggleSource = (source: string) => {
++        setHiddenSources(prev => {
++            const next = new Set(prev);
++            if (next.has(source)) next.delete(source); else next.add(source);
++            return next;
++        });
++    };
++
++    // 全部勾选 = 清空隐藏集；全部取消 = 隐藏所有来源
++    const allChecked = hiddenSources.size === 0;
++    const toggleAll = () => {
++        if (allChecked) setHiddenSources(new Set(allSources));
++        else setHiddenSources(new Set());
++    };
++
++    const visibleLogs = useMemo(() => {
++        if (hiddenSources.size === 0) return logs;
++        return logs.filter(log => !hiddenSources.has(log.characterName || "未标注来源"));
++    }, [logs, hiddenSources]);
++
+     const handleClear = () => {
+         clearApiLogs();
+         setLogs([]);
+@@ -622,8 +650,41 @@ function ApiLogViewer({ onBack }: { onBack: () => void }) {
+                     </div>
+                 ) : (
+                     <>
++                        {/* 显示设置：来源过滤复选框（查看原始回复请逐条展开，或到聊天界面点消息旁的「AI 原始回复」按钮） */}
++                        <div className="menu-group">
++                            <div className="px-4 py-3 flex flex-col gap-2">
++                                <div className="flex items-center justify-between">
++                                    <span className="menu-label">来源过滤</span>
++                                    <button
++                                        type="button"
++                                        className="ui-bare-btn ts-12 font-semibold text-[var(--c-icon-active)]"
++                                        onClick={toggleAll}
++                                    >
++                                        {allChecked ? "全不选" : "全选"}
++                                    </button>
++                                </div>
++                                <div className="flex flex-wrap gap-x-3 gap-y-2">
++                                    <label className="flex items-center gap-1.5 ts-12 cursor-pointer select-none">
++                                        <input type="checkbox" checked={allChecked} onChange={toggleAll} />
++                                        <span>全部</span>
++                                    </label>
++                                    {allSources.map(src => (
++                                        <label key={src} className="flex items-center gap-1.5 ts-12 cursor-pointer select-none">
++                                            <input type="checkbox" checked={!hiddenSources.has(src)} onChange={() => toggleSource(src)} />
++                                            <span className="max-w-[140px] truncate">{src}</span>
++                                        </label>
++                                    ))}
++                                </div>
++                            </div>
++                        </div>
++
++                        {visibleLogs.length === 0 ? (
++                            <div className="ui-empty">
++                                <span className="menu-desc">当前来源过滤下没有调用记录</span>
++                            </div>
++                        ) : (
+                         <div className="flex flex-col gap-3">
+-                            {logs.map(log => {
++                            {visibleLogs.map(log => {
+                                 const isOpen = expandedId === log.id;
+                                 return (
+                                     <div key={log.id} className="menu-group">
+@@ -649,6 +710,14 @@ function ApiLogViewer({ onBack }: { onBack: () => void }) {
+                                                 </div>
+                                             </div>
+                                             <div className="menu-right">
++                                                <span
++                                                    className="api-log-raw-tag"
++                                                    role="button"
++                                                    tabIndex={0}
++                                                    onClick={(e) => { e.stopPropagation(); setExpandedId(isOpen ? null : log.id); }}
++                                                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setExpandedId(isOpen ? null : log.id); } }}
++                                                    title="查看这条调用的思维链原文"
++                                                >查看原始</span>
+                                                 <ChevronRight
+                                                     size={16}
+                                                     className="ui-chevron-flip"
+@@ -679,9 +748,17 @@ function ApiLogViewer({ onBack }: { onBack: () => void }) {
+                                                         </div>
+                                                     </div>
+                                                 ))}
+-                                                <div className="font-bold mt-3 mb-[6px] text-[var(--c-danger)]">
+-                                                    AI 原始回复
+-                                                </div>
++                                                {log.reasoning && (
++                                                    <>
++                                                        <div className="font-bold px-1 pt-3 pb-2 text-[var(--c-warning)]">
++                                                            思维链（Reasoning）
++                                                        </div>
++                                                        <div className="api-log-reasoning whitespace-pre-wrap break-all leading-[1.4]">
++                                                            {log.reasoning}
++                                                        </div>
++                                                    </>
++                                                )}
++                                                <div className="font-bold mt-3 mb-[6px] text-[var(--c-danger)]">AI 原始回复</div>
+                                                 <div className="api-log-response whitespace-pre-wrap break-all leading-[1.4]">
+                                                     {log.rawResponse}
+                                                 </div>
+@@ -691,6 +768,7 @@ function ApiLogViewer({ onBack }: { onBack: () => void }) {
+                                 );
+                             })}
+                         </div>
++                        )}
+ 
+                         {/* Clear button */}
+                         <div className="menu-group mt-4">
+diff --git a/components/settings/preset-manager.tsx b/components/settings/preset-manager.tsx
+index c11ae28..481a3d5 100644
+--- a/components/settings/preset-manager.tsx
++++ b/components/settings/preset-manager.tsx
+@@ -954,6 +954,73 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {})
+                                                                 用于从剧情模式和聊天线下模式的原始 XML 输出中提取事件摘要字段名。默认读取 {"<summary>"}。
+                                                             </div>
+                                                         </div>
++                                                        <div className="flex flex-col gap-2 col-span-full">
++                                                            <label className="ui-slider-label">剧情/线下模式思维链字段</label>
++                                                            <input
++                                                                type="text"
++                                                                value={preset.thinking_tag || "thinking"}
++                                                                onChange={(e) => updatePreset(preset.id, { thinking_tag: e.target.value })}
++                                                                placeholder="thinking"
++                                                                className="ui-input"
++                                                            />
++                                                            <div className="ui-slider-hint">
++                                                                从线下模式原始 XML 中提取思考过程（思维链）的字段名。仅当下方「线下思维链解析」开启时生效；关闭时走模型原生思维链。
++                                                            </div>
++                                                        </div>
++                                                        <div className="flex flex-col gap-2 col-span-full">
++                                                            <label className="ui-slider-label">线上模式思维链字段</label>
++                                                            <input
++                                                                type="text"
++                                                                value={preset.online_thinking_tag || "thinking"}
++                                                                onChange={(e) => updatePreset(preset.id, { online_thinking_tag: e.target.value })}
++                                                                placeholder="thinking"
++                                                                className="ui-input"
++                                                            />
++                                                            <div className="ui-slider-hint">
++                                                                从线上模式 AI 输出中提取思考过程（思维链）的标签字段名。仅当下方「线上思维链解析」开启时生效；关闭时走模型原生思维链。
++                                                            </div>
++                                                        </div>
++                                                        <div className="flex items-center justify-between gap-3 col-span-full">
++                                                            <div className="flex flex-col gap-1">
++                                                                <label className="ui-slider-label">线上思维链解析</label>
++                                                                <span className="ui-slider-hint">开启后按上方标签字段解析线上思维链；关闭走模型原生思维链（官方默认）</span>
++                                                            </div>
++                                                            <label className="ui-mini-toggle" onClick={(e) => e.stopPropagation()}>
++                                                                <input
++                                                                    type="checkbox"
++                                                                    checked={preset.online_thinking_enabled === true}
++                                                                    onChange={(e) => updatePreset(preset.id, { online_thinking_enabled: e.target.checked })}
++                                                                />
++                                                            </label>
++                                                        </div>
++                                                        <div className="flex items-center justify-between gap-3 col-span-full">
++                                                            <div className="flex flex-col gap-1">
++                                                                <label className="ui-slider-label">线下思维链解析</label>
++                                                                <span className="ui-slider-hint">开启后按「剧情/线下模式思维链字段」解析线下思维链；关闭走模型原生思维链（官方默认）</span>
++                                                            </div>
++                                                            <label className="ui-mini-toggle" onClick={(e) => e.stopPropagation()}>
++                                                                <input
++                                                                    type="checkbox"
++                                                                    checked={preset.offline_thinking_enabled === true}
++                                                                    onChange={(e) => updatePreset(preset.id, { offline_thinking_enabled: e.target.checked })}
++                                                                />
++                                                            </label>
++                                                        </div>
++                                                        <div className="flex flex-col gap-2 col-span-full">
++                                                            <label className="ui-slider-label">剔除文本（一行一个）</label>
++                                                            <textarea
++                                                                rows={3}
++                                                                value={(preset.strip_texts || []).join("\n")}
++                                                                onChange={(e) => updatePreset(preset.id, {
++                                                                    strip_texts: e.target.value.split("\n").map(s => s.trim()).filter(Boolean),
++                                                                })}
++                                                                placeholder={"<思考结束>\n</思考结束>"}
++                                                                className="ui-input"
++                                                            />
++                                                            <div className="ui-slider-hint">
++                                                                模型回复中出现这些文本时直接删除，不进入消息、不进入发给模型的记录（如思维链残留标签）。字面量删除，不走正则。
++                                                            </div>
++                                                        </div>
+                                                     </div>
+                                                 </div>
+                                             )}
+diff --git a/lib/llm-prompt-assembler.ts b/lib/llm-prompt-assembler.ts
+index 13eec3b..4fa4769 100644
+--- a/lib/llm-prompt-assembler.ts
++++ b/lib/llm-prompt-assembler.ts
+@@ -1338,25 +1338,38 @@ export type RegexContext = {
+     isEdit?: boolean;        // true when user is editing a message
+     depth?: number;          // message depth (0 = latest)
+     activeTags?: string[];   // current app tags used for tag-scoped rule filtering
+-    history?: boolean;       // true when the block is a chat history message (historyOnly rules only fire here)
+     macroEngine?: MacroEngine;  // for {{char}} etc. in findRegex & replaceString
++    history?: boolean;       // true when the block is a chat history message (historyOnly rules only fire here)
+ };
+ 
++/**
++ * 编译缓存：同一 findRegex 字符串复用编译结果。
++ * 显示层每条消息每次渲染都会命中相同规则，之前每次都 new RegExp 重新编译，
++ * 匹配替换走慢路径的会话（如含 <思考结束> 残留标签）会明显卡顿。
++ */
++const _regexFromStringCache = new Map<string, RegExp | null>();
++
+ /**
+  * Parse a regex string like `/pattern/flags` into a RegExp.
+  * Returns null if invalid. Does NOT force any flags — uses exactly what the user wrote.
+  */
+ function regexFromString(input: string): RegExp | null {
++    if (_regexFromStringCache.has(input)) return _regexFromStringCache.get(input)!;
++    let compiled: RegExp | null = null;
+     try {
+         const m = input.match(/(\/?)(.+)\1([a-z]*)/i);
+-        if (!m) return null;
+-        if (m[3] && !/^(?!.*?(.).*?\1)[dgimsuyv]+$/.test(m[3])) {
+-            return new RegExp(input);
++        if (m) {
++            if (m[3] && !/^(?!.*?(.).*?\1)[dgimsuyv]+$/.test(m[3])) {
++                compiled = new RegExp(input);
++            } else {
++                compiled = new RegExp(m[2], m[3]);
++            }
+         }
+-        return new RegExp(m[2], m[3]);
+     } catch {
+-        return null;
++        compiled = null;
+     }
++    _regexFromStringCache.set(input, compiled);
++    return compiled;
+ }
+ 
+ /** Escape special regex chars in a macro value so it can be embedded in a findRegex pattern. */
+diff --git a/lib/memory-summarizer.ts b/lib/memory-summarizer.ts
+index dfe4a3b..4d053bf 100644
+--- a/lib/memory-summarizer.ts
++++ b/lib/memory-summarizer.ts
+@@ -102,10 +102,11 @@ export async function runSummarizationPipeline(
+         .replace(/\{\{events\}\}/gi, eventsText);
+ 
+     // Call LLM for summarization — compatible with all providers
++    // label 用于在「底层调用大模型日志」中标识这是记忆总结调用
+     const result = await simpleLLMCall(
+         apiConfig,
+         [{ role: "user", content: summaryPrompt }],
+-        { temperature: 0.3 },
++        { temperature: 0.3, label: `记忆总结·${characterName}` },
+     );
+ 
+     if (!result.content) {
+diff --git a/lib/offline-prompt-builder.ts b/lib/offline-prompt-builder.ts
+index 186c4ef..e8e2c4d 100644
+--- a/lib/offline-prompt-builder.ts
++++ b/lib/offline-prompt-builder.ts
+@@ -10,14 +10,21 @@ import type { ChatOfflineTurn } from "./chat-offline-storage";
+ export function formatOfflineTurnXml(turn: ChatOfflineTurn): string {
+     if (turn.rawText?.trim()) return turn.rawText.trim();
+     const summaryTag = turn.summaryTag?.trim() || "summary";
++    // rawText 缺失（旧数据）时重建完整 XML：思维链（thinkingText）存在则按原标签拼回，
++    // 保证历史上下文里保留这一轮的思考内容
++    const thinkingTag = turn.thinkingTag?.trim() || "thinking";
++    const thinkingBlock = turn.thinkingText?.trim()
++        ? `<${thinkingTag}>\n${turn.thinkingText.trim()}\n</${thinkingTag}>`
++        : "";
+     return [
++        thinkingBlock,
+         "<content>",
+         turn.assistantContent,
+         "</content>",
+         `<${summaryTag}>`,
+         turn.summary,
+         `</${summaryTag}>`,
+-    ].join("\n");
++    ].filter(Boolean).join("\n");
+ }
+ 
+ export function buildOfflinePromptHistory(

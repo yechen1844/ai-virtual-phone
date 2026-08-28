@@ -1,0 +1,8 @@
+﻿=== 找现成的 NagiBridge 文件 ===
+E:\所有文件\ai-virtual-phone-clean\nagi-butler
+
+=== .NET SDK ===
+没有安装 dotnet SDK
+
+=== GitHub 连通性 ===
+GitHub 可达 (HTTP 200)

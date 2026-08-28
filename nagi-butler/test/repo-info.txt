@@ -1,0 +1,5 @@
+﻿=== NagiBridge Releases ===
+Tag: v1.1.0 | Name: v1.1.0 — fix multiplayer sleep deadlock | 发布: 2026-08-18T11:00:16Z
+  附件: NagiBridge.zip (134KB) -> https://github.com/anqinou-art/NagiBridge/releases/download/v1.1.0/NagiBridge.zip
+Tag: v1.0.0 | Name: NagiBridge v1.0.0 | 发布: 2026-06-02T08:08:23Z
+  附件: NagiBridge.zip (92KB) -> https://github.com/anqinou-art/NagiBridge/releases/download/v1.0.0/NagiBridge.zip

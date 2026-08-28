@@ -1,0 +1,1351 @@
+﻿diff --git a/lib/api-helpers.ts b/lib/api-helpers.ts
+index e5ad9e3..f93b9cc 100644
+--- a/lib/api-helpers.ts
++++ b/lib/api-helpers.ts
+@@ -3,6 +3,7 @@
+ // request headers, and response parsing. All LLM-calling modules should use these.
+ 
+ import type { ApiConfig } from "./settings-types";
++import { pushApiLog } from "./api-log-store";
+ 
+ const SIMPLE_ANTHROPIC_AUTO_MAX_TOKENS = 8192;
+ 
+@@ -97,7 +98,7 @@ export function isNativeGoogleApi(config: ApiConfig): boolean {
+ export async function simpleLLMCall(
+     config: ApiConfig,
+     messages: { role: string; content: string }[],
+-    options?: { temperature?: number; max_tokens?: number; signal?: AbortSignal },
++    options?: { temperature?: number; max_tokens?: number; signal?: AbortSignal; label?: string },
+ ): Promise<{ content: string | null; error?: string; finishReason?: string; wasTruncated?: boolean }> {
+     const baseUrl = determineBaseUrl(config);
+     if (!baseUrl || !config.apiKey) {
+@@ -164,6 +165,13 @@ export async function simpleLLMCall(
+         if (!res.ok) {
+             const errText = await res.text().catch(() => "");
+             console.warn("[simpleLLMCall] API error:", res.status, errText.slice(0, 300));
++            pushApiLog({
++                characterName: options?.label,
++                source: "background",
++                model: config.defaultModel,
++                messages: messages.map(m => ({ role: m.role, content: m.content })),
++                rawResponse: `[API 错误 ${res.status}] ${errText.slice(0, 2000)}`,
++            });
+             return { content: null, error: `API 错误 ${res.status}: ${errText.slice(0, 200)}` };
+         }
+ 
+@@ -173,6 +181,14 @@ export async function simpleLLMCall(
+         const content = extractLLMContent(data, config.provider);
+         const finishReason = extractFinishReason(data);
+         const wasTruncated = isTruncationFinishReason(finishReason);
++        pushApiLog({
++            characterName: options?.label,
++            source: "background",
++            model: config.defaultModel,
++            messages: messages.map(m => ({ role: m.role, content: m.content })),
++            rawResponse: content ?? describeEmptyLLMResponse(data, finishReason, wasTruncated, config),
++            usage: extractUsage(data),
++        });
+         if (!content) {
+             console.warn("[simpleLLMCall] Empty response. Keys:", JSON.stringify(Object.keys(data || {})),
+                 "Full:", JSON.stringify(data).slice(0, 500));
+@@ -182,10 +198,30 @@ export async function simpleLLMCall(
+         return { content, finishReason, wasTruncated };
+     } catch (err) {
+         console.warn("[simpleLLMCall] fetch error:", err);
++        pushApiLog({
++            characterName: options?.label,
++            source: "background",
++            model: config.defaultModel,
++            messages: messages.map(m => ({ role: m.role, content: m.content })),
++            rawResponse: `[请求失败] ${err instanceof Error ? err.message : String(err)}`,
++        });
+         return { content: null, error: `请求失败: ${err instanceof Error ? err.message : String(err)}` };
+     }
+ }
+ 
++export function extractUsage(data: Record<string, unknown>): { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined {
++    if (!data) return undefined;
++    // eslint-disable-next-line @typescript-eslint/no-explicit-any
++    const d = data as any;
++    const usage = d?.usage ?? d?.output?.usage ?? d?.candidates?.[0]?.usageMetadata;
++    if (!usage) return undefined;
++    return {
++        prompt_tokens: usage.prompt_tokens ?? usage.input_tokens ?? usage.promptTokenCount,
++        completion_tokens: usage.completion_tokens ?? usage.output_tokens ?? usage.candidatesTokenCount,
++        total_tokens: usage.total_tokens ?? usage.totalTokenCount,
++    };
++}
++
+ export function extractFinishReason(data: Record<string, unknown>): string | undefined {
+     if (!data) return undefined;
+ 
+@@ -363,7 +399,7 @@ export function extractLLMContent(data: Record<string, unknown>, provider?: stri
+ /**
+  * Extract reasoning/thinking content from API response (DeepSeek-R1, Anthropic Claude extended thinking).
+  * Returns the reasoning text or empty string if none found.
+- * Only used by story mode to prepend as <think> block.
++ * Only used by story mode to prepend as  thinking block.
+  */
+ export function extractReasoningContent(data: Record<string, unknown>): string {
+     if (!data) return "";
+diff --git a/lib/chat-engine.ts b/lib/chat-engine.ts
+index b57e4db..298b960 100644
+--- a/lib/chat-engine.ts
++++ b/lib/chat-engine.ts
+@@ -19,6 +19,7 @@ import {
+     normalizeVisionImagePromptLimit,
+     createResponseBatchId,
+     createToolExecutionId,
++    isSessionStreamingEnabled,
+ } from "./chat-storage";
+ import { extractTextToolDirectiveText, stripTextToolDirectives } from "./text-tool-protocol";
+ import type { ApiConfig, PresetConfig, Prompt, PromptOrderEntry, RegexConfig } from "./settings-types";
+@@ -52,6 +53,7 @@ import {
+ } from "./llm-provider-adapter";
+ import { setDebugPromptSnapshot, type DebugPromptSnapshot } from "./debug-store";
+ import { extractFinishReason } from "./api-helpers";
++import { fetchLlmPayload } from "./llm-http";
+ import { loadMemoryConfig, incrementEventCounter } from "./memory-storage";
+ import { retrieveCoreMemoriesForPrompt, retrieveMemoriesForPrompt } from "./memory-service";
+ import { formatCoreMemories, formatLongTermMemories } from "./memory-injector";
+@@ -71,7 +73,9 @@ import { buildCalendarScheduleMarker, getCurrentCalendarScheduleForPrompt } from
+ import { getWeekStartIso } from "./calendar-utils";
+ import { buildCharacterTimeContext } from "./character-time";
+ import { getPromptTimestampOptionsForTimeContext } from "./prompt-time";
+-import { kvGet, kvSet, kvRemove, registerKvMigration } from "./kv-db";
++import { kvGet, kvSet, registerKvMigration } from "./kv-db";
++import { pushApiLog } from "./api-log-store";
++export { getApiLogs, clearApiLogs, type DebugInfo } from "./api-log-store";
+ import { stripStateAndInnerForPrompt } from "./prompt-sanitizer";
+ import { getInternalCapability, getInternalCapabilitySubToolDefinitions } from "./internal-capability-storage";
+ import { isMediaStoreRef, loadMediaBlob } from "./media-cache-storage";
+@@ -82,7 +86,7 @@ import {
+     DEFAULT_OFFLINE_CHAT_BILINGUAL_PROMPT,
+     resolveBilingualPrompt,
+ } from "./bilingual-prompt-defaults";
+-import { parseOfflineResponse, type ParsedOfflineResponse } from "./chat-offline-storage";
++import { parseOfflineResponse, extractThinkingTag, type ParsedOfflineResponse } from "./chat-offline-storage";
+ import { throwIfAborted } from "./abort-utils";
+ 
+ 
+@@ -321,32 +325,8 @@ export function applyVisionImagePromptLimit(history: ChatMessage[], limitValue:
+     return history;
+ }
+ 
+-// API Log store — captures recent request/response history for inspection
+-export type DebugInfo = {
+-    id: string;
+-    characterName?: string;
+-    model?: string;
+-    messages: { role: string; content: string; marker?: string }[];
+-    rawResponse: string;
+-    timestamp: string;
+-    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+-};
+-const MAX_API_LOGS = 50;
+-const API_LOGS_KEY = "ai_phone_api_logs_v1";
+-registerKvMigration(API_LOGS_KEY);
+-
+-function _loadLogs(): DebugInfo[] {
+-    try {
+-        const raw = typeof window !== "undefined" ? kvGet(API_LOGS_KEY) : null;
+-        return raw ? JSON.parse(raw) as DebugInfo[] : [];
+-    } catch { return []; }
+-}
+-function _saveLogs(logs: DebugInfo[]): void {
+-    try { kvSet(API_LOGS_KEY, JSON.stringify(logs)); } catch { /* quota exceeded — ignore */ }
+-}
+-
+-export function getApiLogs(): DebugInfo[] { return _loadLogs(); }
+-export function clearApiLogs(): void { try { kvRemove(API_LOGS_KEY); } catch { } }
++// API 调用日志存储已抽到 ./api-log-store（聊天引擎与 simpleLLMCall 通用），
++// 本文件通过上方 re-export 保持 getApiLogs/clearApiLogs/DebugInfo 的对外路径不变。
+ 
+ export type DebugPromptRequestOptions = {
+     appId?: string;
+@@ -418,6 +398,25 @@ function mergeAppTags(base: string[] | undefined, extra: string[] | undefined, f
+     return Array.from(tags);
+ }
+ 
++/** 从输出正文中剥离思维链标签块（仅标签解析开启时用于清洗展示文本）。 */
++export function stripOnlineThinkingTag(rawOutput: string, tag: string): string {
++    if (!tag.trim()) return rawOutput;
++    return rawOutput
++        .replace(new RegExp(`<${tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}>[\\s\\S]*?</${tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}>`, "gi"), "")
++        .trim();
++}
++
++/** 剔除预设配置的文本片段（如 <思考结束> 残留标签）。字面量删除，不走正则，避免编译/回溯开销。 */
++export function stripPresetTexts(text: string, preset: PresetConfig | null | undefined): string {
++    const list = preset?.strip_texts;
++    if (!list || list.length === 0 || !text) return text;
++    let result = text;
++    for (const s of list) {
++        if (s) result = result.split(s).join("");
++    }
++    return result;
++}
++
+ function getPromptFilterTags(prompt: Prompt): string[] | null {
+     if (prompt.tags && prompt.tags.length > 0) return prompt.tags;
+     const legacy: string[] = [];
+@@ -457,12 +456,28 @@ function isRealUserHistoryMessage(message: ChatMessage): boolean {
+         || message.mediaType === "memory_write_request") return false;
+     return Boolean(
+         message.content.trim()
+-        || message.mediaType
+-        || message.mediaUrl
+-        || message.mediaData,
++            || message.mediaType
++            || message.mediaUrl
++            || message.mediaData,
+     );
+ }
+ 
++/** history 末尾是工具流程消息（工具结果/工具通知/记忆写入请求）→ 当前处于同一次生成的工具循环中段。 */
++function isToolFlowHistoryMessage(message: ChatMessage): boolean {
++    return message.mediaType === "tool_result"
++        || message.mediaType === "tool_notice"
++        || message.mediaType === "memory_write_request";
++}
++
++/** 日志分流：工坊（appId === "qa"）经聊天引擎发出的调用（答疑 Agent 原生工具循环）归工坊环，
++ *  其余归底层调用日志环。channel 不能硬编码——工坊的 Agent 循环复用 sendLLMToolStreamRequest，
++ *  旧逻辑靠 characterName === "工坊" 分流，改成显式字段后必须从 appId 派生，否则工坊记录漏进主环。 */
++function apiLogChannelFor(options?: { appId?: string }): { source: "chat" | "qa"; channel: "chat" | "qa" } {
++    return options?.appId === "qa"
++        ? { source: "qa", channel: "qa" }
++        : { source: "chat", channel: "chat" };
++}
++
+ export function appendEmptyGenerateGuardMessage(
+     messages: LLMMessage[],
+     config: ApiConfig,
+@@ -473,22 +488,21 @@ export function appendEmptyGenerateGuardMessage(
+     const hasRealUserHistory = history.some(isRealUserHistoryMessage);
+     if (!hasRealUserHistory) return;
+ 
+-    let lastAssistantIndex = -1;
+-    for (let index = messages.length - 1; index >= 0; index -= 1) {
+-        if (messages[index].role === "assistant") {
+-            lastAssistantIndex = index;
+-            break;
+-        }
++    // 判定用户这次是否真的输入了新消息：看原始对话 history 的末尾，而不是组装后的 messages。
++    // 原因：预设里 role=assistant 的条目（例如「模型输出格式」放在 chatHistory 标记之后）会以
++    // assistant 角色注入到 messages 末尾，旧逻辑「最后一条 assistant 之后没有 user」就会把
++    // 「用户已输入」误判成「未输入」，错误追加续写提示（EMPTY_GENERATE_CONTINUATION_PROMPT）。
++    // history 末尾是真实用户消息（含图片/红包等媒体输入）→ 本次是正常回复，不追加续写提示；
++    // 末尾是 assistant / system（如 follow-up 静默提示）→ 用户未输入新消息，照常追加；
++    // 末尾是工具流程消息（tool_result / tool_notice / memory_write_request）→ 本次请求是
++    // 同一次生成在工具循环中的延续，续写提示反而会干扰模型基于工具结果作答（提示词里
++    // 明确禁止引用工具结果），同样不追加。
++    const lastHistoryMessage = history[history.length - 1];
++    if (lastHistoryMessage && (isRealUserHistoryMessage(lastHistoryMessage) || isToolFlowHistoryMessage(lastHistoryMessage))) {
++        return;
+     }
+-    if (lastAssistantIndex < 0) return;
+-
+-    const hasUserAfterLastAssistant = messages
+-        .slice(lastAssistantIndex + 1)
+-        .some(message => message.role === "user");
+ 
+-    if (!hasUserAfterLastAssistant) {
+-        messages.push({ role: "user", content: EMPTY_GENERATE_CONTINUATION_PROMPT });
+-    }
++    messages.push({ role: "user", content: EMPTY_GENERATE_CONTINUATION_PROMPT });
+ }
+ 
+ export function publishDebugPromptSnapshot(params: {
+@@ -778,23 +792,28 @@ export async function sendLLMStreamRequest(
+     } : undefined;
+     const requestMessages = toLlmRequestMessages(afterPlugins.messages);
+     const request = buildProviderRequest(config, effectivePreset, requestMessages, { stream: true });
+-    const requestBodyJson = JSON.stringify(request.body);
+     const llmAbort = new AbortController();
+     const llmTimeout = setTimeout(() => llmAbort.abort(), 500_000);
+     const detachExternalAbort = attachExternalAbort(llmAbort, options?.signal);
+ 
+     try {
+-        const response = await fetch(request.url, {
+-            method: "POST",
+-            headers: request.headers,
+-            body: requestBodyJson,
+-            signal: llmAbort.signal,
+-        });
++        const response = await fetchLlmPayload(request, { signal: llmAbort.signal });
+         if (!response.ok) {
+             const errorText = await response.text();
+             throw new ChatEngineError(`API Stream Error ${response.status}: ${errorText}`);
+         }
+-        const { content: streamedContent, rawResponse } = await readSseStream(response, request.providerKind, pluginCallbacks ?? callbacks);
++        // 流式路径收集思维链原文：readSseStream 只通过 onReasoningDelta 回调透传，
++        // 不额外包一层的话日志里就只有清洗后的回复正文，思维链被吞。
++        // 注意：必须无条件创建回调对象（不能 callbacks 为空就不传），否则思维链收集不到。
++        let streamedReasoning = "";
++        const streamLogCallbacks: ChatCompletionStreamCallbacks = {
++            ...(pluginCallbacks ?? callbacks),
++            onReasoningDelta: async (text: string) => {
++                streamedReasoning += text;
++                await (pluginCallbacks ?? callbacks)?.onReasoningDelta?.(text);
++            },
++        };
++        const { content: streamedContent, rawResponse } = await readSseStream(response, request.providerKind, streamLogCallbacks);
+         if (!streamedContent.trim()) {
+             throw new ChatEngineError("流式响应没有解析到文本增量。");
+         }
+@@ -802,23 +821,19 @@ export async function sendLLMStreamRequest(
+         rawOutput = await applyChatPluginLlmResponse(rawOutput, pluginPurpose);
+ 
+         // Store API log entry — mirror sendLLMRequest so streaming calls also show up
+-        // in the "底层调用大模型日志" panel.
++        // in the "底层调用大模型日志" panel. reasoning 单独存思维链原文，供「查看原始」直接展示。
+         const sanitizedMessages = request.messagesForLog.map(m => ({
+             ...m,
+             content: typeof m.content === "string" ? m.content : "[vision: 含图片的多模态消息]",
+         }));
+-        const logEntry: DebugInfo = {
+-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
++        pushApiLog({
+             characterName: meta?.characterName,
++            ...apiLogChannelFor(options),
+             model: config.defaultModel,
+             messages: sanitizedMessages,
+             rawResponse: rawOutput,
+-            timestamp: new Date().toISOString(),
+-        };
+-        const logs = _loadLogs();
+-        logs.push(logEntry);
+-        while (logs.length > MAX_API_LOGS) logs.shift();
+-        _saveLogs(logs);
++            reasoning: streamedReasoning.trim() || undefined,
++        });
+ 
+         if (!options?.skipOutputRegex) {
+             const macroEngine = new MacroEngine(meta?.characterName ?? "", meta?.userName ?? "用户");
+@@ -901,12 +916,7 @@ export async function sendLLMRequest(
+     const detachExternalAbort = attachExternalAbort(llmAbort, options?.signal);
+ 
+     try {
+-        const response = await fetch(request.url, {
+-            method: "POST",
+-            headers: request.headers,
+-            body: requestBodyJson,
+-            signal: llmAbort.signal,
+-        });
++        const response = await fetchLlmPayload(request, { signal: llmAbort.signal });
+ 
+         if (!response.ok) {
+             const errorText = await response.text();
+@@ -949,19 +959,16 @@ export async function sendLLMRequest(
+             ...m,
+             content: typeof m.content === "string" ? m.content : "[vision: 含图片的多模态消息]",
+         }));
+-        const logEntry: DebugInfo = {
+-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
++        pushApiLog({
+             characterName: meta?.characterName,
++            ...apiLogChannelFor(options),
+             model: config.defaultModel,
+             messages: sanitizedMessages,
+             rawResponse: rawOutput,
+-            timestamp: new Date().toISOString(),
+             usage: parsed.usage,
+-        };
+-        const logs = _loadLogs();
+-        logs.push(logEntry);
+-        while (logs.length > MAX_API_LOGS) logs.shift();
+-        _saveLogs(logs);
++            // 思维链只经 onReasoning 回调透传，之前没进日志；这里单独存一份原文
++            reasoning: parsed.reasoning || undefined,
++        });
+ 
+         if (options?.skipOutputRegex) {
+             return rawOutput;
+@@ -1074,7 +1081,6 @@ export async function sendLLMToolStreamRequest(
+     const effectivePreset = afterPlugins.preset;
+     const request = buildProviderRequest(config, effectivePreset, afterPlugins.messages, { tools, stream: true, maxTokens: options?.maxTokens });
+     publishDebugPromptSnapshot({ request, config, preset: effectivePreset, meta, options, requestKind: "native-tools-stream", tools });
+-    const requestBodyJson = JSON.stringify(request.body);
+     const llmAbort = new AbortController();
+     const llmTimeout = setTimeout(() => llmAbort.abort(), 500_000);
+     const detachExternalAbort = attachExternalAbort(llmAbort, options?.signal);
+@@ -1086,12 +1092,7 @@ export async function sendLLMToolStreamRequest(
+     const firedToolCallStarts = new Set<number>();
+ 
+     try {
+-        const response = await fetch(request.url, {
+-            method: "POST",
+-            headers: request.headers,
+-            body: requestBodyJson,
+-            signal: llmAbort.signal,
+-        });
++        const response = await fetchLlmPayload(request, { signal: llmAbort.signal });
+ 
+         if (!response.ok) {
+             const errorText = await response.text();
+@@ -1175,18 +1176,15 @@ export async function sendLLMToolStreamRequest(
+             content: typeof m.content === "string" ? m.content : "[vision: 含图片的多模态消息]",
+         }));
+         const { calls: toolCalls, truncatedNames } = finalizeStreamToolCalls(toolDrafts);
+-        const logEntry: DebugInfo = {
+-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
++        const logEntryRaw = JSON.stringify({ content, reasoning, toolCalls, raw: rawResponse });
++        pushApiLog({
+             characterName: meta?.characterName,
++            ...apiLogChannelFor(options),
+             model: config.defaultModel,
+             messages: sanitizedMessages,
+-            rawResponse: JSON.stringify({ content, reasoning, toolCalls, raw: rawResponse }),
+-            timestamp: new Date().toISOString(),
+-        };
+-        const logs = _loadLogs();
+-        logs.push(logEntry);
+-        while (logs.length > MAX_API_LOGS) logs.shift();
+-        _saveLogs(logs);
++            rawResponse: logEntryRaw,
++            reasoning: reasoning || undefined,
++        });
+ 
+         if (!content && toolCalls.length === 0 && truncatedNames.length === 0) {
+             throw new ChatEngineError("原生动作流式响应没有解析到文本或动作。");
+@@ -1198,7 +1196,7 @@ export async function sendLLMToolStreamRequest(
+             openRouterReasoningDetails: undefined,
+             toolCalls,
+             truncatedToolCalls: truncatedNames.length ? truncatedNames : undefined,
+-            rawResponse: logEntry.rawResponse,
++            rawResponse: logEntryRaw,
+             providerKind: request.providerKind,
+         };
+     } catch (error: unknown) {
+@@ -1237,18 +1235,12 @@ export async function sendLLMToolRequest(
+     const effectivePreset = afterPlugins.preset;
+     const request = buildProviderRequest(config, effectivePreset, afterPlugins.messages, { tools });
+     publishDebugPromptSnapshot({ request, config, preset: effectivePreset, meta, options, requestKind: "native-tools", tools });
+-    const requestBodyJson = JSON.stringify(request.body);
+     const llmAbort = new AbortController();
+     const llmTimeout = setTimeout(() => llmAbort.abort(), 500_000);
+     const detachExternalAbort = attachExternalAbort(llmAbort, options?.signal);
+ 
+     try {
+-        const response = await fetch(request.url, {
+-            method: "POST",
+-            headers: request.headers,
+-            body: requestBodyJson,
+-            signal: llmAbort.signal,
+-        });
++        const response = await fetchLlmPayload(request, { signal: llmAbort.signal });
+ 
+         if (!response.ok) {
+             const errorText = await response.text();
+@@ -1287,19 +1279,14 @@ export async function sendLLMToolRequest(
+             toolCalls: parsed.toolCalls,
+             raw: parsed.raw,
+         });
+-        const logEntry: DebugInfo = {
+-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
++        pushApiLog({
+             characterName: meta?.characterName,
++            ...apiLogChannelFor(options),
+             model: config.defaultModel,
+             messages: sanitizedMessages,
+             rawResponse,
+-            timestamp: new Date().toISOString(),
+             usage: parsed.usage,
+-        };
+-        const logs = _loadLogs();
+-        logs.push(logEntry);
+-        while (logs.length > MAX_API_LOGS) logs.shift();
+-        _saveLogs(logs);
++        });
+ 
+         if (!options?.skipOutputRegex && rawOutput) {
+             const macroEngine = new MacroEngine(meta?.characterName ?? "", meta?.userName ?? "用户");
+@@ -1954,6 +1941,9 @@ export type ChatCompletionCallbacks = {
+         responseBatchId?: string;
+         rawResponseText?: string;
+     }) => void | Promise<void>;
++    /** 流式生成增量回调（仅在开启流式生成时触发）：每到达一段原文增量就调用一次，
++     *  由 UI 层累积后做预览净化显示。delta 为原始增量（可能含未闭合的富媒体/工具标签）。 */
++    onStreamDelta?: (delta: string) => void | Promise<void>;
+     onToolNotice?: (notice: string) => void;
+     onToolResult?: (content: string, options?: { toolExecutionId?: string }) => void;
+     onToolAssistantTurn?: (content: string, options?: {
+@@ -1990,7 +1980,7 @@ export type OfflineChatCompletionResult = ParsedOfflineResponse & {
+ export async function generateOfflineChatCompletion(
+     session: ChatSession,
+     history: ChatMessage[],
+-    options?: { signal?: AbortSignal },
++    options?: { signal?: AbortSignal; onStreamDelta?: (delta: string) => void },
+ ): Promise<OfflineChatCompletionResult> {
+     const { llmMessages, character, config, preset, regexes, userIdentity } = await buildChatPromptMessages(
+         session,
+@@ -2001,18 +1991,75 @@ export async function generateOfflineChatCompletion(
+         },
+     );
+     const summaryTag = preset?.story_summary_tag?.trim() || "summary";
++    const thinkingTag = preset?.thinking_tag?.trim() || "thinking";
++    const offlineTagEnabled = preset?.offline_thinking_enabled === true;
+     let reasoning = "";
+-    const rawOutput = await sendLLMRequest(config, preset, llmMessages, regexes, {
+-        characterName: character.name,
+-        userName: userIdentity?.name,
+-    }, {
++    const meta = { characterName: character.name, userName: userIdentity?.name };
++    const requestOptions = {
+         appTags: ["chat", "offline"],
+         debugSessionId: session.id,
+         signal: options?.signal,
+-        onReasoning: (t) => { reasoning = t; },
+-    });
++        onReasoning: (t: string) => { reasoning = t; },
++    };
++    let rawOutput: string;
++    if (isSessionStreamingEnabled(session, false) && options?.onStreamDelta) {
++        // 线下流式：正文边生成边通过 onStreamDelta 交给 UI 做实时预览；
++        // 摘要补提仍走整段请求（输出短，无需流式）。
++        const streamResult = await sendLLMStreamRequest(config, preset, llmMessages, regexes, meta, {
++            appId: "chat",
++            appTags: ["chat", "offline"],
++            signal: options?.signal,
++        }, {
++            onDelta: (text) => options.onStreamDelta?.(text),
++            onReasoningDelta: (t) => { reasoning += t; },
++        });
++        rawOutput = streamResult.content;
++    } else {
++        rawOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, requestOptions);
++    }
++    // 剔除预设配置的文本片段（<思考结束> 等残留标签），不进入记录/提示词
++    rawOutput = stripPresetTexts(rawOutput, preset);
++    let parsed = parseOfflineResponse(rawOutput, summaryTag);
++    // 思维链：预设开启「线下标签解析」时从正文提取 <thinking> 标签；关闭时走模型原生 reasoning（官方默认行为）
++    if (offlineTagEnabled) {
++        const tagThinking = extractThinkingTag(rawOutput, thinkingTag);
++        if (tagThinking) reasoning = tagThinking;
++    }
++
++    // 摘要缺失时自动补提：只带最后一轮上下文（系统提示 + 最后一条用户消息 + 本次输出），
++    // 要求模型补一段摘要，避免「静默结束」导致该轮线下记录没有摘要、进不了短期记忆事件流。
++    // 不重发完整 llmMessages：长对话下 token/延迟成本高，且摘要本来就只针对本轮关键事件。
++    const MAX_SUMMARY_RETRY = 2;
++    const lastUserMessage = [...llmMessages].reverse().find(m => m.role === "user");
++    for (let attempt = 0; attempt < MAX_SUMMARY_RETRY; attempt += 1) {
++        if (parsed.summary.trim()) break;
++        if (!parsed.content.trim() && !rawOutput.trim()) break; // 连正文都没有，补提没有意义
++        const retryMessages: LLMMessage[] = [
++            ...(llmMessages[0]?.role === "system" ? [llmMessages[0]] : []),
++            ...(lastUserMessage ? [lastUserMessage] : []),
++            { role: "assistant", content: rawOutput },
++            {
++                role: "user",
++                content: `刚才的回复里没有输出 <${summaryTag}> 摘要。请只针对上面这段对话的关键事件补一段第三人称摘要，严格按以下格式输出，不要输出任何其他内容：\n<${summaryTag}>一句话摘要</${summaryTag}>`,
++            },
++        ];
++        throwIfAborted(options?.signal);
++        // 补提请求不带 onReasoning：避免用补提请求的思维链覆盖主请求已累积的完整思维链
++        const retryRaw = stripPresetTexts(await sendLLMRequest(config, preset, retryMessages, regexes, meta, { ...requestOptions, onReasoning: undefined }), preset);
++        const retried = parseOfflineResponse(retryRaw, summaryTag);
++        if (retried.summary.trim()) {
++            parsed = { ...parsed, summary: retried.summary.trim() };
++            break;
++        }
++    }
++
+     return {
+-        ...parseOfflineResponse(rawOutput, summaryTag),
++        ...parsed,
++        // 标签解析开启时补 thinking/thinkingTag（供离线记录展示）；关闭时保持 undefined，思维链走 reasoning（模型原生）
++        ...(offlineTagEnabled ? {
++            thinking: extractThinkingTag(rawOutput, thinkingTag) || undefined,
++            thinkingTag,
++        } : {}),
+         model: config.defaultModel,
+         presetName: preset?.name || "默认预设",
+         reasoning: reasoning || undefined,
+@@ -2052,24 +2099,52 @@ async function generateNativeChatCompletion(
+     const expandableSourceKeys = new Set(enabledTools.filter(tool => !isNativeSingleTool(tool)).map(nativeToolSourceKey));
+ 
+     const maxToolRounds = getMaxToolRounds();
++    const onlineThinkingEnabled = preset?.online_thinking_enabled === true;
++    const onlineThinkingTag = preset?.online_thinking_tag?.trim() || "thinking";
+     for (let round = 0; round < maxToolRounds; round += 1) {
+         let result: LLMToolRequestResult;
+         try {
+-            result = await sendLLMToolRequest(
+-                config,
+-                preset,
+-                requestMessages,
+-                nativeBundle.definitions,
+-                regexes,
+-                meta,
+-                {
+-                    appId: options?.appId ?? "chat",
+-                    appTags: requestAppTags,
+-                    followUpCount: options?.followUpCount,
+-                    debugSessionId: session.id,
+-                    signal: options?.signal,
+-                },
+-            );
++            if (isSessionStreamingEnabled(session, true)) {
++                let streamReasoning = "";
++                result = await sendLLMToolStreamRequest(
++                    config,
++                    preset,
++                    requestMessages,
++                    nativeBundle.definitions,
++                    regexes,
++                    meta,
++                    {
++                        appId: options?.appId ?? "chat",
++                        appTags: requestAppTags,
++                        followUpCount: options?.followUpCount,
++                        debugSessionId: session.id,
++                        signal: options?.signal,
++                    },
++                    {
++                        onDelta: (text) => callbacks?.onStreamDelta?.(text),
++                        // 流式下 onReasoningDelta 收到的是单段增量：本地累积后再喂 onReasoning，
++                        // 保证下游拿到的是完整思维链（与整段请求的 onReasoning 语义一致）。
++                        // 预设开启「线上标签解析」时不透传原生思维链（改由下方标签提取）
++                        onReasoningDelta: onlineThinkingEnabled ? undefined : (text) => { streamReasoning += text; callbacks?.onReasoning?.(streamReasoning); },
++                    },
++                );
++            } else {
++                result = await sendLLMToolRequest(
++                    config,
++                    preset,
++                    requestMessages,
++                    nativeBundle.definitions,
++                    regexes,
++                    meta,
++                    {
++                        appId: options?.appId ?? "chat",
++                        appTags: requestAppTags,
++                        followUpCount: options?.followUpCount,
++                        debugSessionId: session.id,
++                        signal: options?.signal,
++                    },
++                );
++            }
+         } catch (err) {
+             const errMsg = `⚠️ 回复生成失败: ${err instanceof Error ? err.message : String(err)}`;
+             if (parts.length > 0) {
+@@ -2082,17 +2157,28 @@ async function generateNativeChatCompletion(
+         }
+         throwIfAborted(options?.signal);
+ 
+-        const { cleanText: afterActionStrip, actions } = parseActionTags(result.content);
++        // 线上思维链标签解析：开启时从正文提取 <tag> 思维链（覆盖原生），并剥离标签后再做后续解析
++        let displayContent = result.content;
++        if (onlineThinkingEnabled) {
++            const tagThinking = extractThinkingTag(displayContent, onlineThinkingTag);
++            if (tagThinking) callbacks?.onReasoning?.(tagThinking);
++            displayContent = stripOnlineThinkingTag(displayContent, onlineThinkingTag);
++        }
++        // 剔除预设配置的文本片段（<思考结束> 等残留标签）
++        displayContent = stripPresetTexts(displayContent, preset);
++
++        const { cleanText: afterActionStrip, actions } = parseActionTags(displayContent);
+         if (actions.length > 0) {
+             throwIfAborted(options?.signal);
+             dispatchActions(actions, actionContext).catch(err => console.warn("[ChatEngine] Action dispatch failed:", err));
+         }
+-        const assistantForToolContext = stripStateAndInnerForPrompt(result.content);
++        const assistantForToolContext = stripStateAndInnerForPrompt(displayContent);
+ 
+         if (result.toolCalls.length === 0) {
+             throwIfAborted(options?.signal);
+             // 无工具调用的最终轮：把解析到的思维链先交给回调（先于 onTextPart，与非原生路径一致）
+-            if (result.reasoning) callbacks?.onReasoning?.(result.reasoning);
++            // 标签解析开启时已在上方用标签思维链覆盖，此处不再重复喂原生
++            if (result.reasoning && !onlineThinkingEnabled) callbacks?.onReasoning?.(result.reasoning);
+             await callbacks?.onTextPart?.(afterActionStrip);
+             parts.push({ text: afterActionStrip });
+             break;
+@@ -2101,9 +2187,9 @@ async function generateNativeChatCompletion(
+         throwIfAborted(options?.signal);
+         await callbacks?.onNativeToolAssistantTurn?.({
+             content: afterActionStrip,
+-            rawContent: result.content,
+-            reasoning: result.reasoning,
+-            openRouterReasoningDetails: result.openRouterReasoningDetails,
++            rawContent: displayContent,
++            reasoning: onlineThinkingEnabled ? (extractThinkingTag(result.content, onlineThinkingTag) || undefined) : result.reasoning,
++            openRouterReasoningDetails: onlineThinkingEnabled ? undefined : result.openRouterReasoningDetails,
+             toolCalls: result.toolCalls,
+         });
+         if (afterActionStrip) {
+@@ -2296,17 +2382,41 @@ export async function generateChatCompletion(
+     const actionContext = { characterId: session.contactId, sessionId: session.id, sourceEngine: "chat" as const, signal: options?.signal };
+ 
+     const maxToolRounds = getMaxToolRounds();
++    const onlineThinking = {
++        enabled: preset?.online_thinking_enabled === true,
++        tag: preset?.online_thinking_tag?.trim() || "thinking",
++        reasoning: undefined as string | undefined,
++    };
+     for (let round = 0; round < maxToolRounds; round++) {
+         let filteredOutput: string;
+         try {
+-            filteredOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
+-                appId: options?.appId ?? "chat",
+-                appTags: requestAppTags,
+-                followUpCount: options?.followUpCount,
+-                debugSessionId: session.id,
+-                signal: options?.signal,
+-                onReasoning: callbacks?.onReasoning,
+-            });
++            if (isSessionStreamingEnabled(session, true)) {
++                // 流式分支：与 sendLLMRequest 走同一套请求构造/日志/正则，仅把「整段等待」换成
++                // SSE 增量，并通过 onStreamDelta 把原文增量实时交给 UI 层做预览显示。
++                let streamReasoning = "";
++                const streamResult = await sendLLMStreamRequest(config, preset, llmMessages, regexes, meta, {
++                    appId: options?.appId ?? "chat",
++                    appTags: requestAppTags,
++                    followUpCount: options?.followUpCount,
++                    signal: options?.signal,
++                }, {
++                    onDelta: (text) => callbacks?.onStreamDelta?.(text),
++                    // 流式下 onReasoningDelta 是单段增量：累积后再喂 onReasoning（保持整段请求语义）
++                    // 预设开启「线上标签解析」时不透传原生思维链（改由下方标签提取）
++                    onReasoningDelta: onlineThinking.enabled ? undefined : (text) => { streamReasoning += text; callbacks?.onReasoning?.(streamReasoning); },
++                });
++                filteredOutput = streamResult.content;
++            } else {
++                filteredOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
++                    appId: options?.appId ?? "chat",
++                    appTags: requestAppTags,
++                    followUpCount: options?.followUpCount,
++                    debugSessionId: session.id,
++                    signal: options?.signal,
++                    // 预设开启「线上标签解析」时不透传原生思维链（改由下方标签提取）
++                    onReasoning: onlineThinking.enabled ? undefined : callbacks?.onReasoning,
++                });
++            }
+         } catch (err) {
+             const errMsg = `⚠️ 回复生成失败: ${err instanceof Error ? err.message : String(err)}`;
+             if (parts.length > 0) {
+@@ -2319,6 +2429,18 @@ export async function generateChatCompletion(
+         }
+         throwIfAborted(options?.signal);
+ 
++        // 线上思维链标签解析：开启时每轮从正文提取 <tag> 思维链（覆盖原生），并剥离标签后再做后续解析
++        if (onlineThinking.enabled) {
++            const tagThinking = extractThinkingTag(filteredOutput, onlineThinking.tag);
++            if (tagThinking) {
++                onlineThinking.reasoning = tagThinking;
++                callbacks?.onReasoning?.(tagThinking);
++            }
++            filteredOutput = stripOnlineThinkingTag(filteredOutput, onlineThinking.tag);
++        }
++        // 剔除预设配置的文本片段（<思考结束> 等残留标签），不进入消息/提示词
++        filteredOutput = stripPresetTexts(filteredOutput, preset);
++
+         // Parse actions (朋友圈 etc) — strip from display text but keep tool tags
+         const { cleanText: afterActionStrip, actions } = parseActionTags(filteredOutput);
+         if (actions.length > 0) {
+@@ -2464,15 +2586,40 @@ export async function generateChatCompletion(
+             // Last round — one final call
+             if (round === maxToolRounds - 1) {
+                 try {
+-                    const finalOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
+-                        appId: options?.appId ?? "chat",
+-                        appTags: requestAppTags,
+-                        followUpCount: options?.followUpCount,
+-                        debugSessionId: session.id,
+-                        signal: options?.signal,
+-                        onReasoning: callbacks?.onReasoning,
+-                    });
++                    let finalOutput: string;
++                    if (isSessionStreamingEnabled(session, true)) {
++                        let streamReasoning = "";
++                        const streamFinal = await sendLLMStreamRequest(config, preset, llmMessages, regexes, meta, {
++                            appId: options?.appId ?? "chat",
++                            appTags: requestAppTags,
++                            followUpCount: options?.followUpCount,
++                            signal: options?.signal,
++                        }, {
++                            onDelta: (text) => callbacks?.onStreamDelta?.(text),
++                            // 流式下 onReasoningDelta 是单段增量：累积后再喂 onReasoning（保持整段请求语义）。
++                            // 预设开启「线上标签解析」时不透传原生思维链（改由下方标签提取）
++                            onReasoningDelta: onlineThinking.enabled ? undefined : (text) => { streamReasoning += text; callbacks?.onReasoning?.(streamReasoning); },
++                        });
++                        finalOutput = streamFinal.content;
++                    } else {
++                        finalOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
++                            appId: options?.appId ?? "chat",
++                            appTags: requestAppTags,
++                            followUpCount: options?.followUpCount,
++                            debugSessionId: session.id,
++                            signal: options?.signal,
++                            onReasoning: onlineThinking.enabled ? undefined : callbacks?.onReasoning,
++                        });
++                    }
+                     throwIfAborted(options?.signal);
++                    // 线上思维链标签解析：开启时从正文提取 <tag> 思维链并剥离标签
++                    if (onlineThinking.enabled) {
++                        const tagThinking = extractThinkingTag(finalOutput, onlineThinking.tag);
++                        if (tagThinking) callbacks?.onReasoning?.(tagThinking);
++                        finalOutput = stripOnlineThinkingTag(finalOutput, onlineThinking.tag);
++                    }
++                    // 剔除预设配置的文本片段（<思考结束> 等残留标签）
++                    finalOutput = stripPresetTexts(finalOutput, preset);
+                     await callbacks?.onTextPart?.(finalOutput);
+                     parts.push({ text: finalOutput });
+                 } catch (err) {
+diff --git a/lib/chat-offline-storage.ts b/lib/chat-offline-storage.ts
+index 4490af2..55386d8 100644
+--- a/lib/chat-offline-storage.ts
++++ b/lib/chat-offline-storage.ts
+@@ -14,6 +14,8 @@ export type ChatOfflineTurn = {
+     summaryTag: string;
+     rawText?: string;
+     reasoningText?: string; // 模型思维链（reasoning/CoT）内容
++    thinkingText?: string; // 预设格式 <thinking> 标签解析出的思维链（展示优先于 reasoningText）
++    thinkingTag?: string; // 实际用于提取思维链的标签名（preset.thinking_tag 或默认 thinking）
+     createdAt: string;
+ };
+ 
+@@ -30,6 +32,8 @@ export type ParsedOfflineResponse = {
+     content: string;
+     summary: string;
+     summaryTag: string;
++    thinking?: string; // 预设格式 <thinking> 标签内容（与模型 API 原生 reasoning 无关）
++    thinkingTag?: string; // 实际用于提取思维链的标签名
+ };
+ 
+ function storageKey(sessionId: string): string {
+@@ -54,6 +58,8 @@ function normalizeTurn(value: unknown): ChatOfflineTurn | null {
+         summary: typeof item.summary === "string" ? item.summary : "",
+         summaryTag: typeof item.summaryTag === "string" && item.summaryTag.trim() ? item.summaryTag.trim() : "summary",
+         rawText: typeof item.rawText === "string" ? item.rawText : undefined,
++        thinkingText: typeof item.thinkingText === "string" ? item.thinkingText : undefined,
++        thinkingTag: typeof item.thinkingTag === "string" ? item.thinkingTag : undefined,
+         createdAt: item.createdAt,
+     };
+ }
+@@ -92,6 +98,8 @@ export function appendChatOfflineTurn(input: {
+     summaryTag: string;
+     rawText?: string;
+     reasoningText?: string;
++    thinkingText?: string;
++    thinkingTag?: string;
+ }): ChatOfflineTurn {
+     const turn: ChatOfflineTurn = {
+         id: createTurnId(),
+@@ -102,6 +110,8 @@ export function appendChatOfflineTurn(input: {
+         summaryTag: input.summaryTag.trim() || "summary",
+         rawText: input.rawText,
+         reasoningText: input.reasoningText,
++        thinkingText: input.thinkingText,
++        thinkingTag: input.thinkingTag,
+         createdAt: new Date().toISOString(),
+     };
+     saveChatOfflineTurns(input.sessionId, [...loadChatOfflineTurns(input.sessionId), turn]);
+@@ -111,7 +121,7 @@ export function appendChatOfflineTurn(input: {
+ export function updateChatOfflineTurn(
+     sessionId: string,
+     turnId: string,
+-    patch: Partial<Pick<ChatOfflineTurn, "userContent" | "assistantContent" | "summary" | "summaryTag" | "rawText" | "reasoningText">>,
++    patch: Partial<Pick<ChatOfflineTurn, "userContent" | "assistantContent" | "summary" | "summaryTag" | "rawText" | "reasoningText" | "thinkingText" | "thinkingTag">>,
+ ): ChatOfflineTurn | null {
+     let updated: ChatOfflineTurn | null = null;
+     const turns = loadChatOfflineTurns(sessionId).map((turn) => {
+@@ -207,12 +217,23 @@ function stripXmlField(rawText: string, tag: string): string {
+     return rawText.replace(new RegExp(`<${escaped}>[\\s\\S]*?</${escaped}>`, "gi"), "").trim();
+ }
+ 
++/** 从原始输出中提取指定标签包裹的思维链（仅当预设开启标签解析时调用）。
++ *  默认标签 thinking 时兼容 thought。 */
++export function extractThinkingTag(rawText: string, tag?: string): string {
++    const effective = (tag || "thinking").trim() || "thinking";
++    const tags = effective === "thinking" ? ["thinking", "thought"] : [effective];
++    return extractXmlField(rawText.trim(), tags).trim();
++}
++
+ export function parseOfflineResponse(rawText: string, summaryTag: string): ParsedOfflineResponse {
+     const trimmed = rawText.trim();
+     const effectiveSummaryTag = summaryTag.trim() || "summary";
+     const summary = extractXmlField(trimmed, [effectiveSummaryTag, "summary"]);
+-    const content = extractXmlField(trimmed, ["content"])
+-        || stripXmlField(stripXmlField(trimmed, effectiveSummaryTag), "summary");
++    let content = extractXmlField(trimmed, ["content"]);
++    if (!content) {
++        // 无 <content> 标签时回退到剥掉摘要标签后的全文
++        content = stripXmlField(stripXmlField(trimmed, effectiveSummaryTag), "summary");
++    }
+     return {
+         rawText: trimmed,
+         content: content.trim(),
+diff --git a/lib/chat-storage.ts b/lib/chat-storage.ts
+index 870d476..d0973a3 100644
+--- a/lib/chat-storage.ts
++++ b/lib/chat-storage.ts
+@@ -57,6 +57,10 @@ export type ChatSession = {
+     offlineBilingualTranslationPrompt?: string;
+     nativeExpandedToolSourceIds?: string[];
+     visionImagePromptLimit?: number;
++    /** 流式生成（线上）：开启后该会话的线上 AI 回复边生成边显示（默认关，保持原整段请求行为） */
++    streamOnline?: boolean;
++    /** 流式生成（线下）：开启后该会话的线下 AI 回复边生成边显示（默认关，保持原整段请求行为） */
++    streamOffline?: boolean;
+     // Group chat fields
+     isGroup?: boolean;
+     groupName?: string;
+@@ -267,12 +271,16 @@ export function getMaxToolRounds(): number {
+     return Math.max(1, Math.min(20, Math.round(raw)));
+ }
+ 
++/** 会话是否开启线上流式生成（默认关；按会话独立控制，单聊/群聊都生效） */
++export function isSessionStreamingEnabled(session: Pick<ChatSession, "streamOnline" | "streamOffline"> | null | undefined, online: boolean): boolean {
++    if (!session) return false;
++    return online ? session.streamOnline === true : session.streamOffline === true;
++}
++
+ export const CHAT_APP_SETTINGS_UPDATED_EVENT = "chat-app-settings-updated";
+ export const CHAT_MESSAGE_PUSHED_EVENT = "chat-message-pushed";
+ export const CHAT_MESSAGES_DELETED_EVENT = "chat-messages-deleted";
+ export const CHAT_REQUEST_REPLY_EVENT = "chat-request-reply";
+-/** 长按编辑整批回复后重建消息：携带新消息与编辑后的原文，供云同步回写。 */
+-export const CHAT_RESPONSE_BATCH_REPLACED_EVENT = "chat-response-batch-replaced";
+ 
+ // ── Media Preview Map ─────────────────────────
+ const MEDIA_PREVIEW_MAP: Record<string, string> = {
+@@ -1131,16 +1139,26 @@ export function pushChatMessage(msg: Omit<ChatMessage, "id" | "createdAt" | "sta
+     dbPutMessage(newMsg);
+ 
+     // Auto update session last message only for records that can produce a list preview.
++    // 优化：直接增量更新内存会话缓存并异步写单条，避免每次发送都走 loadChatSessions +
++    // saveChatSessions 触发全量会话预览重算（会话/消息多了以后会明显卡顿）。
+     const preview = getChatMessagePreview(newMsg);
+-    const sessions = loadChatSessions();
+-    const sessIdx = sessions.findIndex(s => s.id === msg.sessionId);
++    const sessIdx = _sessionsCache.findIndex(s => s.id === msg.sessionId);
+     if (sessIdx !== -1 && isSessionPreviewCandidate(newMsg)) {
+-        sessions[sessIdx].lastMessageId = newMsg.id;
+-        if (preview) {
+-            sessions[sessIdx].lastMessagePreview = preview;
++        const target = _sessionsCache[sessIdx];
++        target.lastMessageId = newMsg.id;
++        if (preview) target.lastMessagePreview = preview;
++        target.updatedAt = newMsg.createdAt;
++        dbPutSessions([target]);
++    } else if (sessIdx === -1) {
++        // 缓存未命中（极端情况）：回退全量路径，保证列表预览仍会刷新
++        const sessions = loadChatSessions();
++        const idx2 = sessions.findIndex(s => s.id === msg.sessionId);
++        if (idx2 !== -1 && isSessionPreviewCandidate(newMsg)) {
++            sessions[idx2].lastMessageId = newMsg.id;
++            if (preview) sessions[idx2].lastMessagePreview = preview;
++            sessions[idx2].updatedAt = newMsg.createdAt;
++            saveChatSessions(sessions);
+         }
+-        sessions[sessIdx].updatedAt = newMsg.createdAt;
+-        saveChatSessions(sessions);
+     }
+ 
+     if (typeof window !== "undefined") {
+@@ -1939,9 +1957,6 @@ export function replaceResponseBatchWithParts(
+         rawResponseText,
+         responseRoundId: firstMessage.responseRoundId,
+         editableResponseText: firstMessage.editableResponseText,
+-        // 云消息身份必须跟着走：丢了它，微信云同步下一轮会把原文当成「还没导入过」
+-        // 再导一遍，编辑后的版本和原文并存（编辑一次多一条）。
+-        cloudSync: firstMessage.cloudSync,
+         statusPanel: index === (options?.metaPartIndex ?? 0) ? options?.statusPanel : undefined,
+         statusRegionMode: index === (options?.metaPartIndex ?? 0) && options?.statusPanel ? options?.statusRegionMode : undefined,
+         innerMonologue: index === (options?.metaPartIndex ?? 0) ? options?.innerMonologue : undefined,
+@@ -1966,7 +1981,6 @@ export function replaceResponseBatchWithParts(
+             responseBatchId,
+             responseRoundId: firstMessage.responseRoundId,
+             editableResponseText: firstMessage.editableResponseText,
+-            cloudSync: firstMessage.cloudSync,
+             followUpIndex: firstMessage.followUpIndex,
+             senderCharacterId: firstMessage.senderCharacterId,
+             senderName: firstMessage.senderName,
+@@ -1993,22 +2007,9 @@ export function replaceResponseBatchWithParts(
+         saveChatSessions(sessions);
+     }
+ 
+-    dispatchResponseBatchReplaced(sessionId, newMessages, rawResponseText);
+     return newMessages;
+ }
+ 
+-/**
+- * 整批回复被编辑重建：这里不能走 CHAT_MESSAGE_PUSHED / CHAT_MESSAGES_DELETED
+- * （前者会被当成新消息新建云端对象，后者会把云端原件删掉），所以单独发一个事件，
+- * 由云同步侧「就地覆盖同一条云消息」。
+- */
+-function dispatchResponseBatchReplaced(sessionId: string, messages: ChatMessage[], rawResponseText: string): void {
+-    if (typeof window === "undefined" || messages.length === 0) return;
+-    window.dispatchEvent(new CustomEvent(CHAT_RESPONSE_BATCH_REPLACED_EVENT, {
+-        detail: { sessionId, messages, rawResponseText },
+-    }));
+-}
+-
+ export function replaceGroupResponseRound(
+     sessionId: string,
+     responseRoundId: string,
+@@ -2061,7 +2062,6 @@ export function replaceGroupResponseRound(
+         rawResponseText: msg.rawResponseText,
+         responseRoundId,
+         editableResponseText,
+-        cloudSync: firstMessage.cloudSync,
+         statusPanel: msg.statusPanel,
+         statusRegionMode: msg.statusRegionMode,
+         innerMonologue: msg.innerMonologue,
+diff --git a/lib/group-chat-engine.ts b/lib/group-chat-engine.ts
+index 3b5f88e..fae8d2e 100644
+--- a/lib/group-chat-engine.ts
++++ b/lib/group-chat-engine.ts
+@@ -1,7 +1,7 @@
+ // lib/group-chat-engine.ts
+ // Group chat engine: single API call for all characters.
+ 
+-import { ChatSession, ChatMessage, loadChatAppSettings, createResponseBatchId, createResponseRoundId, createToolExecutionId, loadChatSessions, getLatestCharacterStateValues } from "./chat-storage";
++import { ChatSession, ChatMessage, loadChatAppSettings, createResponseBatchId, createResponseRoundId, createToolExecutionId, loadChatSessions, getLatestCharacterStateValues, isSessionStreamingEnabled } from "./chat-storage";
+ import { extractTextToolDirectiveText } from "./text-tool-protocol";
+ import type { ApiConfig, PresetConfig, RegexConfig } from "./settings-types";
+ import { loadCharacters } from "./character-storage";
+@@ -10,7 +10,9 @@ import { runChatPluginTransform } from "./chat-plugin-hooks";
+ import { buildChatPluginPromptFragments } from "./chat-plugin-storage";
+ import {
+     sendLLMRequest,
++    sendLLMStreamRequest,
+     sendLLMToolRequest,
++    sendLLMToolStreamRequest,
+     ChatEngineError,
+     buildMusicLocalMacro,
+     buildMusicCloudMacro,
+@@ -31,6 +33,8 @@ import {
+     touchNativeExpandedToolSource,
+     appendEmptyGenerateGuardMessage,
+     applyCustomPromptProfileToPreset,
++    stripOnlineThinkingTag,
++    stripPresetTexts,
+     type ChatCompletionCallbacks,
+     type NativeChatToolBundle,
+ } from "./chat-engine";
+@@ -73,7 +77,7 @@ import { formatToolsForPrompt, formatGroupToolsForPrompt, formatToolSchema } fro
+ import { parseToolCalls, parseToolFetches, executeToolCalls, formatToolResults, type ToolCall } from "./tool-executor";
+ import { stripStateAndInnerForPrompt } from "./prompt-sanitizer";
+ import { buildGroupRosterMacro } from "./group-admin";
+-import { parseOfflineResponse, type ParsedOfflineResponse } from "./chat-offline-storage";
++import { parseOfflineResponse, extractThinkingTag, type ParsedOfflineResponse } from "./chat-offline-storage";
+ import { buildProviderRequest, nativeToolProtocolForConfig, toLlmRequestMessages, type LlmRequestMessage, type LlmToolCall } from "./llm-provider-adapter";
+ import type { DebugPromptSnapshot } from "./debug-store";
+ import { throwIfAborted } from "./abort-utils";
+@@ -565,6 +569,8 @@ async function runNativeGroupToolLoop(params: {
+ }): Promise<string> {
+     const { session, llmMessages, config, preset, regexes, nameToId, memberNames, enabledTools, appTags, signal, callbacks } = params;
+     const MAX_TOOL_ROUNDS = 5;
++    const onlineThinkingEnabled = preset?.online_thinking_enabled === true;
++    const onlineThinkingTag = preset?.online_thinking_tag?.trim() || "thinking";
+     const persistedSession = loadChatSessions().find(item => item.id === session.id);
+     let expandedSourceIds = normalizeNativeExpandedToolSourceIds(
+         persistedSession?.nativeExpandedToolSourceIds || session.nativeExpandedToolSourceIds,
+@@ -584,12 +590,27 @@ async function runNativeGroupToolLoop(params: {
+     for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+         let result: Awaited<ReturnType<typeof sendLLMToolRequest>>;
+         try {
+-            result = await sendLLMToolRequest(config, preset, requestMessages, nativeBundle.definitions, regexes, meta, {
+-                appId: "group_chat",
+-                appTags,
+-                debugSessionId: session.id,
+-                signal,
+-            });
++            if (isSessionStreamingEnabled(session, true)) {
++                let streamReasoning = "";
++                result = await sendLLMToolStreamRequest(config, preset, requestMessages, nativeBundle.definitions, regexes, meta, {
++                    appId: "group_chat",
++                    appTags,
++                    debugSessionId: session.id,
++                    signal,
++                }, {
++                    onDelta: (text) => callbacks?.onStreamDelta?.(text),
++                    // 流式下 onReasoningDelta 是单段增量：累积后再喂 onReasoning（保持整段请求语义）
++                    // 预设开启「线上标签解析」时不透传原生思维链（改由下方标签提取）
++                    onReasoningDelta: onlineThinkingEnabled ? undefined : (text) => { streamReasoning += text; callbacks?.onReasoning?.(streamReasoning); },
++                });
++            } else {
++                result = await sendLLMToolRequest(config, preset, requestMessages, nativeBundle.definitions, regexes, meta, {
++                    appId: "group_chat",
++                    appTags,
++                    debugSessionId: session.id,
++                    signal,
++                });
++            }
+         } catch (err) {
+             if (finalRawOutput) {
+                 throwIfAborted(signal);
+@@ -600,21 +621,31 @@ async function runNativeGroupToolLoop(params: {
+         }
+         throwIfAborted(signal);
+ 
+-        const assistantForToolContext = stripStateAndInnerForPrompt(result.content);
++        // 线上思维链标签解析：开启时每轮从正文提取 <tag> 思维链（覆盖原生），并剥离标签后再做后续解析
++        let displayContent = result.content;
++        if (onlineThinkingEnabled) {
++            const tagThinking = extractThinkingTag(displayContent, onlineThinkingTag);
++            if (tagThinking) callbacks?.onReasoning?.(tagThinking);
++            displayContent = stripOnlineThinkingTag(displayContent, onlineThinkingTag);
++        }
++        // 剔除预设配置的文本片段（<思考结束> 等残留标签）
++        displayContent = stripPresetTexts(displayContent, preset);
++        const assistantForToolContext = stripStateAndInnerForPrompt(displayContent);
+         if (result.toolCalls.length === 0) {
+             throwIfAborted(signal);
+             // 无工具调用的最终轮：把解析到的思维链交给回调（随后由 processGroupParts 挂到本轮首条气泡）
+-            if (result.reasoning) callbacks?.onReasoning?.(result.reasoning);
+-            finalRawOutput = result.content;
++            // 标签解析开启时已用标签思维链覆盖，此处不再重复喂原生
++            if (result.reasoning && !onlineThinkingEnabled) callbacks?.onReasoning?.(result.reasoning);
++            finalRawOutput = displayContent;
+             break;
+         }
+ 
+         throwIfAborted(signal);
+         await callbacks?.onNativeToolAssistantTurn?.({
+-            content: result.content,
+-            rawContent: result.content,
+-            reasoning: result.reasoning,
+-            openRouterReasoningDetails: result.openRouterReasoningDetails,
++            content: displayContent,
++            rawContent: displayContent,
++            reasoning: onlineThinkingEnabled ? (extractThinkingTag(result.content, onlineThinkingTag) || undefined) : result.reasoning,
++            openRouterReasoningDetails: onlineThinkingEnabled ? undefined : result.openRouterReasoningDetails,
+             toolCalls: result.toolCalls,
+         });
+ 
+@@ -720,8 +751,8 @@ async function runNativeGroupToolLoop(params: {
+         requestMessages.push({
+             role: "assistant",
+             content: assistantForToolContext,
+-            reasoning: result.reasoning,
+-            openRouterReasoningDetails: result.openRouterReasoningDetails,
++            reasoning: onlineThinkingEnabled ? (extractThinkingTag(result.content, onlineThinkingTag) || undefined) : result.reasoning,
++            openRouterReasoningDetails: onlineThinkingEnabled ? undefined : result.openRouterReasoningDetails,
+             toolCalls: result.toolCalls,
+         });
+         const toolExecutionId = createToolExecutionId();
+@@ -780,6 +811,9 @@ export async function generateGroupChatCompletion(
+     const MAX_TOOL_ROUNDS = 5;
+     const meta = { characterName: `群聊:${session.groupName || "群聊"}` };
+     let finalRawOutput = "";
++    // 线上思维链标签解析：预设开启时从正文提取 <tag> 思维链（覆盖原生），并剥离标签后再做后续解析
++    const onlineThinkingEnabled = preset?.online_thinking_enabled === true;
++    const onlineThinkingTag = preset?.online_thinking_tag?.trim() || "thinking";
+ 
+     if (nativeToolProtocolForConfig(config) && enabledTools.length > 0) {
+         finalRawOutput = await runNativeGroupToolLoop({
+@@ -808,13 +842,29 @@ export async function generateGroupChatCompletion(
+     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+         let filteredOutput: string;
+         try {
+-            filteredOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
+-                appId: "group_chat",
+-                appTags,
+-                debugSessionId: session.id,
+-                signal: options?.signal,
+-                onReasoning: callbacks?.onReasoning,
+-            });
++            if (isSessionStreamingEnabled(session, true)) {
++                let streamReasoning = "";
++                const streamResult = await sendLLMStreamRequest(config, preset, llmMessages, regexes, meta, {
++                    appId: "group_chat",
++                    appTags,
++                    signal: options?.signal,
++                }, {
++                    onDelta: (text) => callbacks?.onStreamDelta?.(text),
++                    // 流式下 onReasoningDelta 是单段增量：累积后再喂 onReasoning（保持整段请求语义）
++                    // 预设开启「线上标签解析」时不透传原生思维链（改由下方标签提取）
++                    onReasoningDelta: onlineThinkingEnabled ? undefined : (text) => { streamReasoning += text; callbacks?.onReasoning?.(streamReasoning); },
++                });
++                filteredOutput = streamResult.content;
++            } else {
++                filteredOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
++                    appId: "group_chat",
++                    appTags,
++                    debugSessionId: session.id,
++                    signal: options?.signal,
++                    // 预设开启「线上标签解析」时不透传原生思维链（改由下方标签提取）
++                    onReasoning: onlineThinkingEnabled ? undefined : callbacks?.onReasoning,
++                });
++            }
+         } catch (err) {
+             if (finalRawOutput) {
+                 throwIfAborted(options?.signal);
+@@ -825,6 +875,15 @@ export async function generateGroupChatCompletion(
+         }
+         throwIfAborted(options?.signal);
+ 
++        // 线上思维链标签解析：开启时每轮从正文提取 <tag> 思维链（覆盖原生），并剥离标签后再做后续解析
++        if (onlineThinkingEnabled) {
++            const tagThinking = extractThinkingTag(filteredOutput, onlineThinkingTag);
++            if (tagThinking) callbacks?.onReasoning?.(tagThinking);
++            filteredOutput = stripOnlineThinkingTag(filteredOutput, onlineThinkingTag);
++        }
++        // 剔除预设配置的文本片段（<思考结束> 等残留标签），不进入消息/提示词
++        filteredOutput = stripPresetTexts(filteredOutput, preset);
++
+         const toolFetches = parseToolFetches(filteredOutput);
+         const { toolCalls } = parseToolCalls(filteredOutput);
+         const assistantForToolContext = stripStateAndInnerForPrompt(filteredOutput);
+@@ -957,14 +1016,38 @@ export async function generateGroupChatCompletion(
+ 
+             if (round === MAX_TOOL_ROUNDS - 1) {
+                 try {
+-                    finalRawOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
+-                        appId: "group_chat",
+-                        appTags,
+-                        debugSessionId: session.id,
+-                        signal: options?.signal,
+-                        onReasoning: callbacks?.onReasoning,
+-                    });
++                    if (isSessionStreamingEnabled(session, true)) {
++                        let streamReasoning = "";
++                        const streamFinal = await sendLLMStreamRequest(config, preset, llmMessages, regexes, meta, {
++                            appId: "group_chat",
++                            appTags,
++                            signal: options?.signal,
++                        }, {
++                            onDelta: (text) => callbacks?.onStreamDelta?.(text),
++                            // 流式下 onReasoningDelta 是单段增量：累积后再喂 onReasoning（保持整段请求语义）
++                            // 预设开启「线上标签解析」时不透传原生思维链（改由下方标签提取）
++                            onReasoningDelta: onlineThinkingEnabled ? undefined : (text) => { streamReasoning += text; callbacks?.onReasoning?.(streamReasoning); },
++                        });
++                        finalRawOutput = streamFinal.content;
++                    } else {
++                        finalRawOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
++                            appId: "group_chat",
++                            appTags,
++                            debugSessionId: session.id,
++                            signal: options?.signal,
++                            // 预设开启「线上标签解析」时不透传原生思维链（改由下方标签提取）
++                            onReasoning: onlineThinkingEnabled ? undefined : callbacks?.onReasoning,
++                        });
++                    }
+                     throwIfAborted(options?.signal);
++                    // 线上思维链标签解析：开启时从正文提取 <tag> 思维链并剥离标签
++                    if (onlineThinkingEnabled) {
++                        const tagThinking = extractThinkingTag(finalRawOutput, onlineThinkingTag);
++                        if (tagThinking) callbacks?.onReasoning?.(tagThinking);
++                        finalRawOutput = stripOnlineThinkingTag(finalRawOutput, onlineThinkingTag);
++                    }
++                    // 剔除预设配置的文本片段（<思考结束> 等残留标签）
++                    finalRawOutput = stripPresetTexts(finalRawOutput, preset);
+                 } catch {
+                     throwIfAborted(options?.signal);
+                     /* use last output */
+@@ -1049,7 +1132,7 @@ export type GroupOfflineChatCompletionResult = ParsedOfflineResponse & {
+ export async function generateGroupOfflineChatCompletion(
+     session: ChatSession,
+     history: ChatMessage[],
+-    options?: { signal?: AbortSignal },
++    options?: { signal?: AbortSignal; onStreamDelta?: (delta: string) => void },
+ ): Promise<GroupOfflineChatCompletionResult> {
+     const { llmMessages, config, preset, regexes } = await buildGroupChatPromptMessages(
+         session,
+@@ -1061,18 +1144,71 @@ export async function generateGroupOfflineChatCompletion(
+         },
+     );
+     const summaryTag = preset?.story_summary_tag?.trim() || "summary";
++    const thinkingTag = preset?.thinking_tag?.trim() || "thinking";
++    const offlineTagEnabled = preset?.offline_thinking_enabled === true;
+     let reasoning = "";
+-    const rawOutput = await sendLLMRequest(config, preset, llmMessages, regexes, {
+-        characterName: `群聊:${session.groupName || "群聊"}`,
+-    }, {
++    const meta = { characterName: `群聊:${session.groupName || "群聊"}` };
++    const requestOptions = {
+         appId: "group_chat",
+         appTags: ["group_chat", "offline"],
+         debugSessionId: session.id,
+         signal: options?.signal,
+-        onReasoning: (t) => { reasoning = t; },
+-    });
++        onReasoning: (t: string) => { reasoning = t; },
++    };
++    let rawOutput: string;
++    if (isSessionStreamingEnabled(session, false) && options?.onStreamDelta) {
++        const streamResult = await sendLLMStreamRequest(config, preset, llmMessages, regexes, meta, {
++            appId: "group_chat",
++            appTags: ["group_chat", "offline"],
++            signal: options?.signal,
++        }, {
++            onDelta: (text) => options.onStreamDelta?.(text),
++            onReasoningDelta: (t) => { reasoning += t; },
++        });
++        rawOutput = streamResult.content;
++    } else {
++        rawOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, requestOptions);
++    }
++    // 剔除预设配置的文本片段（<思考结束> 等残留标签），不进入记录/提示词
++    rawOutput = stripPresetTexts(rawOutput, preset);
++    let parsed = parseOfflineResponse(rawOutput, summaryTag);
++    // 思维链：预设开启「线下标签解析」时从正文提取 <thinking> 标签；关闭时走模型原生 reasoning（官方默认行为）
++    if (offlineTagEnabled) {
++        const tagThinking = extractThinkingTag(rawOutput, thinkingTag);
++        if (tagThinking) reasoning = tagThinking;
++    }
++
++    // 摘要缺失时自动补提：拿上次完整输出做上下文，只要求模型补一段摘要，
++    // 避免「静默结束」导致该轮线下记录没有摘要、进不了短期记忆事件流。
++    const MAX_SUMMARY_RETRY = 2;
++    for (let attempt = 0; attempt < MAX_SUMMARY_RETRY; attempt += 1) {
++        if (parsed.summary.trim()) break;
++        if (!parsed.content.trim() && !rawOutput.trim()) break; // 连正文都没有，补提没有意义
++        const retryMessages: LLMMessage[] = [
++            ...llmMessages,
++            { role: "assistant", content: rawOutput },
++            {
++                role: "user",
++                content: `刚才的回复里没有输出 <${summaryTag}> 摘要。请只针对上面这段对话的关键事件补一段第三人称摘要，严格按以下格式输出，不要输出任何其他内容：\n<${summaryTag}>一句话摘要</${summaryTag}>`,
++            },
++        ];
++        throwIfAborted(options?.signal);
++        // 补提请求不带 onReasoning：避免用补提请求的思维链覆盖主请求已累积的完整思维链
++        const retryRaw = stripPresetTexts(await sendLLMRequest(config, preset, retryMessages, regexes, meta, { ...requestOptions, onReasoning: undefined }), preset);
++        const retried = parseOfflineResponse(retryRaw, summaryTag);
++        if (retried.summary.trim()) {
++            parsed = { ...parsed, summary: retried.summary.trim() };
++            break;
++        }
++    }
++
+     return {
+-        ...parseOfflineResponse(rawOutput, summaryTag),
++        ...parsed,
++        // 标签解析开启时补 thinking/thinkingTag（供离线记录展示）；关闭时保持 undefined，思维链走 reasoning（模型原生）
++        ...(offlineTagEnabled ? {
++            thinking: extractThinkingTag(rawOutput, thinkingTag) || undefined,
++            thinkingTag,
++        } : {}),
+         model: config.defaultModel,
+         presetName: preset?.name || "默认预设",
+         reasoning: reasoning || undefined,
+diff --git a/lib/settings-types.ts b/lib/settings-types.ts
+index cd0e564..b498e38 100644
+--- a/lib/settings-types.ts
++++ b/lib/settings-types.ts
+@@ -82,6 +82,19 @@ export type PresetConfig = SettingItemMeta & {
+     scenario_format?: string;
+     personality_format?: string;
+     story_summary_tag?: string;
++    /** 线下/剧情模式的思维链标签名：从模型输出的 XML 里提取思考过程（默认 thinking，兼容 thought）。
++     *  仅当 offline_thinking_enabled 开启时才启用标签解析；关闭时走模型原生 reasoning。 */
++    thinking_tag?: string;
++    /** 线上模式的思维链标签名：从模型输出的 XML 里提取思考过程（默认 thinking）。
++     *  仅当 online_thinking_enabled 开启时才启用标签解析；关闭时走模型原生 reasoning。 */
++    online_thinking_tag?: string;
++    /** 线上模式是否启用思维链标签解析（默认关；关 = 走模型原生 reasoning） */
++    online_thinking_enabled?: boolean;
++    /** 线下模式是否启用思维链标签解析（默认关；关 = 走模型原生 reasoning） */
++    offline_thinking_enabled?: boolean;
++    /** 模型回复中直接剔除的文本片段列表（字面量删除，不走正则）：如 <思考结束> 等残留标签，
++     *  生成时即删除，不进入消息、不进入发给模型的记录。 */
++    strip_texts?: string[];
+     prompt_order?: PromptOrderEntry[];
+     prompts: Prompt[];
+ };

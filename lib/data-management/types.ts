@@ -90,6 +90,8 @@ export type IndexedDbSourceBackup = {
 export type KvSourceBackup = {
   type: "kv";
   records: { key: string; value: string }[];
+  /** KV 读取失败（IndexedDB 事务异常）——有值表示可能缺少数据，已回退到内存缓存 */
+  error?: string;
 };
 
 export type LocalStorageSourceBackup = {
