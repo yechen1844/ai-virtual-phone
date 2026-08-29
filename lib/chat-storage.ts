@@ -1147,9 +1147,24 @@ export function deleteChatSession(sessionId: string) {
 
 // ── CRUD for Messages ─────────────────────────
 export function loadChatMessages(sessionId: string, limit?: number): ChatMessage[] {
-    const all = getSortedSessionMessages(sessionId);
-    if (limit && limit < all.length) return all.slice(-limit);
-    return all;
+    if (limit && limit > 0) return loadRecentSessionTail(sessionId, limit);
+    return getSortedSessionMessages(sessionId);
+}
+
+/**
+ * 快速取某会话「最近 limit 条」：逆序扫内存缓存（物理尾部 ≈ 最新，最新消息总是最后追加），
+ * 只对收集到的小批量做一次排序，避免大会话（2.8 万条级）在每次发送后都要对全量消息
+ * filter+sort 造成点击触发回复时的主线程卡顿。只改变取数方式，不改消息语义。
+ */
+function loadRecentSessionTail(sessionId: string, limit: number): ChatMessage[] {
+    const cache = _messagesCache;
+    const collected: ChatMessage[] = [];
+    for (let i = cache.length - 1; i >= 0 && collected.length < limit; i -= 1) {
+        if (cache[i].sessionId === sessionId) collected.push(cache[i]);
+    }
+    if (collected.length <= 1) return collected;
+    collected.sort(compareChatMessages);
+    return collected.slice(-limit);
 }
 
 function createMessageId(): string {

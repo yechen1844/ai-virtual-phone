@@ -302,6 +302,9 @@ const CHAT_THEATER_MODE_PREFIX = "chat-theater-mode:";
 const GENERATING_LOCK_TTL_MS = 5 * 60 * 1000;
 const OFFLINE_INITIAL_LOAD = 10;
 const OFFLINE_LOAD_MORE_COUNT = 10;
+// 触发模型回复时提取的历史窗口条数：比可见/组装窗口留足余量，但远小于全量，
+// 配合 loadChatMessages(session.id, n) 的快速取尾路径，避免大会话全量重排卡顿。
+const CHAT_GEN_HISTORY_FETCH_LIMIT = 1500;
 
 type PendingNativeToolCall = {
     id: string;
@@ -3564,7 +3567,10 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
         streamAccumRef.current = "";
         setStreamPreview(null);
         try {
-            const latestMessages = loadChatMessages(session.id);
+            // 主线程卡顿点修复：发送后无需对全量历史做 filter+sort，组装只用到最近一段窗口，
+            // 用带 limit 的快速逆序取尾路径（loadChatMessages(session.id, n)），避免 2.8 万条级
+            // 会话每次触发都在「正在输入」出现前同步全量重排。
+            const latestMessages = loadChatMessages(session.id, CHAT_GEN_HISTORY_FETCH_LIMIT);
             if (session.isGroup) {
                 const streamedImageReplacementTasks: Promise<unknown>[] = [];
                 // 每轮 LLM 调用的思维链：中间轮挂到该轮首条气泡，最终轮传给 processGroupParts

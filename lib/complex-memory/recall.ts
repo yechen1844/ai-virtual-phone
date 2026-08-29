@@ -308,14 +308,16 @@ async function rerankCandidates(
   if (!apiConfig) return fallback();
 
   const candidatesText = candidates
-    .map((c, i) => `${i + 1}. [${c.kind}] ${c.timestamp} ${c.content.slice(0, 150)}`)
+    .map((c, i) => `${i + 1}. [${c.kind}] ${c.timestamp} ${c.content}`)
     .join("\n");
 
+  // 修复：不再把候选/上下文/核心记忆硬截断到 150 / 1200 字，否则打分模型只看到残缺记忆，
+  // 无法真正按相关性重排。候选已受 recallTopK 限制，此处给足全文，让打分基于完整内容判断。
   const template = config.prompts.rerank?.trim() || DEFAULT_PROMPTS.rerank;
   const prompt = renderMemoryPrompt(template, characterName, "", {
     candidates: candidatesText,
-    context: context.slice(0, 1200),
-    coreMemory: coreMemory.slice(0, 1200),
+    context,
+    coreMemory,
     keepMax: String(config.rerankKeepMax),
   });
 
