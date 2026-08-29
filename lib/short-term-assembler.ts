@@ -955,6 +955,7 @@ export function prepareShortTermContext(
         includeDirectChatEntries?: boolean;
         timeAware?: boolean;
         promptTimestampOptions?: PromptTimestampOptions;
+        maxShortTermEntries?: number;
     },
 ): {
     recentBlocks: RecentBlock[];
@@ -1138,14 +1139,19 @@ export function prepareShortTermContext(
         }
     }
 
-    // Determine survivors
-    const survivingEntryIds = new Set<string>();
+    // Determine survivors（时间线条目可选条数上限：保留最新的 maxShortTermEntries 条，防"短期记忆超100条"）
+    const survivingEntries: Array<{ id: string; ts: string }> = [];
     const survivingMsgIndices = new Set<number>();
     for (let i = startIdx; i < pool.length; i++) {
         const p = pool[i];
-        if (p.kind === "entry") survivingEntryIds.add(p.entryId);
+        if (p.kind === "entry") survivingEntries.push({ id: p.entryId, ts: p.timestamp });
         else survivingMsgIndices.add(p.msgIdx);
     }
+    const maxShortTermEntries = options?.maxShortTermEntries ?? 0;
+    const keptEntries = maxShortTermEntries > 0 && survivingEntries.length > maxShortTermEntries
+        ? survivingEntries.slice(-maxShortTermEntries)
+        : survivingEntries;
+    const survivingEntryIds = new Set<string>(keptEntries.map((e) => e.id));
 
     // Build truncated history (preserve original order)
     const truncatedHistoryWithOrigIdx = history

@@ -304,8 +304,16 @@ async function rerankCandidates(
     [...candidates].sort((a, b) => b.score - a.score).slice(0, config.rerankKeepMax);
   if (candidates.length === 0) return [];
 
-  const apiConfig = resolveAuxiliaryApiConfig("complexRerankApiConfigId");
-  if (!apiConfig) return fallback();
+  // 重排优先用「复杂记忆重排序」专属配置；若未单独绑定则回退用「复杂记忆生成」配置
+  // （用户通常把聊天模型绑定在这里），避免因没在重排专属槽位绑定而静默回退成纯向量排序，
+  // 表现为"重排一直失败但其实根本没调用模型"。
+  const apiConfig =
+    resolveAuxiliaryApiConfig("complexRerankApiConfigId") ??
+    resolveAuxiliaryApiConfig("complexMemoryApiConfigId");
+  if (!apiConfig) {
+    console.warn("[ComplexMemory] 重排序未绑定任何聊天API，回退为向量评分排序");
+    return fallback();
+  }
 
   // 键兜底：重排序的整个副 API 调用都包进 try/catch，任何异常（网络/解析/格式）都回退到
   // 向量评分排序再注入，避免异常冒泡导致该轮复杂记忆整块丢失（固定注入 + 向量召回不受影响）。

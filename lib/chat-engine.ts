@@ -58,7 +58,7 @@ import { loadMemoryConfig } from "./memory-storage";
 import { retrieveCoreMemoriesForPrompt, retrieveMemoriesForPrompt } from "./memory-service";
 import { formatCoreMemories, formatLongTermMemories } from "./memory-injector";
 import { recordCharacterActivity } from "./complex-memory/guard";
-import { isComplexMemoryEnabled } from "./complex-memory/config";
+import { isComplexMemoryEnabled, loadComplexMemoryConfig } from "./complex-memory/config";
 import { buildMemoryContextBundle } from "./complex-memory/recall";
 import { prepareShortTermContext, applyTranslationFeedMode } from "./short-term-assembler";
 import { parseActionTags, dispatchActions } from "./action-parser";
@@ -1840,6 +1840,7 @@ export async function buildChatPromptMessages(
         includeNativeToolHistory: usesNativeActions,
         excludeOfflineSessionId: options?.excludeOfflineSessionId,
         promptTimestampOptions,
+        maxShortTermEntries: isComplexMemoryEnabled(character.id) ? loadComplexMemoryConfig().fixedShortTermEntries : undefined,
     });
     // 输入端双语文案裁剪：按会话 translationFeedMode，喂给模型的历史消息只保留原文/或只剩译文，
     // 避免模型吃到多余的 原文|译文 双语内容（输出侧仍保持双语，此处只影响输入）。

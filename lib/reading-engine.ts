@@ -28,6 +28,7 @@ import { prepareShortTermContext } from "./short-term-assembler";
 import { previewMessagesForApi, sendLLMRequest } from "./chat-engine";
 import { simpleLLMCall } from "./api-helpers";
 import { DEFAULT_READING_BILINGUAL_PROMPT, resolveBilingualPrompt } from "./bilingual-prompt-defaults";
+import { recordCharacterActivity } from "./complex-memory/guard";
 
 export type ReadingDiscussAction =
     | { type: "add_annotation"; paragraphIndex: number; content: string }
@@ -448,6 +449,9 @@ export async function generateReadingChat(
         input.userIdentity?.name,
     );
     if (!responseText) return null;
+
+    // 阅读共读也接入复杂记忆活动计数（与聊天/朋友圈等一致，避免漏计导致事件生成不触发）
+    recordCharacterActivity(characterId, character.name, 1);
 
     // Return raw text — caller is responsible for parsing and saving (like chat-room's splitAndSaveAIMessages)
     return responseText;
