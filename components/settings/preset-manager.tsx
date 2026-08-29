@@ -1212,7 +1212,6 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                             const allPrompts = buildDisplayedPrompts(preset);
 
                                             // ── 按 App 大类筛选 ──
-                                            // 选的是大类 tag（如 "chat"），匹配条件：条目 tags 包含该大类 tag
                                             const filterTag = appFilterTag || null;
                                             const matchesFilter = (p: Prompt) => {
                                                 if (!filterTag) return true;
@@ -1225,61 +1224,102 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                 return allPrompts.filter(matchesFilter).map(p => ({ type: "item" as const, prompt: p }));
                                             }
 
-                                            // collapse = 相邻折叠：连续匹配的条目折叠成一组
-                                            // group-collapse = 整组折叠：所有匹配条目折叠成一组（不管分散在哪），不影响真实顺序
-                                            if (filterTag && (appFilterMode === "collapse" || appFilterMode === "group-collapse")) {
+                                            // 获取条目所属大类 key：取第一个命中的 group tag；无匹配 → "__universal__"
+                                            const getGroupKeyOf = (p: Prompt): string => {
+                                                const pt = getPromptTags(p);
+                                                if (pt.length === 0) return "__universal__";
+                                                const group = findTagGroupForTags(tagGroups, pt);
+                                                if (group && group.tags.length > 0) return group.tags[0];
+                                                // 无已知 group：用第一个 tag 作为兜底大类
+                                                return pt[0];
+                                            };
+                                            const getGroupLabelOf = (tag: string): string => {
+                                                if (tag === "__universal__") return "通用";
+                                                return tagGroups.find(g => g.tags[0] === tag)?.label || tag;
+                                            };
+
+                                            // collapse / group-collapse 独立于 App 选择：
+                                            // 未选 App → 对所有 App 的条目按大类折叠；选了 App → 只折叠该 App 条目 + 高亮
+                                            if (appFilterMode === "collapse" || appFilterMode === "group-collapse") {
                                                 type RenderItem =
                                                     | { type: "item"; prompt: Prompt }
-                                                    | { type: "collapsed"; prompts: Prompt[]; groupKey: string }
+                                                    | { type: "collapsed"; prompts: Prompt[]; groupKey: string; label: string }
                                                     | { type: "collapse-header"; groupKey: string; label: string; count: number };
                                                 const result: RenderItem[] = [];
-                                                const groupKey = `g-${filterTag}`;
-                                                const groupLabel = appFilterTag === "__universal__"
-                                                    ? "通用"
-                                                    : (tagGroups.find(g => g.tags[0] === appFilterTag)?.label || appFilterTag);
 
-                                                const makeCollapsedOrExpanded = (prompts: Prompt[], key: string): RenderItem[] => {
+                                                const makeCollapsedOrExpanded = (prompts: Prompt[], key: string, label: string): RenderItem[] => {
                                                     if (expandedCollapseGroups.has(key)) {
-                                                        // 已展开：header（可收起）+ 逐条 item
-                                                        return [{ type: "collapse-header", groupKey: key, label: groupLabel, count: prompts.length },
+                                                        return [{ type: "collapse-header", groupKey: key, label, count: prompts.length },
                                                             ...prompts.map(p => ({ type: "item" as const, prompt: p }))];
                                                     }
-                                                    return [{ type: "collapsed", prompts, groupKey: key }];
+                                                    return [{ type: "collapsed", prompts, groupKey: key, label }];
                                                 };
 
+                                                // 是否参与本次折叠：选了 App 只看该 App；未选 App 全部参与（按各自大类）
+                                                const participates = (p: Prompt): boolean => !filterTag || matchesFilter(p);
+
                                                 if (appFilterMode === "group-collapse") {
-                                                    const matched = allPrompts.filter(matchesFilter);
-                                                    if (matched.length >= 2) {
-                                                        const firstMatchIdx = allPrompts.findIndex(matchesFilter);
-                                                        for (let j = 0; j < allPrompts.length; j++) {
-                                                            if (j === firstMatchIdx) {
-                                                                result.push(...makeCollapsedOrExpanded(matched, groupKey));
-                                                            } else if (!matchesFilter(allPrompts[j])) {
-                                                                result.push({ type: "item", prompt: allPrompts[j] });
+                                                    // 整组折叠：按大类把所有参与条目收进各自的折叠组
+                                                    const byGroup = new Map<string, Prompt[]>();
+                                                    for (const p of allPrompts) {
+                                                        if (!participates(p)) {
+                                                            // 非参与条目原样保留
+                                                            result.push({ type: "item", prompt: p });
+                                                            continue;
+                                                        }
+                                                        const gk = getGroupKeyOf(p);
+                                                        const arr = byGroup.get(gk) || [];
+                                                        arr.push(p);
+                                                        byGroup.set(gk, arr);
+                                                    }
+                                                    // 把每个折叠组插回正确位置：按该类第一条出现的位置
+                                                    // 而非参与条目已在上面按原位 push，这里原位塞折叠组会乱序；
+                                                    // 简化：按大类在第一处匹配前插入组（保序做法见 collapse，此处用稳定插入）
+                                                    // 采用与 collapse 一致的稳序：重排，组放到该类第一项处。
+                                                    // 这里改用「按原始顺序遍历，遇某大类第一项时插组，非参与项原样」：
+                                                    const ordered: RenderItem[] = [];
+                                                    const seenGroups = new Set<string>();
+                                                    const matchedCount = new Map<string, number>();
+                                                    for (const p of allPrompts) {
+                                                        if (!participates(p)) { ordered.push({ type: "item", prompt: p }); continue; }
+                                                        const gk = getGroupKeyOf(p);
+                                                        const arr = byGroup.get(gk)!;
+                                                        if (!seenGroups.has(gk)) {
+                                                            seenGroups.add(gk);
+                                                            if (arr.length >= 2) {
+                                                                ordered.push(...makeCollapsedOrExpanded(arr, `g-${gk}`, getGroupLabelOf(gk)));
+                                                            } else {
+                                                                arr.forEach(x => ordered.push({ type: "item", prompt: x }));
                                                             }
                                                         }
-                                                        return result;
+                                                        matchedCount.set(gk, (matchedCount.get(gk) || 0) + 1);
+                                                        // 属于该组的后续条目已被组收纳，跳过（不再单独 push）
                                                     }
-                                                    return allPrompts.map(p => ({ type: "item" as const, prompt: p }));
+                                                    return ordered;
                                                 }
 
-                                                // collapse：收集连续匹配段
+                                                // collapse：相邻折叠 —— 连续同类（同一大类 key）条目折叠成段
                                                 let i = 0;
                                                 let segIdx = 0;
                                                 while (i < allPrompts.length) {
-                                                    if (matchesFilter(allPrompts[i])) {
+                                                    const p = allPrompts[i];
+                                                    const gk = getGroupKeyOf(p);
+                                                    if (participates(p)) {
+                                                        // 收集连续同类段
                                                         const group: Prompt[] = [];
-                                                        while (i < allPrompts.length && matchesFilter(allPrompts[i])) {
-                                                            group.push(allPrompts[i]);
-                                                            i++;
+                                                        let j = i;
+                                                        while (j < allPrompts.length && participates(allPrompts[j]) && getGroupKeyOf(allPrompts[j]) === gk) {
+                                                            group.push(allPrompts[j]);
+                                                            j++;
                                                         }
                                                         if (group.length >= 2) {
-                                                            result.push(...makeCollapsedOrExpanded(group, `${groupKey}-seg${segIdx++}`));
+                                                            result.push(...makeCollapsedOrExpanded(group, `g-${gk}-seg${segIdx++}`, getGroupLabelOf(gk)));
                                                         } else {
-                                                            result.push({ type: "item", prompt: group[0] });
+                                                            result.push({ type: "item", prompt: p });
                                                         }
+                                                        i = j;
                                                     } else {
-                                                        result.push({ type: "item", prompt: allPrompts[i] });
+                                                        result.push({ type: "item", prompt: p });
                                                         i++;
                                                     }
                                                 }
@@ -1313,15 +1353,12 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                             }
 
                                             if (renderItem.type === "collapsed") {
-                                                const groupLabel = appFilterTag === "__universal__"
-                                                    ? "通用"
-                                                    : (tagGroups.find(g => g.tags[0] === appFilterTag)?.label || appFilterTag);
                                                 return [
                                                     <div key={`collapsed-${_flatIndex}`} className="ui-entry-card ui-entry-collapsed-group" data-app-match="1" onClick={() => toggleExpand(renderItem.groupKey)}>
                                                         <div className="flex items-center justify-between cursor-pointer">
                                                             <div className="flex items-center gap-2">
                                                                 <ChevronDown size={16} style={{ transform: "rotate(-90deg)" }} />
-                                                                <span className="text-xs font-bold text-gray-800">{groupLabel}</span>
+                                                                <span className="text-xs font-bold text-gray-800">{renderItem.label}</span>
                                                                 <span className="menu-desc ts-11">· {renderItem.prompts.length} 个条目已折叠</span>
                                                             </div>
                                                             <span className="menu-desc ts-11">点击展开</span>
