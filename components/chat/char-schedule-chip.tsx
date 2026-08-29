@@ -6,6 +6,7 @@
 // 数据源与日历 App 同一套，角色日程在日历里生成后，顶栏会自动同步。
 
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import type { CalendarScheduleItem } from "@/lib/calendar-types";
 import { useCharTodaySchedule } from "./use-char-today-schedule";
 import { formatIsoDate, getWeekdayLabel, parseIsoDate } from "@/lib/calendar-utils";
@@ -49,13 +50,14 @@ export function CharScheduleChip({ contactId, charName }: ChipProps) {
                 <span className="char-schedule-chip-time">{shown.startTime}</span>
             </button>
 
-            {open && (
+            {open && typeof document !== "undefined" && createPortal(
                 <CharScheduleSheet
                     charName={charName}
                     items={items}
                     currentId={current?.id}
                     onClose={() => setOpen(false)}
-                />
+                />,
+                document.body,
             )}
         </>
     );
