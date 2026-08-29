@@ -34,6 +34,18 @@ function getPromptTags(p: Prompt): string[] {
     return getScopedPromptTags(p);
 }
 
+/** 条目是否命中选中的 App 大类集合（多选；空集合视为未筛选，全部命中）。 */
+function matchesSelectedAppTags(p: Prompt, tags: Set<string>): boolean {
+    if (!tags || tags.size === 0) return true;
+    const pt = getPromptTags(p);
+    if (tags.has("__universal__") && pt.length === 0) return true;
+    for (const t of tags) {
+        if (t === "__universal__") continue;
+        if (pt.includes(t)) return true;
+    }
+    return false;
+}
+
 function getPromptTagGroup(p: Prompt, tagGroups = CONTENT_SCOPE_TAG_GROUPS) {
     const tags = getPromptTags(p);
     return findTagGroupForTags(tagGroups, tags) ?? tagGroups[0];
@@ -162,8 +174,17 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
     // ── 按 App 筛选（高亮/仅显示/仅折叠/同类折叠） ──
     const [appFilterOpen, setAppFilterOpen] = useState(false);
     const [appFilterMode, setAppFilterMode] = useState<"highlight" | "only-show" | "collapse" | "group-collapse">("highlight");
-    const [appFilterTag, setAppFilterTag] = useState<string>(""); // 选中的大类 tag（如 "chat"）
+    const [appFilterTags, setAppFilterTags] = useState<Set<string>>(new Set()); // 选中的大类 tag 集合（可多选）
     const [expandedCollapseGroups, setExpandedCollapseGroups] = useState<Set<string>>(new Set()); // 已展开的折叠组 key
+
+    const toggleFilterTag = useCallback((tag: string) => {
+        setAppFilterTags(prev => {
+            const next = new Set(prev);
+            if (next.has(tag)) next.delete(tag);
+            else next.add(tag);
+            return next;
+        });
+    }, []);
 
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -1164,33 +1185,13 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                             <button
                                                 type="button"
                                                 onClick={() => setAppFilterOpen(true)}
-                                                className={`inline-flex h-8 items-center justify-center gap-1 rounded-full border px-3 text-xs font-bold shadow-sm transition-all active:scale-95 ${appFilterTag ? "border-[var(--c-icon-active)] bg-[var(--c-icon-active)] text-white" : "border-black/10 bg-white text-gray-800 hover:bg-gray-50"}`}
+                                                className={`inline-flex h-8 items-center justify-center gap-1 rounded-full border px-3 text-xs font-bold shadow-sm transition-all active:scale-95 ${appFilterTags.size > 0 || appFilterMode !== "highlight" ? "border-[var(--c-icon-active)] bg-[var(--c-icon-active)] text-white" : "border-black/10 bg-white text-gray-800 hover:bg-gray-50"}`}
                                             >
                                                 <Filter size={14} strokeWidth={1.8} />
-                                                <span>按 App{appFilterTag ? " · 已选" : ""}</span>
+                                                <span>按 App{appFilterTags.size > 0 ? ` · ${appFilterTags.size} 个` : ""}</span>
                                             </button>
                                         </div>
-                                        {selectMode ? (
-                                            <div className="flex items-center gap-2">
-                                                <span className="menu-desc ts-12">已选 {selectedIds.size} 项</span>
-                                                <button
-                                                    type="button"
-                                                    onClick={selectAllPrompts}
-                                                    className="inline-flex h-8 items-center justify-center gap-1 rounded-full border border-black/10 bg-white px-3 text-xs font-bold text-gray-800 shadow-sm transition-all hover:bg-gray-50 active:scale-95"
-                                                >
-                                                    <CheckSquare size={14} strokeWidth={1.8} />
-                                                    <span>全选</span>
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={exitSelectMode}
-                                                    className="inline-flex h-8 items-center justify-center gap-1 rounded-full bg-black px-3 text-xs font-bold text-white shadow-sm transition-all hover:bg-gray-800 active:scale-95"
-                                                >
-                                                    <Check size={14} strokeWidth={2} />
-                                                    <span>完成</span>
-                                                </button>
-                                            </div>
-                                        ) : (
+                                        {!selectMode && (
                                             <button
                                                 type="button"
                                                 onClick={enterSelectMode}
@@ -1202,6 +1203,40 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                         )}
                                     </div>
 
+                                    {selectMode && (
+                                        <div className="multi-select-float-bar">
+                                            <div className="msfb-main">
+                                                <span className="msfb-count">已选 {selectedIds.size} 项</span>
+                                                <button type="button" className="msfb-btn" onClick={selectAllPrompts}>
+                                                    <CheckSquare size={15} strokeWidth={1.8} />
+                                                    <span>全选</span>
+                                                </button>
+                                                <button type="button" className="msfb-btn" onClick={() => bulkSetEnabled(true)} disabled={selectedIds.size === 0}>
+                                                    <Check size={15} strokeWidth={2} />
+                                                    <span>启用</span>
+                                                </button>
+                                                <button type="button" className="msfb-btn" onClick={() => bulkSetEnabled(false)} disabled={selectedIds.size === 0}>
+                                                    <RotateCcw size={15} strokeWidth={1.8} />
+                                                    <span>禁用</span>
+                                                </button>
+                                                <button type="button" className="msfb-btn" onClick={() => bulkExportSelected()} disabled={selectedIds.size === 0}>
+                                                    <Download size={15} strokeWidth={1.8} />
+                                                    <span>导出</span>
+                                                </button>
+                                                <button type="button" className="msfb-btn msfb-danger" onClick={() => setConfirmDeleteSelected(true)} disabled={selectedIds.size === 0}>
+                                                    <Trash2 size={15} strokeWidth={1.8} />
+                                                    <span>删除</span>
+                                                </button>
+                                            </div>
+                                            <div className="msfb-actions">
+                                                <button type="button" className="msfb-btn msfb-done" onClick={exitSelectMode}>
+                                                    <Check size={15} strokeWidth={2} />
+                                                    <span>完成</span>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+
                                     <div ref={promptListRef} className="flex flex-col gap-2"
                                         onTouchMove={onPromptTouchMove}
                                         onTouchEnd={onPromptTouchEnd}
@@ -1211,16 +1246,12 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                             // 按 prompt_order + 孤儿构建唯一列表（identifier 去重，避免重复条目/索引错位/拖错条目）
                                             const allPrompts = buildDisplayedPrompts(preset);
 
-                                            // ── 按 App 大类筛选 ──
-                                            const filterTag = appFilterTag || null;
-                                            const matchesFilter = (p: Prompt) => {
-                                                if (!filterTag) return true;
-                                                const pt = getPromptTags(p);
-                                                if (filterTag === "__universal__") return pt.length === 0;
-                                                return pt.includes(filterTag);
-                                            };
+                                            // ── 按 App 大类筛选（可多选） ──
+                                            const filterTags = appFilterTags;
+                                            const matchesFilter = (p: Prompt) => matchesSelectedAppTags(p, filterTags);
+                                            const hasFilter = filterTags.size > 0;
 
-                                            if (appFilterMode === "only-show" && filterTag) {
+                                            if (appFilterMode === "only-show" && hasFilter) {
                                                 return allPrompts.filter(matchesFilter).map(p => ({ type: "item" as const, prompt: p }));
                                             }
 
@@ -1256,7 +1287,7 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                 };
 
                                                 // 是否参与本次折叠：选了 App 只看该 App；未选 App 全部参与（按各自大类）
-                                                const participates = (p: Prompt): boolean => !filterTag || matchesFilter(p);
+                                                const participates = (p: Prompt): boolean => !hasFilter || matchesFilter(p);
 
                                                 if (appFilterMode === "group-collapse") {
                                                     // 整组折叠：按大类把所有参与条目收进各自的折叠组
@@ -1449,11 +1480,9 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                     data-selected={selectMode && selectedIds.has(prompt.identifier) ? "true" : undefined}
                                                     data-disabled={!effectiveEnabled}
                                                     data-app-match={(() => {
-                                                        if (!appFilterTag) return undefined;
+                                                        if (appFilterTags.size === 0) return undefined;
                                                         if (appFilterMode === "only-show") return undefined;
-                                                        const pt = getPromptTags(prompt);
-                                                        const m = appFilterTag === "__universal__" ? pt.length === 0 : pt.includes(appFilterTag);
-                                                        return m ? "1" : "0";
+                                                        return matchesSelectedAppTags(prompt, appFilterTags) ? "1" : "0";
                                                     })()}
                                                     style={{
                                                         gap: isEditing ? "12px" : "0px",
@@ -1756,57 +1785,14 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                         )}
                                     </div>
 
-                                    {selectMode ? (
-                                        <div className="flex flex-col gap-2">
-                                            <div className="grid grid-cols-3 gap-2">
-                                                <button
-                                                    type="button"
-                                                    onClick={() => bulkSetEnabled(true)}
-                                                    disabled={selectedIds.size === 0}
-                                                    className="inline-flex h-10 items-center justify-center gap-1.5 rounded-[20px] border border-black/10 bg-white px-2 text-xs font-bold text-gray-800 shadow-sm transition-all hover:bg-gray-50 hover:shadow-md active:scale-95 focus:outline-none disabled:opacity-40"
-                                                >
-                                                    <Check size={15} strokeWidth={2} />
-                                                    启用
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => bulkSetEnabled(false)}
-                                                    disabled={selectedIds.size === 0}
-                                                    className="inline-flex h-10 items-center justify-center gap-1.5 rounded-[20px] border border-black/10 bg-white px-2 text-xs font-bold text-gray-800 shadow-sm transition-all hover:bg-gray-50 hover:shadow-md active:scale-95 focus:outline-none disabled:opacity-40"
-                                                >
-                                                    <RotateCcw size={15} strokeWidth={1.8} />
-                                                    禁用
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => bulkExportSelected()}
-                                                    disabled={selectedIds.size === 0}
-                                                    className="inline-flex h-10 items-center justify-center gap-1.5 rounded-[20px] border border-black/10 bg-white px-2 text-xs font-bold text-gray-800 shadow-sm transition-all hover:bg-gray-50 hover:shadow-md active:scale-95 focus:outline-none disabled:opacity-40"
-                                                >
-                                                    <Download size={15} strokeWidth={1.8} />
-                                                    导出
-                                                </button>
-                                            </div>
-                                            <button
-                                                type="button"
-                                                onClick={() => setConfirmDeleteSelected(true)}
-                                                disabled={selectedIds.size === 0}
-                                                className="inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-[20px] border border-black/10 bg-white px-4 text-xs font-bold text-[var(--c-danger)] shadow-sm transition-all hover:bg-gray-50 hover:shadow-md active:scale-95 focus:outline-none disabled:opacity-40"
-                                            >
-                                                <Trash2 size={15} strokeWidth={1.8} />
-                                                删除已选（{selectedIds.size}）
-                                            </button>
-                                        </div>
-                                    ) : (
-                                        <button
-                                            type="button"
-                                            onClick={() => setAddEntryMenuOpen(true)}
-                                            className="inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-[20px] bg-black px-4 text-xs font-bold text-white shadow-sm transition-all hover:bg-gray-800 hover:shadow-md active:scale-95 focus:outline-none"
-                                        >
-                                            <Plus size={15} strokeWidth={1.8} />
-                                            添加条目
-                                        </button>
-                                    )}
+                                    <button
+                                        type="button"
+                                        onClick={() => setAddEntryMenuOpen(true)}
+                                        className="inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-[20px] bg-black px-4 text-xs font-bold text-white shadow-sm transition-all hover:bg-gray-800 hover:shadow-md active:scale-95 focus:outline-none"
+                                    >
+                                        <Plus size={15} strokeWidth={1.8} />
+                                        添加条目
+                                    </button>
                                 </div>
                             </div>
                         )
@@ -1991,18 +1977,18 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                 return (
                     <BottomSheet title="按 App 筛选条目" onClose={() => setAppFilterOpen(false)}>
                         <div className="flex flex-col gap-4">
-                            {/* 选择 App 大类（不细分 minor / 起效范围） */}
+                            {/* 选择 App 大类（可多选，不细分 minor / 起效范围） */}
                             <div>
-                                <div className="menu-label ts-12 mb-2">选择 App</div>
+                                <div className="menu-label ts-12 mb-2">选择 App{appFilterTags.size > 0 ? `（已选 ${appFilterTags.size} 个）` : "（可多选）"}</div>
                                 <div className="flex flex-wrap gap-2">
                                     {tagGroups.map(g => {
                                         const tag = g.tags.length > 0 ? g.tags[0] : "__universal__";
-                                        const selected = appFilterTag === tag;
+                                        const selected = appFilterTags.has(tag);
                                         return (
                                             <button
                                                 key={g.id}
                                                 type="button"
-                                                onClick={() => setAppFilterTag(selected ? "" : tag)}
+                                                onClick={() => toggleFilterTag(tag)}
                                                 className={`inline-flex items-center justify-center gap-1 rounded-full border px-3 py-1.5 text-xs font-bold transition-all active:scale-95 ${selected ? "border-[var(--c-icon-active)] bg-[var(--c-icon-active)] text-white" : "border-black/10 bg-white text-gray-800 hover:bg-gray-50"}`}
                                             >
                                                 {g.label}
@@ -2012,37 +1998,48 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                 </div>
                             </div>
 
-                            {/* 选择模式 */}
+                            {/* 选择模式（再次点击折叠模式可退出） */}
                             <div>
                                 <div className="menu-label ts-12 mb-2">操作模式</div>
                                 <div className="flex flex-col gap-2">
                                     {([
                                         { id: "highlight", label: "高亮显示", desc: "匹配条目高亮，其它变暗" },
                                         { id: "only-show", label: "仅显示", desc: "只显示匹配条目，隐藏其它" },
-                                        { id: "collapse", label: "仅折叠", desc: "相邻同类条目折叠为摘要，可点击展开/收起" },
-                                        { id: "group-collapse", label: "同类折叠", desc: "所有同类条目折叠成一组（不管分散在哪），可点击展开/收起" },
-                                    ] as const).map(opt => (
-                                        <button
-                                            key={opt.id}
-                                            type="button"
-                                            onClick={() => setAppFilterMode(opt.id)}
-                                            className={`flex items-center justify-between rounded-xl border px-4 py-3 text-left transition-all active:scale-[0.98] ${appFilterMode === opt.id ? "border-[var(--c-icon-active)] bg-[var(--c-icon-active)]/5" : "border-black/10 bg-white hover:bg-gray-50"}`}
-                                        >
-                                            <div className="flex flex-col gap-0.5">
-                                                <span className="text-xs font-bold text-gray-800">{opt.label}</span>
-                                                <span className="menu-desc ts-11">{opt.desc}</span>
-                                            </div>
-                                            <div className={`h-4 w-4 rounded-full border-2 ${appFilterMode === opt.id ? "border-[var(--c-icon-active)] bg-[var(--c-icon-active)]" : "border-gray-300"}`} />
-                                        </button>
-                                    ))}
+                                        { id: "collapse", label: "仅折叠", desc: "相邻同类条目折叠为摘要，可点击展开/收起；再次点击退出折叠" },
+                                        { id: "group-collapse", label: "同类折叠", desc: "所有同类条目折叠成一组（不管分散在哪）；再次点击退出折叠" },
+                                    ] as const).map(opt => {
+                                        const isActive = appFilterMode === opt.id;
+                                        return (
+                                            <button
+                                                key={opt.id}
+                                                type="button"
+                                                onClick={() => {
+                                                    if (isActive && (opt.id === "collapse" || opt.id === "group-collapse")) {
+                                                        // 再次点击折叠模式 → 退出折叠（回到高亮，保留 App 选中用于高亮/仅显示）
+                                                        setAppFilterMode("highlight");
+                                                        setExpandedCollapseGroups(new Set());
+                                                    } else {
+                                                        setAppFilterMode(opt.id);
+                                                    }
+                                                }}
+                                                className={`flex items-center justify-between rounded-xl border px-4 py-3 text-left transition-all active:scale-[0.98] ${isActive ? "border-[var(--c-icon-active)] bg-[var(--c-icon-active)]/5" : "border-black/10 bg-white hover:bg-gray-50"}`}
+                                            >
+                                                <div className="flex flex-col gap-0.5">
+                                                    <span className="text-xs font-bold text-gray-800">{opt.label}</span>
+                                                    <span className="menu-desc ts-11">{opt.desc}</span>
+                                                </div>
+                                                <div className={`h-4 w-4 rounded-full border-2 ${isActive ? "border-[var(--c-icon-active)] bg-[var(--c-icon-active)]" : "border-gray-300"}`} />
+                                            </button>
+                                        );
+                                    })}
                                 </div>
                             </div>
 
                             {/* 清除按钮 */}
-                            {appFilterTag && (
+                            {(appFilterTags.size > 0 || appFilterMode !== "highlight") && (
                                 <button
                                     type="button"
-                                    onClick={() => { setAppFilterTag(""); setAppFilterMode("highlight"); setExpandedCollapseGroups(new Set()); }}
+                                    onClick={() => { setAppFilterTags(new Set()); setAppFilterMode("highlight"); setExpandedCollapseGroups(new Set()); }}
                                     className="ui-btn w-full"
                                 >
                                     清除筛选
