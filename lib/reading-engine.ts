@@ -195,41 +195,15 @@ function formatAnnotationActionContext(annotations: ReadingAnnotation[]): string
 }
 
 // ── 共读讨论：批注操作解析 ──
-// 兼容 char 把【新增/删除/修改批注】动作行放在回复任意位置（不只在末尾），
-// 并容忍格式微偏（全角空格、= 两边空格、全角＝），避免动作行漏解析后原样
-// 显示在讨论页正文里（用户反馈的"掉格式、全跑到讨论页"问题）。
+// 兼容 char 把【新增/删除/修改批注】动作块放在回复任意位置、甚至与正文
+// 挤在同一行（不换行），并容忍格式微偏（全角空格、= 两边空格、全角＝），
+// 避免动作块漏解析后原样显示在讨论页正文里（"掉格式、全跑到讨论页"问题）。
 
-const ACTION_ADD_RE = /^【\s*新增批注\s*段落\s*[=＝]\s*(\d+)\s*】([\s\S]*)$/;
-const ACTION_DEL_RE = /^【\s*删除批注\s*ID\s*[=＝]\s*([^\s】]+)\s*】/;
-const ACTION_UPD_RE = /^【\s*修改批注\s*ID\s*[=＝]\s*([^\s】]+)\s*】([\s\S]*)$/;
-
-function isDiscussActionLine(line: string): boolean {
-    return ACTION_ADD_RE.test(line) || ACTION_DEL_RE.test(line) || ACTION_UPD_RE.test(line);
-}
-
-function parseDiscussActionLine(line: string): ReadingDiscussAction | null {
-    let m = line.match(ACTION_ADD_RE);
-    if (m) {
-        const paragraphIndex = Number(m[1]) - 1;
-        const content = m[2].trim();
-        if (Number.isInteger(paragraphIndex) && paragraphIndex >= 0 && content) {
-            return { type: "add_annotation", paragraphIndex, content };
-        }
-        return null;
-    }
-    m = line.match(ACTION_DEL_RE);
-    if (m) {
-        return { type: "delete_annotation", annotationId: m[1] };
-    }
-    m = line.match(ACTION_UPD_RE);
-    if (m) {
-        const content = m[2].trim();
-        if (content) {
-            return { type: "update_annotation", annotationId: m[1], content };
-        }
-    }
-    return null;
-}
+// 全文正则：不依赖行首 ^，直接在全文里搜 【...】 动作块。
+// 新增/修改的内容延伸到下一个 【 或行尾（取最短匹配，避免吞掉后续正文）。
+const ACTION_ADD_GLOBAL_RE = /【\s*新增批注\s*段落\s*[=＝]\s*(\d+)\s*】([^【\n]*(?:\n[^【\n]*)*)/g;
+const ACTION_DEL_GLOBAL_RE = /【\s*删除批注\s*ID\s*[=＝]\s*([^\s】]+)\s*】/g;
+const ACTION_UPD_GLOBAL_RE = /【\s*修改批注\s*ID\s*[=＝]\s*([^\s】]+)\s*】([^【\n]*(?:\n[^【\n]*)*)/g;
 
 export function parseReadingDiscussResponse(raw: string): {
     reply: string;
@@ -238,24 +212,43 @@ export function parseReadingDiscussResponse(raw: string): {
     const normalized = raw.replace(/\r\n/g, "\n").trimEnd();
     if (!normalized) return { reply: "", actions: [] };
 
-    const lines = normalized.split("\n");
     const actions: ReadingDiscussAction[] = [];
-    const replyLines: string[] = [];
+    const spans: Array<[number, number]> = []; // 要从 reply 中删除的 [start, end)
 
-    // 全文扫描：逐行检查是否为动作行。是 → 提取为 action、不进 reply；
-    // 不是 → 留在 reply。无论 char 把动作放末尾还是穿插在正文中，都能被
-    // 正确提取执行，且不会原样泄漏到讨论页显示。
-    for (const line of lines) {
-        const trimmed = line.trim();
-        if (isDiscussActionLine(trimmed)) {
-            const action = parseDiscussActionLine(trimmed);
-            if (action) actions.push(action);
-            continue;
+    // 新增批注
+    for (const m of normalized.matchAll(ACTION_ADD_GLOBAL_RE)) {
+        const paragraphIndex = Number(m[1]) - 1;
+        const content = (m[2] || "").trim();
+        if (Number.isInteger(paragraphIndex) && paragraphIndex >= 0 && content) {
+            actions.push({ type: "add_annotation", paragraphIndex, content });
         }
-        replyLines.push(line);
+        if (m.index !== undefined) spans.push([m.index, m.index + m[0].length]);
+    }
+    // 删除批注
+    for (const m of normalized.matchAll(ACTION_DEL_GLOBAL_RE)) {
+        actions.push({ type: "delete_annotation", annotationId: m[1] });
+        if (m.index !== undefined) spans.push([m.index, m.index + m[0].length]);
+    }
+    // 修改批注
+    for (const m of normalized.matchAll(ACTION_UPD_GLOBAL_RE)) {
+        const content = (m[2] || "").trim();
+        if (content) {
+            actions.push({ type: "update_annotation", annotationId: m[1], content });
+        }
+        if (m.index !== undefined) spans.push([m.index, m.index + m[0].length]);
     }
 
-    const reply = replyLines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    // 从全文中删除所有动作块，剩下的就是正文 reply
+    spans.sort((a, b) => a[0] - b[0]);
+    let reply = "";
+    let cursor = 0;
+    for (const [start, end] of spans) {
+        reply += normalized.slice(cursor, start);
+        cursor = end;
+    }
+    reply += normalized.slice(cursor);
+    reply = reply.replace(/\n{3,}/g, "\n\n").trim();
+
     return { reply, actions };
 }
 
