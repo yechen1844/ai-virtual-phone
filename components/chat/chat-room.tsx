@@ -1685,7 +1685,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
 
     const availableShoppingGifts = useMemo(
         () => loadDeliveredShoppingGifts(),
-        [messages],
+        // 只随会话变化重新读，不在每条消息变化时都读一次 IDB（性能优化）
+        [session?.id],
     );
 
     useEffect(() => {
@@ -2723,6 +2724,22 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                 return null;
             });
     };
+
+    // ── 稳定的消息项回调（useCallback，避免每帧新引用打穿 MessageBubble 的 React.memo，导致全列表重渲）──
+    const handleUpdateMessage = useCallback((updated: ChatMessage) => {
+        setMessages(prev => prev.map(m => (m.id === updated.id ? updated : m)));
+    }, []);
+    const handleSystemMessage = useCallback((text: string) => {
+        const sysMsg = pushChatMessage({
+            sessionId: session?.id || "",
+            role: "system",
+            content: text,
+        });
+        setMessages(prev => [...prev, sysMsg]);
+    }, [session?.id]);
+    const handleActionSelect = useCallback((text: string) => {
+        chatTextInputRef.current?.appendText(text);
+    }, []);
 
     // ── Music Card Click-to-Play ──
     const handleMusicCardPlay = async (title: string, artist?: string) => {
@@ -5972,17 +5989,10 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                                                 groupSize={session.isGroup ? (session.participantIds?.length || 0) + (session.isSpectator ? 0 : 1) : undefined}
                                                 onShowDetail={setMediaDetailMsg}
                                                 characterId={msg.senderCharacterId || session.contactId}
-                                                onUpdate={(updated) => setMessages(prev => prev.map(m => m.id === updated.id ? updated : m))}
-                                                onSystemMessage={(text) => {
-                                                    const sysMsg = pushChatMessage({
-                                                        sessionId: session.id,
-                                                        role: "system",
-                                                        content: text,
-                                                    });
-                                                    setMessages(prev => [...prev, sysMsg]);
-                                                }}
+                                                onUpdate={handleUpdateMessage}
+                                                onSystemMessage={handleSystemMessage}
                                                 onMusicPlay={handleMusicCardPlay}
-                                                onActionSelect={(text) => chatTextInputRef.current?.appendText(text)}
+                                                onActionSelect={handleActionSelect}
                                                 defaultTranslationExpanded={session.collapseBilingualTranslation !== false ? false : true}
                                             />
                                         </div>

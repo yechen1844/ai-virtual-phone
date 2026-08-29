@@ -33,6 +33,15 @@ const KV_BACKEND = "http://localhost:7869";
 type CharOption = { id: string; name: string };
 type LogEntry = { ts: string; text: string; ok: boolean };
 
+// 判断消息列表是否真正变化（长度 + 末尾消息），避免每 2s 轮询都全量重载/重渲
+function chatMessagesEqual(a: ChatMessage[], b: ChatMessage[]): boolean {
+    if (a.length !== b.length) return false;
+    if (a.length === 0) return true;
+    const la = a[a.length - 1];
+    const lb = b[b.length - 1];
+    return la.id === lb.id && la.content === lb.content && la.createdAt === lb.createdAt;
+}
+
 export function PhoneStardewApp({ onClose, onNotice }: { onClose: () => void; onNotice?: (msg: string) => void }) {
     const [page, setPage] = useState<StardewPage>("settings");
     const [chars, setChars] = useState<CharOption[]>([]);
@@ -246,6 +255,7 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
     const [replying, setReplying] = useState(false);
     const wrapperRef = useRef<HTMLDivElement | null>(null);
     const scrollRef = useRef<HTMLDivElement | null>(null);
+    const messagesRef = useRef<ChatMessage[]>([]);
     const textareaRef = useRef<HTMLTextAreaElement | null>(null);
     const sessionRef = useRef<ChatSession | null>(null);
 
@@ -258,10 +268,17 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
         try {
             const session = getOrCreateStardewSession(charId);
             sessionRef.current = session;
-            setMessages(loadChatMessages(session.id));
+            const initMsgs = loadChatMessages(session.id);
+            messagesRef.current = initMsgs;
+            setMessages(initMsgs);
             const handler = () => {
             if (cancelled) return;
-            setMessages(loadChatMessages(session.id));
+            // 只在消息真正变化时才 setMessages，避免每 2s 全量重载/重渲整表
+            const next = loadChatMessages(session.id);
+            if (!chatMessagesEqual(messagesRef.current, next)) {
+                messagesRef.current = next;
+                setMessages(next);
+            }
             setIsThinking(isStardewGenerating());
             setReasoning(getStardewReasoning());
         };

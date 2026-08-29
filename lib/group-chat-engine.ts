@@ -70,7 +70,7 @@ import { formatCoreMemories, formatLongTermMemories } from "./memory-injector";
 import { recordCharacterActivity } from "./complex-memory/guard";
 import { isComplexMemoryEnabled } from "./complex-memory/config";
 import { buildMemoryContextBundle } from "./complex-memory/recall";
-import { prepareShortTermContext, prepareGroupShortTermContext } from "./short-term-assembler";
+import { prepareShortTermContext, prepareGroupShortTermContext, applyTranslationFeedMode } from "./short-term-assembler";
 import { parseActionTags, dispatchActions } from "./action-parser";
 import { getCustomStickerExample, loadCustomStickers } from "./custom-sticker-storage";
 import { formatCustomAppChatDirectivesForPrompt } from "./custom-app-chat-directives";
@@ -412,8 +412,15 @@ async function buildGroupChatPromptMessages(
         includeNativeToolHistory: usesNativeActions,
         promptTimestampOptions: groupPromptTimestampOptions,
     });
+    // 输入端双语文案裁剪（群聊）：按会话 translationFeedMode，只裁剪角色/助手消息；user 消息不裁剪。
+    const gTranslationFeedMode = session.translationFeedMode;
+    const trimGroupFeedContent = (msg: any): string => {
+        if (!gTranslationFeedMode || gTranslationFeedMode === "both") return msg.content;
+        if (msg.role === "user") return msg.content;
+        return applyTranslationFeedMode(msg.content, gTranslationFeedMode);
+    };
     const promptHistory = applyVisionImagePromptLimit(
-        truncatedAnnotatedHistory.map(msg => ({ ...msg })),
+        truncatedAnnotatedHistory.map(msg => ({ ...msg, content: trimGroupFeedContent(msg) })),
         session.visionImagePromptLimit,
     );
     if (config.enableImageRecognition) {
