@@ -162,6 +162,19 @@
   display: none !important;
 }
 
+/* 移动端键盘开合：主界面/聊天/设置等整屏毛玻璃 blur 层会随视口变化整层重合成 → 黑屏。
+   键盘动画期间（data-glass-busy=1）统一降到零滤镜 static，避免整层重合成导致黑屏/卡顿；
+   blur 在 ~370ms 后随 data-glass-busy 移除而恢复。与桌面拖动同机制，行为不变。 */
+.phone-shell[data-glass-busy="1"] .app-open-shell,
+.phone-shell[data-glass-busy="1"] .chat-room-root,
+.phone-shell[data-glass-busy="1"] .stardew-chat-room,
+.phone-shell[data-glass-busy="1"] .settings-panel,
+.phone-shell[data-glass-busy="1"] [data-ui="input"] {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  filter: none !important;
+}
+
 .phone-shell[data-widget-effect="transparent"] .widget-glass > div:not(.wg-ios-menu) {
   /* background: transparent !important; */
   box-shadow: none !important;

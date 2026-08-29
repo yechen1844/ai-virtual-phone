@@ -3340,6 +3340,32 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
     }, 360);
   }
 
+  // 移动端键盘开合：整屏毛玻璃 blur 层会随 visualViewport 变化整层重组装 → 黑屏。
+  // 复用 suspendGlass 机制：键盘动画期间临时关 blur（静态雾面顶住），370ms 后恢复，
+  // 行为与桌面拖动一致，只解决黑屏/卡顿，不影响外观。
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mobileMq = window.matchMedia("(max-width: 600px) and (hover: none) and (pointer: coarse)");
+    if (!mobileMq.matches) return;
+    const viewport = window.visualViewport;
+    let lastInset = -1;
+    const onViewport = () => {
+      if (!viewport) return;
+      const inset = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
+      if (viewport.offsetTop !== lastInset || Math.abs(inset - lastInset) > 4) {
+        lastInset = viewport.offsetTop;
+        suspendGlass();
+      }
+    };
+    viewport?.addEventListener("resize", onViewport);
+    viewport?.addEventListener("scroll", onViewport);
+    return () => {
+      viewport?.removeEventListener("resize", onViewport);
+      viewport?.removeEventListener("scroll", onViewport);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function handleWidgetsChange(next: WidgetInstance[]): void {
     suspendGlass();
     const currentLayout = layoutRef.current;
