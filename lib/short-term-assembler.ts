@@ -157,7 +157,7 @@ function formatDiaryEntryForTimeline(entry: DiaryEntry, timeAware: boolean, time
  * both=双语原样（默认）；originalOnly=只喂原文；translatedOnly=只喂译文（中文）。
  * 仅处理 `原文|译文` 格式的双语文本；非双语/无法拆分时原样返回。
  */
-function applyTranslationFeedMode(content: string, mode?: "both" | "originalOnly" | "translatedOnly"): string {
+export function applyTranslationFeedMode(content: string, mode?: "both" | "originalOnly" | "translatedOnly"): string {
     if (!mode || mode === "both") return content;
     const split = splitBilingualText(content);
     if (!split) return content;

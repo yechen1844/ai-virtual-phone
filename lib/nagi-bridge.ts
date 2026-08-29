@@ -236,12 +236,15 @@ function isStardewSession(s: { id?: string }): boolean {
 
 export function getOrCreateStardewSession(characterId: string) {
   const sessions = loadChatSessions();
-  const existing = sessions.find((s) => s.contactId === characterId && isStardewSession(s));
+  // 用独立 contactId（stardew:角色id），避免与普通私聊（contactId=角色id）在按 contactId 去重时被合并，
+  // 从而导致提示词查看器/会话列表看不到星露谷会话。
+  const stardewContactId = `stardew:${characterId}`;
+  const existing = sessions.find((s) => s.contactId === stardewContactId && isStardewSession(s));
   if (existing) return existing;
 
   const newSession: any = {
     id: `${STARDEW_SESSION_PREFIX}${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-    contactId: characterId,
+    contactId: stardewContactId,
     unreadCount: 0,
     updatedAt: new Date().toISOString(),
     isPinned: false,

@@ -60,7 +60,7 @@ import { formatCoreMemories, formatLongTermMemories } from "./memory-injector";
 import { recordCharacterActivity } from "./complex-memory/guard";
 import { isComplexMemoryEnabled } from "./complex-memory/config";
 import { buildMemoryContextBundle } from "./complex-memory/recall";
-import { prepareShortTermContext } from "./short-term-assembler";
+import { prepareShortTermContext, applyTranslationFeedMode } from "./short-term-assembler";
 import { parseActionTags, dispatchActions } from "./action-parser";
 import { findEnabledToolForSchema, getEnabledTools, type EnabledTool } from "./tool-storage";
 import { formatToolsForPrompt, formatToolSchema } from "./tool-prompt";
@@ -1841,8 +1841,15 @@ export async function buildChatPromptMessages(
         excludeOfflineSessionId: options?.excludeOfflineSessionId,
         promptTimestampOptions,
     });
+    // 输入端双语文案裁剪：按会话 translationFeedMode，喂给模型的历史消息只保留原文/或只剩译文，
+    // 避免模型吃到多余的 原文|译文 双语内容（输出侧仍保持双语，此处只影响输入）。
+    const translationFeedMode = session.translationFeedMode;
+    const trimFeedContent = (content: string): string => {
+        if (!content || !translationFeedMode || translationFeedMode === "both") return content;
+        return applyTranslationFeedMode(content, translationFeedMode);
+    };
     const promptHistory = applyVisionImagePromptLimit(
-        truncatedHistory.map(msg => ({ ...msg })),
+        truncatedHistory.map(msg => ({ ...msg, content: trimFeedContent(msg.content) })),
         session.visionImagePromptLimit,
     );
 

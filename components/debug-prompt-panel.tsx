@@ -186,6 +186,12 @@ export function DebugPromptPanel() {
                     label: `群聊 · ${session.groupName || fallbackName || "未命名群聊"}`,
                 };
             }
+            // 星露谷会话单独显示成「星露谷 · 角色名」，与普通私聊区分
+            if (session.id?.startsWith("sess_stardew_")) {
+                const charId = (session.contactId || "").replace(/^stardew:/, "");
+                const charLabel = charNameById.get(charId) || "角色";
+                return { session, label: `星露谷 · ${charLabel}` };
+            }
             return {
                 session,
                 label: charNameById.get(session.contactId) || session.alias || session.contactId,
