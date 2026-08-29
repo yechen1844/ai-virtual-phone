@@ -164,6 +164,17 @@ export function useKeyboardDismissAutoSend(
             frame = requestAnimationFrame(measure);
         };
 
+        // 视口（键盘开合）重测量做尾随节流：键盘动画会连续触发多次 visualViewport resize，
+        // 逐帧重测量刷新状态会放大卡顿/黑屏。等动画稳定后再统一判断一次。
+        let viewportTimer = 0;
+        const requestViewportMeasure = () => {
+            if (viewportTimer) clearTimeout(viewportTimer);
+            viewportTimer = window.setTimeout(() => {
+                viewportTimer = 0;
+                requestMeasure();
+            }, 120);
+        };
+
         const handleFocusIn = (event: FocusEvent) => {
             const target = event.target;
             if (target instanceof HTMLElement
@@ -181,18 +192,19 @@ export function useKeyboardDismissAutoSend(
         };
         const handleFocusOut = () => requestMeasure();
 
-        viewport?.addEventListener("resize", requestMeasure);
-        viewport?.addEventListener("scroll", requestMeasure);
-        window.addEventListener("resize", requestMeasure);
+        viewport?.addEventListener("resize", requestViewportMeasure);
+        viewport?.addEventListener("scroll", requestViewportMeasure);
+        window.addEventListener("resize", requestViewportMeasure);
         document.addEventListener("focusin", handleFocusIn);
         document.addEventListener("focusout", handleFocusOut);
         requestMeasure();
 
         return () => {
             if (frame) cancelAnimationFrame(frame);
-            viewport?.removeEventListener("resize", requestMeasure);
-            viewport?.removeEventListener("scroll", requestMeasure);
-            window.removeEventListener("resize", requestMeasure);
+            if (viewportTimer) clearTimeout(viewportTimer);
+            viewport?.removeEventListener("resize", requestViewportMeasure);
+            viewport?.removeEventListener("scroll", requestViewportMeasure);
+            window.removeEventListener("resize", requestViewportMeasure);
             document.removeEventListener("focusin", handleFocusIn);
             document.removeEventListener("focusout", handleFocusOut);
         };

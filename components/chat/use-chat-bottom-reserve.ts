@@ -27,6 +27,7 @@ export function useChatBottomReserve<TWrapper extends HTMLElement, TScroll exten
         let frame = 0;
         let bottomScrollFrame = 0;
         let observer: ResizeObserver | null = null;
+        let viewportTimer = 0;
 
         const scheduleStickToBottom = () => {
             if (bottomScrollFrame) window.cancelAnimationFrame(bottomScrollFrame);
@@ -65,6 +66,16 @@ export function useChatBottomReserve<TWrapper extends HTMLElement, TScroll exten
             frame = window.requestAnimationFrame(measure);
         };
 
+        // 视口（键盘开合）重测量做尾随节流：键盘动画会连续触发多次 visualViewport resize，
+        // 逐帧重测量会让大消息区在每帧重排导致黑屏/卡顿。等动画稳定后一次性重排到位。
+        const requestViewportMeasure = () => {
+            if (viewportTimer) window.clearTimeout(viewportTimer);
+            viewportTimer = window.setTimeout(() => {
+                viewportTimer = 0;
+                requestMeasure();
+            }, 120);
+        };
+
         const overlay = findBottomOverlay(wrapper);
         if (overlay && typeof ResizeObserver !== "undefined") {
             observer = new ResizeObserver(requestMeasure);
@@ -72,17 +83,18 @@ export function useChatBottomReserve<TWrapper extends HTMLElement, TScroll exten
         }
 
         measure();
-        window.addEventListener("resize", requestMeasure);
-        window.visualViewport?.addEventListener("resize", requestMeasure);
-        window.visualViewport?.addEventListener("scroll", requestMeasure);
+        window.addEventListener("resize", requestViewportMeasure);
+        window.visualViewport?.addEventListener("resize", requestViewportMeasure);
+        window.visualViewport?.addEventListener("scroll", requestViewportMeasure);
 
         return () => {
             if (frame) window.cancelAnimationFrame(frame);
             if (bottomScrollFrame) window.cancelAnimationFrame(bottomScrollFrame);
+            if (viewportTimer) window.clearTimeout(viewportTimer);
             observer?.disconnect();
-            window.removeEventListener("resize", requestMeasure);
-            window.visualViewport?.removeEventListener("resize", requestMeasure);
-            window.visualViewport?.removeEventListener("scroll", requestMeasure);
+            window.removeEventListener("resize", requestViewportMeasure);
+            window.visualViewport?.removeEventListener("resize", requestViewportMeasure);
+            window.visualViewport?.removeEventListener("scroll", requestViewportMeasure);
         };
     }, [wrapperRef, scrollRef, refreshKey]);
 }
