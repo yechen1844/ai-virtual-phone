@@ -45,6 +45,7 @@ const EXTRA_TAG_LABELS: Record<string, string> = {
     article: "成刊",
     archive: "结束章节",
     write: "正文创作",
+    stardew: "星露谷",
 };
 
 export type TagProfile = {
@@ -147,6 +148,7 @@ export const CONTENT_SCOPE_TAG_GROUPS: TagGroupProfile[] = [
     { id: "calendar", label: "日历", tags: ["calendar"], minors: [commonMinor("calendar", ["calendar"])] },
     { id: "adventure", label: "冒险", tags: ["adventure"], minors: [commonMinor("adventure", ["adventure"])] },
     { id: "game", label: "游戏", tags: ["game"], minors: [commonMinor("game", ["game"])] },
+    { id: "stardew", label: "星露谷", tags: ["stardew"], minors: [commonMinor("stardew", ["stardew"])] },
     { id: "add_friend", label: "加好友", tags: ["add_friend"], minors: [commonMinor("add_friend", ["add_friend"])] },
     {
         id: "checkphone",

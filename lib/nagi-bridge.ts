@@ -20,11 +20,8 @@ import {
   loadRestTools,
 } from "./tool-storage";
 
-const CLOUD_URL = process.env.NEXT_PUBLIC_NAGI_CLOUD_URL || "https://nagi.chajianreader.cc.cd";
-const CLOUD_KEY = process.env.NEXT_PUBLIC_NAGI_CLOUD_KEY || "nagi_bridge_2026";
 const POLL_MS = Number(process.env.NEXT_PUBLIC_NAGI_POLL_MS || 2000);
 const BUTLER_URL = process.env.NEXT_PUBLIC_NAGI_BUTLER_URL || "http://localhost:7869";
-const NAGIBRIDGE_URL = process.env.NEXT_PUBLIC_NAGIBRIDGE_URL || "http://localhost:7842";
 
 export const STARDEW_APP_ID = "stardew";
 const STARDEW_SESSION_PREFIX = "sess_stardew_";
@@ -34,6 +31,89 @@ const KV_ENABLED_KEY = "nagi_bridge_enabled";
 type NagiEntry = { sender: string; text: string; ts?: string };
 
 let pollingStarted = false;
+// 星露谷 char 是否正在生成回复（供星露谷聊天页显示"思考中"）
+let stardewGenerating = false;
+export function isStardewGenerating(): boolean {
+  return stardewGenerating;
+}
+
+// ── 星露谷自主性：char 完成动作后随机 1~4 分钟无玩家互动 → 自主说话/干活 ──
+let stardewActivityTs = Date.now();
+let stardewAutonomyTimer: ReturnType<typeof setTimeout> | null = null;
+
+// ── 星露谷思维链：生成期间实时累积，供聊天页展示 ──
+let stardewReasoning = "";
+export function getStardewReasoning(): string {
+  return stardewReasoning;
+}
+
+function cancelStardewAutonomy(): void {
+  if (stardewAutonomyTimer) {
+    clearTimeout(stardewAutonomyTimer);
+    stardewAutonomyTimer = null;
+  }
+}
+
+/** 玩家有互动时调用：刷新活动时间，并取消待触发的自主行动。 */
+function markStardewActivity(): void {
+  stardewActivityTs = Date.now();
+  cancelStardewAutonomy();
+}
+
+/** char 生成完成后，排一个随机 1~4 分钟的自主计时：到点若玩家这段时间没说话则自主行动。 */
+function armStardewAutonomy(characterId: string, session: any): void {
+  cancelStardewAutonomy();
+  const delay = 60000 + Math.floor(Math.random() * 180000); // 1~4 分钟随机
+  stardewAutonomyTimer = setTimeout(async () => {
+    stardewAutonomyTimer = null;
+    if (stardewGenerating) return;
+    // 玩家在这段时间若说过话，markStardewActivity 会 cancel 本 timer；
+    // 能走到这里说明期间无互动，可自主。
+    await fireStardewAutonomy(characterId, session);
+  }, delay);
+}
+
+/** 自主时间：char 按自己性格决定说话或调工具干活。 */
+async function fireStardewAutonomy(characterId: string, session: any): Promise<void> {
+  stardewGenerating = true;
+  try {
+    ensureStardewToolsRegistered();
+    const history = loadChatMessages(session.id);
+    const autonomyHistory = [
+      ...history,
+      {
+        sessionId: session.id,
+        role: "system",
+        content: "【自主时间】现在玩家没有说话。你可以按自己的性格决定：要么主动跟玩家说句话，要么去做一件合适的农活（可调用工具）。不想做就安静待着也可以。",
+        status: "sent" as const,
+      },
+    ];
+    const enriched = await injectStardewState(session, autonomyHistory);
+    const cr = await generateChatCompletion(session, enriched, {
+      appId: STARDEW_APP_ID,
+      appTags: ["stardew"],
+      forceEnableTools: true,
+    }, {
+      onToolNotice: (notice: string) => {
+        if (session?.id) {
+          pushChatMessage({ sessionId: session.id, role: "system", content: notice, mediaType: "tool_notice", status: "sent" });
+        }
+      },
+    });
+    if ((cr as any)?.reasoning) stardewReasoning = (cr as any).reasoning;
+    const text = flattenCompletionResult(cr);
+    if (text) {
+      pushChatMessage({ sessionId: session.id, role: "assistant", content: text, status: "sent" });
+      await pushReply(characterId, text);
+    }
+  } catch (e) {
+    console.warn("[NagiBridge] 自主行动失败:", e);
+  } finally {
+    stardewGenerating = false;
+    armStardewAutonomy(characterId, session);
+    // 思维链只供聊天页折叠展示，不写入会话、不参与上下文组装
+  }
+}
 
 // ── 星露谷专属工具（只读 + 聊天，用于工具隔离）──
 
@@ -53,10 +133,18 @@ export function getStardewTools(): StardewToolDef[] {
     { name: "stardew_face", description: "设置面朝方向：0=上 1=右 2=下 3=左。", parameterSchema: '{"type":"object","properties":{"direction":{"type":"integer","enum":[0,1,2,3]}},"required":["direction"],"additionalProperties":false}' },
     { name: "stardew_use_item", description: "使用/放置当前手持物品（种子、物体等）。", parameterSchema: "{}" },
     { name: "stardew_press_key", description: "模拟按键。可用：confirm, cancel, skip, ok, F1-F12。", parameterSchema: '{"type":"object","properties":{"key":{"type":"string"},"count":{"type":"integer","default":1}},"required":["key"],"additionalProperties":false}' },
-    { name: "stardew_run_script", description: "运行农场自动化脚本。可用：farm_row, water_crops, harvest, mine_run, chop_trees, clear_area, pet_animals, keg_manager, furnace_manager。参数 script 为脚本名，args 为命令行参数。", parameterSchema: '{"type":"object","properties":{"script":{"type":"string"},"args":{"type":"string"}},"required":["script"],"additionalProperties":false}' },
+    { name: "stardew_run_script", description: "一键执行农场自动化脚本，一次完成整类任务（比一步步用手动工具高效，应优先使用）。可用脚本：farm_row(种田)、water_crops(浇水)、chop_trees(砍树)、harvest(收获)、mine_run(挖矿)、clear_area(开垦)、pet_animals(撸动物)、keg_manager(酿酒)、furnace_manager(熔炉)、fish_run(钓鱼)、shop_buy(购物)。参数 script 为脚本名，args 为可选命令行参数。", parameterSchema: '{"type":"object","properties":{"script":{"type":"string"},"args":{"type":"string"}},"required":["script"],"additionalProperties":false}' },
     { name: "stardew_sleep", description: "上床睡觉结束今天。自动找床，不需要先回家。检查结果：state=slept 表示过夜了；state=ready 表示已上床但需等所有人就绪——此时不要再移动/warp/起床，否则会卡死所有人。", parameterSchema: "{}" },
     { name: "stardew_get_machines", description: "扫描当前地点所有机器（酒桶/熔炉等）的状态。", parameterSchema: "{}" },
     { name: "stardew_get_animals", description: "查看所有农场动物：是否已摸、好感度、心情、产品就绪。", parameterSchema: "{}" },
+    { name: "stardew_heal", description: "作弊：完全恢复体力和生命值。", parameterSchema: "{}" },
+    { name: "stardew_eat", description: "吃下手持的食物，恢复体力。若当前没选中食物，先用 stardew_select_item 选择食物再调用本工具。", parameterSchema: "{}" },
+    { name: "stardew_gift_npc", description: "送给面前的NPC村民一件礼物，提升好感度。参数 item 为礼物物品名。若NPC不在面前，先用 warp/move_to 靠近再调用。", parameterSchema: '{"type":"object","properties":{"item":{"type":"string"}},"required":["item"],"additionalProperties":false}' },
+    { name: "stardew_gift_player", description: "送给玩家（host）一件礼物。参数 item 为礼物物品名。若玩家不在附近，先走近（move_to）再递送。", parameterSchema: '{"type":"object","properties":{"item":{"type":"string"}},"required":["item"],"additionalProperties":false}' },
+    { name: "stardew_buy", description: "购买物品。参数 id 为物品ID，count 为数量。", parameterSchema: '{"type":"object","properties":{"id":{"type":"string"},"count":{"type":"integer","default":1}},"required":["id"],"additionalProperties":false}' },
+    { name: "stardew_sell", description: "把物品出售到出货箱（需在农场）。参数 name 指定要卖的东西；不填则卖出全部。", parameterSchema: '{"type":"object","properties":{"name":{"type":"string"}},"additionalProperties":false}' },
+    { name: "stardew_store", description: "把背包物品存到箱子。参数 x、y 为箱子坐标，name 为要存的物品名（可选）。", parameterSchema: '{"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"name":{"type":"string"}},"required":["x","y"],"additionalProperties":false}' },
+    { name: "stardew_emote", description: "让角色做一个表情动作。参数 emotion 可选。", parameterSchema: '{"type":"object","properties":{"emotion":{"type":"string"}},"additionalProperties":false}' },
   ];
 }
 
@@ -70,37 +158,60 @@ export function ensureStardewToolsRegistered(): void {
   if (typeof window === "undefined") return;
   let changed = false;
   const existing = loadRestTools();
+  // 星露谷工具统一走管家转发到本地 NagiBridge HTTP API。
+  // 浏览器直连 NagiBridge 的 POST 会因 CORS 预检(OPTIONS)失败而"服务器连接失败"，
+  // 管家已处理 CORS/OPTIONS，由其转发即可绕开。
+  const endpointMap: Record<string, { endpoint: string; method: "GET" | "POST"; bodyTemplate?: string }> = {
+    stardew_get_state:        { endpoint: `${BUTLER_URL}/nb/state`, method: "GET" },
+    stardew_get_surroundings: { endpoint: `${BUTLER_URL}/nb/surroundings`, method: "GET" },
+    stardew_speak_in_game:    { endpoint: `${BUTLER_URL}/nb/chat/push`, method: "POST", bodyTemplate: `{"sender":"Nagi","message":"{{text}}"}` },
+    stardew_get_time:         { endpoint: `${BUTLER_URL}/nb/state`, method: "GET" },
+    stardew_warp:             { endpoint: `${BUTLER_URL}/nb/warp`, method: "POST" },
+    stardew_move_to:          { endpoint: `${BUTLER_URL}/nb/move`, method: "POST" },
+    stardew_use_tool:         { endpoint: `${BUTLER_URL}/nb/tool`, method: "POST" },
+    stardew_select_item:      { endpoint: `${BUTLER_URL}/nb/select`, method: "POST" },
+    stardew_interact:         { endpoint: `${BUTLER_URL}/nb/interact`, method: "POST" },
+    stardew_face:             { endpoint: `${BUTLER_URL}/nb/face`, method: "POST" },
+    stardew_use_item:         { endpoint: `${BUTLER_URL}/nb/use`, method: "POST" },
+    stardew_press_key:        { endpoint: `${BUTLER_URL}/nb/key`, method: "POST" },
+    stardew_run_script:       { endpoint: `${BUTLER_URL}/script`, method: "POST" },
+    stardew_sleep:            { endpoint: `${BUTLER_URL}/nb/sleep`, method: "POST" },
+    stardew_get_machines:     { endpoint: `${BUTLER_URL}/nb/machines`, method: "GET" },
+    stardew_get_animals:      { endpoint: `${BUTLER_URL}/nb/animals`, method: "GET" },
+    stardew_heal:             { endpoint: `${BUTLER_URL}/nb/heal`, method: "POST" },
+    stardew_eat:              { endpoint: `${BUTLER_URL}/nb/use`, method: "POST" },
+    stardew_gift_npc:         { endpoint: `${BUTLER_URL}/nb/gift`, method: "POST" },
+    stardew_gift_player:      { endpoint: `${BUTLER_URL}/nb/gift`, method: "POST" },
+    stardew_buy:              { endpoint: `${BUTLER_URL}/nb/buy`, method: "POST" },
+    stardew_sell:             { endpoint: `${BUTLER_URL}/nb/sell`, method: "POST" },
+    stardew_store:            { endpoint: `${BUTLER_URL}/nb/store`, method: "POST" },
+    stardew_emote:            { endpoint: `${BUTLER_URL}/nb/emote`, method: "POST" },
+  };
+
   const defs = getStardewTools();
   for (const def of defs) {
     const found = existing.find((t) => t.name === def.name);
-    if (found) continue; // 已存在
+    const mapping = endpointMap[def.name];
+    if (found) {
+      // 旧版本可能仍指向云端 Worker 或带旧鉴权头 → 强制同步为本地 NagiBridge 地址，避免 401
+      if (mapping) {
+        if (found.endpoint !== mapping.endpoint) found.endpoint = mapping.endpoint;
+        if (found.method !== mapping.method) found.method = mapping.method;
+        if (mapping.bodyTemplate && found.bodyTemplate !== mapping.bodyTemplate) found.bodyTemplate = mapping.bodyTemplate;
+        if (found.headers) {
+          found.headers = undefined;
+          changed = true;
+        }
+        changed = true;
+      }
+      continue;
+    }
     const tool = createRestTool(def.name);
     tool.description = def.description;
     tool.parameterSchema = def.parameterSchema;
     tool.enabled = true;
     tool.packageId = undefined; // 星露谷工具独立，不入包，靠 name 前缀按 appId 过滤
     tool.directFetch = true;
-
-    // 根据工具名映射到 NagiBridge HTTP API 端点
-    const endpointMap: Record<string, { endpoint: string; method: "GET" | "POST"; bodyTemplate?: string }> = {
-      stardew_get_state:        { endpoint: `${NAGIBRIDGE_URL}/state`, method: "GET" },
-      stardew_get_surroundings: { endpoint: `${NAGIBRIDGE_URL}/surroundings`, method: "GET" },
-      stardew_speak_in_game:    { endpoint: `${NAGIBRIDGE_URL}/chat/push`, method: "POST", bodyTemplate: `{"sender":"Nagi","message":"{{text}}"}` },
-      stardew_get_time:         { endpoint: `${NAGIBRIDGE_URL}/state`, method: "GET" },
-      stardew_warp:             { endpoint: `${NAGIBRIDGE_URL}/warp`, method: "POST" },
-      stardew_move_to:          { endpoint: `${NAGIBRIDGE_URL}/move`, method: "POST" },
-      stardew_use_tool:         { endpoint: `${NAGIBRIDGE_URL}/tool`, method: "POST" },
-      stardew_select_item:      { endpoint: `${NAGIBRIDGE_URL}/select`, method: "POST" },
-      stardew_interact:         { endpoint: `${NAGIBRIDGE_URL}/interact`, method: "POST" },
-      stardew_face:             { endpoint: `${NAGIBRIDGE_URL}/face`, method: "POST" },
-      stardew_use_item:         { endpoint: `${NAGIBRIDGE_URL}/use`, method: "POST" },
-      stardew_press_key:        { endpoint: `${NAGIBRIDGE_URL}/key`, method: "POST" },
-      stardew_run_script:       { endpoint: `${NAGIBRIDGE_URL}/queue`, method: "POST" },
-      stardew_sleep:            { endpoint: `${NAGIBRIDGE_URL}/sleep`, method: "POST" },
-      stardew_get_machines:     { endpoint: `${NAGIBRIDGE_URL}/machines`, method: "GET" },
-      stardew_get_animals:      { endpoint: `${NAGIBRIDGE_URL}/animals`, method: "GET" },
-    };
-    const mapping = endpointMap[def.name];
     if (mapping) {
       tool.endpoint = mapping.endpoint;
       tool.method = mapping.method;
@@ -145,11 +256,10 @@ export function getOrCreateStardewSession(characterId: string) {
 // ── 云端中转 ──
 
 async function cloudFetch(path: string, init?: RequestInit): Promise<any> {
-  const res = await fetch(`${CLOUD_URL}${path}`, {
+  const res = await fetch(`${BUTLER_URL}${path}`, {
     ...init,
     headers: {
       "content-type": "application/json",
-      "X-Nagi-Key": CLOUD_KEY,
       ...(init?.headers || {}),
     },
   });
@@ -159,7 +269,8 @@ async function cloudFetch(path: string, init?: RequestInit): Promise<any> {
 
 async function pullGameMessages(): Promise<NagiEntry[]> {
   try {
-    const data = await cloudFetch("/messages");
+    // 从本机管家拉取游戏里玩家说的话（管家在 channelServer 收到了存进 inbox）
+    const data = await cloudFetch("/inbox");
     if (data.ok && Array.isArray(data.messages)) return data.messages;
     return [];
   } catch (e) {
@@ -170,7 +281,8 @@ async function pullGameMessages(): Promise<NagiEntry[]> {
 
 async function pushReply(sender: string, text: string): Promise<void> {
   try {
-    await cloudFetch("/reply", {
+    // char 的回复经本机管家送进游戏聊天框
+    await cloudFetch("/message", {
       method: "POST",
       body: JSON.stringify({ sender, text, ts: Date.now() }),
     });
@@ -206,6 +318,7 @@ export async function ingestNagiGameMessage(characterId: string, msg: NagiEntry)
   if (!characterId) return null;
 
   const session = getOrCreateStardewSession(characterId);
+  markStardewActivity(); // 玩家有互动，取消自主
 
   pushChatMessage({
     sessionId: session.id,
@@ -226,21 +339,101 @@ export async function ingestNagiGameMessage(characterId: string, msg: NagiEntry)
   });
 
   await pushReply(characterId, replyText);
+  armStardewAutonomy(characterId, session); // 完成后排 1 分钟自主
   return replyText;
 }
 
+/** 读取农工当前状态（位置/时间/金钱/体力/背包/周围），拼成一段文本。 */
+async function readStardewStateText(): Promise<string> {
+  const lines: string[] = ["【你（农工）当前的状态】"];
+  try {
+    const state: any = await cloudFetch("/nb/state");
+    const info = state?.info ?? state?.player ?? state ?? {};
+    if (info.location || info.currentLocation) {
+      const loc = info.location ?? info.currentLocation;
+      lines.push(`位置：${typeof loc === "string" ? loc : (loc.name ?? JSON.stringify(loc))}`);
+    }
+    if (info.season) {
+      lines.push(`时间：${info.season} 第${info.dayOfMonth ?? info.day ?? "?"}天 ${info.time ?? "?"}`);
+    }
+    if (typeof info.money === "number") lines.push(`金钱：${info.money}`);
+    if (info.stamina != null) lines.push(`体力：${info.stamina}`);
+    const inv = Array.isArray(info.inventory) ? info.inventory.map((i: any) => (typeof i === "string" ? i : (i?.name ?? JSON.stringify(i)))).join("、").slice(0, 200) : (Array.isArray(state?.inventory) ? state?.inventory.length : "");
+    if (inv) lines.push(`背包：${inv}`);
+  } catch { /* 读取失败不阻断注入 */ }
+  try {
+    const sur: any = await cloudFetch("/nb/surroundings?radius=5");
+    const tiles = sur?.tiles ?? sur?.surroundings;
+    if (tiles) lines.push(`周围：${JSON.stringify(tiles).slice(0, 220)}`);
+  } catch { /* 忽略 */ }
+  return lines.length > 1 ? lines.join("\n") : "";
+}
+
+/** 把农工当前状态注入到 history 末尾（作为 system 消息），让 char 不必先调 get_state。 */
+async function injectStardewState(session: any, history: any[]): Promise<any[]> {
+  try {
+    const stateText = await readStardewStateText();
+    if (stateText && session?.id) {
+      return [...history, { sessionId: session.id, role: "system", content: stateText, status: "sent" as const }];
+    }
+  } catch (e) {
+    console.warn("[NagiBridge] 状态注入失败:", e);
+  }
+  return history;
+}
+
 async function generateStardewReply(session: any, history: any[]): Promise<string | null> {
+  stardewGenerating = true;
   try {
     ensureStardewToolsRegistered();
-    const cr = await generateChatCompletion(session, history, {
+    // 注入农工当前状态作为系统消息，char 开口就知道自己处境，不用先调 get_state
+    const enrichedHistory = await injectStardewState(session, history);
+    const cr = await generateChatCompletion(session, enrichedHistory, {
       appId: STARDEW_APP_ID,
       appTags: ["stardew"],
+      // 星露谷不是内置 chat 应用，{{tools}} 宏默认不匹配 tag 会被跳过，
+      // 这里强制启用工具，让模型能读到星露谷工具并调用。
+      forceEnableTools: true,
+    }, {
+      // 把 char 的工具调用（正在执行的动作）写成可见系统消息，
+      // 星露谷聊天页就能看到"char 正在干什么"。
+      onToolNotice: (notice: string) => {
+        if (session?.id) {
+          pushChatMessage({
+            sessionId: session.id,
+            role: "system",
+            content: notice,
+            mediaType: "tool_notice",
+            status: "sent",
+          });
+        }
+      },
     });
+    if ((cr as any)?.reasoning) stardewReasoning = (cr as any).reasoning;
     return flattenCompletionResult(cr);
   } catch (e) {
     console.warn("[NagiBridge] char 生成回复失败:", e);
     return null;
+  } finally {
+    stardewGenerating = false;
+    // 思维链只供聊天页折叠展示，不写入会话、不参与上下文组装
   }
+}
+
+/** float 星露谷 app 里用户直接对 char 说话：写入会话 → char 生成回复 → 推回游戏。 */
+export async function stardewFrontendSay(characterId: string, text: string): Promise<string | null> {
+  if (typeof window === "undefined") return null;
+  if (!characterId || !text) return null;
+  const session = getOrCreateStardewSession(characterId);
+  markStardewActivity(); // 玩家有互动，取消自主
+  pushChatMessage({ sessionId: session.id, role: "user", content: text, status: "sent" });
+  const history = loadChatMessages(session.id);
+  const replyText = await generateStardewReply(session, history);
+  if (!replyText) return null;
+  pushChatMessage({ sessionId: session.id, role: "assistant", content: replyText, status: "sent" });
+  await pushReply(characterId, replyText);
+  armStardewAutonomy(characterId, session); // 完成后排 1 分钟自主
+  return replyText;
 }
 
 // ── 轮询 ──
@@ -372,6 +565,7 @@ async function processThinkRequest(
     const cr = await generateChatCompletion(session, history, {
       appId: STARDEW_APP_ID,
       appTags: ["stardew"],
+      forceEnableTools: true,
     });
 
     // flattenCompletionResult 返回纯文本，但 char_agent 需要 tool_calls

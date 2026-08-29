@@ -201,8 +201,10 @@ export function DebugPromptPanel() {
         const appTags = promptSnapshot.appTags || [];
         const isChatRequest = promptSnapshot.appId === "chat"
             || promptSnapshot.appId === "group_chat"
+            || promptSnapshot.appId === "stardew"
             || appTags.includes("chat")
-            || appTags.includes("group_chat");
+            || appTags.includes("group_chat")
+            || appTags.includes("stardew");
         if (!isChatRequest) return null;
         if (promptSnapshot.sessionId !== activeChatSession.id) return null;
         return promptSnapshot;
@@ -346,12 +348,16 @@ export function DebugPromptPanel() {
                 if (activeChatSession.isGroup) {
                     await previewGroupPromptRequestSnapshot(activeChatSession, latestMessages);
                 } else {
+                    // 星露谷会话按真实发送给模型的参数预览（appId=stardew），否则会按默认 chat 预览导致提示词不对
+                    const isStardewSession = activeChatSession.id?.startsWith("sess_stardew_");
                     await previewPromptRequestSnapshot(
                         activeChatSession,
                         latestMessages,
                         followUpMode
                             ? { followUpAuto: true, appTags: ["chat", "text", "followup"] }
-                            : { appTags: ["chat", "text"] }
+                            : (isStardewSession
+                                ? { appId: "stardew", appTags: ["stardew"], forceEnableTools: true }
+                                : { appTags: ["chat", "text"] })
                     );
                 }
             }

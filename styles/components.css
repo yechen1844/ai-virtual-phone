@@ -6737,3 +6737,79 @@
   align-items: center;
   gap: 8px;
 }
+
+/* ── 会话设置 · 记忆投喂 分段（双语/仅原文/仅译文） ── */
+.feed-mode-seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--c-text) 10%, transparent);
+}
+.feed-mode-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--c-text, inherit);
+  font-size: 12px;
+  line-height: 1.2;
+  padding: 6px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.feed-mode-btn:hover {
+  background: color-mix(in srgb, var(--c-text) 12%, transparent);
+}
+.feed-mode-btn.is-active {
+  background: var(--c-accent, var(--c-primary, #5b8bff));
+  color: #fff;
+  font-weight: 600;
+}
+/* ── 星露谷聊天 · 系统消息（工具执行提示，居中胶囊） ── */
+.stardew-sys-msg {
+  color: var(--c-text, #333);
+  background: color-mix(in srgb, var(--c-text, #333) 10%, transparent);
+  font-size: calc(11px * var(--app-text-scale, 1));
+  padding: 3px 12px;
+  border-radius: 16px;
+  max-width: 90%;
+  width: fit-content;
+  margin: 4px auto;
+  text-align: center;
+  line-height: 1.4;
+  user-select: none;
+  -webkit-user-select: none;
+  opacity: 0.92;
+}
+
+.stardew-reasoning {
+  margin: 6px auto;
+  width: fit-content;
+  max-width: 92%;
+  text-align: left;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--c-text, #333) 14%, transparent);
+  background: color-mix(in srgb, var(--c-text, #333) 6%, transparent);
+  font-size: calc(11px * var(--app-text-scale, 1));
+  color: var(--c-text, #333);
+}
+.stardew-reasoning-summary {
+  cursor: pointer;
+  padding: 5px 12px;
+  color: var(--c-text-dim, #999);
+  user-select: none;
+  -webkit-user-select: none;
+}
+.stardew-reasoning-summary:hover {
+  color: var(--c-text, #333);
+}
+.stardew-reasoning-body {
+  padding: 6px 12px 10px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-top: 1px solid color-mix(in srgb, var(--c-text, #333) 10%, transparent);
+}

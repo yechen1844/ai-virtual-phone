@@ -17,6 +17,9 @@ import {
   sendGameMessageViaCloud,
   startThinkProcessor,
   stopThinkProcessor,
+  isStardewGenerating,
+  getStardewReasoning,
+  stardewFrontendSay,
 } from "@/lib/nagi-bridge";
 import { loadChatMessages, pushChatMessage, type ChatMessage, type ChatSession } from "@/lib/chat-storage";
 
@@ -25,7 +28,7 @@ type StardewPage = "settings" | "chat";
 
 const KV_CHAR_KEY = "nagi_bridge_character_id";
 const KV_ENABLED_KEY = "nagi_bridge_enabled";
-const KV_BACKEND = "https://nagi.chajianreader.cc.cd";
+const KV_BACKEND = "http://localhost:7869";
 
 type CharOption = { id: string; name: string };
 type LogEntry = { ts: string; text: string; ok: boolean };
@@ -239,6 +242,7 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [inputValue, setInputValue] = useState("");
     const [isThinking, setIsThinking] = useState(false);
+    const [reasoning, setReasoning] = useState("");
     const [replying, setReplying] = useState(false);
     const wrapperRef = useRef<HTMLDivElement | null>(null);
     const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -256,11 +260,13 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
             sessionRef.current = session;
             setMessages(loadChatMessages(session.id));
             const handler = () => {
-                if (cancelled) return;
-                setMessages(loadChatMessages(session.id));
-            };
-            window.addEventListener("storage", handler);
-            const timer = setInterval(handler, 2000);
+            if (cancelled) return;
+            setMessages(loadChatMessages(session.id));
+            setIsThinking(isStardewGenerating());
+            setReasoning(getStardewReasoning());
+        };
+        window.addEventListener("storage", handler);
+        const timer = setInterval(handler, 2000);
             return () => {
                 cancelled = true;
                 window.removeEventListener("storage", handler);
@@ -281,22 +287,29 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
         scrollToBottom();
     }, [messages, isThinking, scrollToBottom]);
 
-    // 回车 / 发送按钮 = 只把消息发进游戏（game-say），不触发模型回复
+    // 发送 = 发进游戏 + 让 char 基于这句话直接回复（float 星露谷 app 里就能跟 char 聊）
     const handleSend = useCallback(async () => {
         const text = inputValue.trim();
-        if (!text || isThinking || replying || !sessionRef.current) return;
-        const session = sessionRef.current;
+        if (!text || isThinking || replying || !sessionRef.current || !charId) return;
         setInputValue("");
-
-        // 写入本地会话，作为一条"我发的话"
-        const userMsg = pushChatMessage({ sessionId: session.id, role: "user", content: text, status: "sent" });
-        setMessages((prev) => [...prev, userMsg]);
-        scrollToBottom();
-
-        // 发进星露谷游戏（通过云端 → 管家 → NagiBridge）
-        const ok = await sendGameMessageViaCloud(text, "玩家");
-        if (!ok) onNotice?.("发送到游戏失败，请检查云端/管家连接");
-    }, [inputValue, isThinking, replying, onNotice, scrollToBottom]);
+        setReplying(true);
+        setIsThinking(true);
+        try {
+            // 发进星露谷游戏（玩家在游戏聊天框里能看到）
+            await sendGameMessageViaCloud(text, "玩家");
+            // 同时让 char 直接回复（写入会话 + 生成回复 + 推回游戏）
+            const reply = await stardewFrontendSay(charId, text);
+            if (!reply) onNotice?.("char 没有回复");
+        } catch (e) {
+            console.warn("[StardewChat] 发送失败:", e);
+            onNotice?.("发送失败，请重试");
+        } finally {
+            setReplying(false);
+            setIsThinking(isStardewGenerating());
+            setMessages(loadChatMessages(sessionRef.current?.id || ""));
+            scrollToBottom();
+        }
+    }, [inputValue, isThinking, replying, charId, onNotice, scrollToBottom]);
 
     // 回复按钮 = 从 Worker 拉取游戏消息，触发 char 生成回复并推回
     const handleReply = useCallback(async () => {
@@ -313,7 +326,7 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
             onNotice?.("回复失败，请稍后再试");
         } finally {
             setReplying(false);
-            setIsThinking(false);
+            setIsThinking(isStardewGenerating());
             scrollToBottom();
         }
     }, [charId, replying, isThinking, onNotice, scrollToBottom]);
@@ -337,6 +350,14 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
                     <div className="stardew-chat-empty">和 {charName || "char"} 聊聊星露谷吧～</div>
                 )}
                 {messages.map((msg) => {
+                    // 工具调用提示（如"char 正在执行动作…"）以居中系统消息显示
+                    if (msg.role === "system" || msg.mediaType === "tool_notice") {
+                        return (
+                            <div className="chat-msg-wrapper" data-role="system" key={msg.id}>
+                                <div className="stardew-sys-msg">{msg.content}</div>
+                            </div>
+                        );
+                    }
                     const isUser = msg.role === "user";
                     const paragraphs = isUser ? [msg.content] : splitOfflineParagraphs(msg.content);
                     return (
@@ -361,6 +382,14 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
                                 思考中<span className="mascot-dot"></span><span className="mascot-dot"></span><span className="mascot-dot"></span>
                             </div>
                         </div>
+                    </div>
+                )}
+                {reasoning && !isThinking && (
+                    <div className="chat-msg-wrapper" data-role="system">
+                        <details className="stardew-reasoning">
+                            <summary className="stardew-reasoning-summary">💭 思考过程</summary>
+                            <div className="stardew-reasoning-body">{reasoning}</div>
+                        </details>
                     </div>
                 )}
                 <div style={{ overflowAnchor: "auto", height: 1 }} />

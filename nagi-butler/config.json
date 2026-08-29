@@ -1,5 +1,5 @@
 {
-  "nagibridgeUrl": "http://localhost:7842",
+  "nagibridgeUrl": "http://localhost:7843",
   "charName": "Nagi",
   "outboxFile": "outbox.jsonl",
   "channelServer": {
@@ -9,8 +9,8 @@
     "port": 7869
   },
   "cloudRelay": {
-    "url": "https://nagi.chajianreader.cc.cd",
-    "key": "nagi_bridge_2026",
+    "url": "",
+    "key": "",
     "pollIntervalMs": 1500
   },
   "relays": []

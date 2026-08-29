@@ -1,5 +1,6 @@
-import { readFileSync, appendFileSync } from 'node:fs';
+import { readFileSync, appendFileSync, existsSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { exec } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -34,6 +35,9 @@ try {
 } catch {}
 
 const stats = { received: 0, uploaded: 0, replies: 0, delivered: 0, updates: 0, startedAt: new Date().toISOString() };
+
+// 玩家在游戏里说的话：channelServer 收到后先存这里，float 轮询 GET /inbox 拉走。
+const gameInbox = [];
 
 // ── think 中转：char_agent → 管家 → float 浏览器 → 管家 → char_agent ──
 const thinkPending = new Map();   // id → {messages, tools, maxTurns, ts}
@@ -203,8 +207,8 @@ const channelServer = createServer(async (req, res) => {
       };
       writeOutbox(entry);
       stats.received += 1;
-      log(`💬 [${sender}] ${text} → 已记录`);
-      await uploadToCloud(entry);
+      gameInbox.push(entry);
+      log(`💬 [${sender}] ${text} → 已入队（等待 float 拉取）`);
       return sendJson(res, 200, { ok: true });
     }
     return sendJson(res, 404, { ok: false, error: 'not found' });
@@ -257,6 +261,95 @@ const replyServer = createServer(async (req, res) => {
       stats.replies += 1;
       log(`📤 [${sender}] ${text} → 已送进游戏聊天框`);
       return sendJson(res, 200, { ok: true, game: gameReply });
+    }
+    // float 发消息进游戏（玩家说话 / char 回复都走这里，同 /say）
+    if (url.pathname === '/message' && req.method === 'POST') {
+      const body = await readBody(req);
+      const text = String(body.text ?? body.message ?? '').trim();
+      if (!text) return sendJson(res, 400, { ok: false, error: 'text 不能为空' });
+      const sender = String(body.sender ?? body.name ?? charName);
+      const gameReply = await pushToGame(text, sender);
+      stats.replies += 1;
+      log(`📤 [${sender}] ${text} → 已送进游戏聊天框`);
+      return sendJson(res, 200, { ok: true, game: gameReply });
+    }
+    // float 拉取玩家在游戏里说的话（有则返回并清空，无则空数组）
+    if (url.pathname === '/inbox' && req.method === 'GET') {
+      const messages = gameInbox.splice(0);
+      return sendJson(res, 200, { ok: true, messages });
+    }
+    // 送礼聚合：先选中礼物物品，再与面前对象（NPC / 玩家）互动递送
+    if (url.pathname === '/nb/gift' && req.method === 'POST') {
+      const body = await readBody(req).catch(() => ({}));
+      const item = body && body.item ? String(body.item).trim() : '';
+      if (!item) return sendJson(res, 400, { ok: false, error: 'item 不能为空' });
+      try {
+        await fetch(`${nagiUrl}/select`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name: item }),
+          signal: AbortSignal.timeout(6000),
+        });
+        const giftRes = await fetch(`${nagiUrl}/interact`, {
+          method: 'POST',
+          signal: AbortSignal.timeout(6000),
+        });
+        const text = await giftRes.text();
+        res.writeHead(giftRes.status, {
+          'content-type': 'application/json',
+          'access-control-allow-origin': '*',
+          'access-control-allow-methods': 'GET, POST, OPTIONS',
+          'access-control-allow-headers': 'content-type',
+        });
+        res.end(text);
+        return;
+      } catch (e) {
+        return sendJson(res, 502, { ok: false, error: String((e && e.message) || e) });
+      }
+    }
+    // 星露谷工具转发：float 的 stardew_* 工具经此代理到 NagiBridge（绕开浏览器直连的 CORS 预检）
+    if (url.pathname.startsWith('/nb/') && (req.method === 'GET' || req.method === 'POST')) {
+      const targetPath = url.pathname.slice(4); // 去掉前缀 '/nb/'
+      const targetUrl = `${nagiUrl}/${targetPath}${url.search}`;
+      let bodyObj;
+      if (req.method === 'POST') {
+        const raw = await readBody(req).catch(() => null);
+        bodyObj = raw;
+      }
+      const targetRes = await fetch(targetUrl, {
+        method: req.method,
+        headers: bodyObj !== undefined ? { 'content-type': 'application/json' } : undefined,
+        body: bodyObj !== undefined ? JSON.stringify(bodyObj) : undefined,
+        signal: AbortSignal.timeout(8000),
+      });
+      const text = await targetRes.text();
+      res.writeHead(targetRes.status, {
+        'content-type': targetRes.headers.get('content-type') || 'application/json',
+        'access-control-allow-origin': '*',
+        'access-control-allow-methods': 'GET, POST, OPTIONS',
+        'access-control-allow-headers': 'content-type',
+      });
+      res.end(text);
+      return;
+    }
+    // 执行星露谷打包脚本（farm_row.py / water_crops.py / chop_trees.py …）—— 一次干完一整类活
+    if (url.pathname === '/script' && req.method === 'POST') {
+      const body = await readBody(req).catch(() => ({}));
+      const name = String(body.script || '').trim();
+      if (!name) return sendJson(res, 400, { ok: false, error: 'script 不能为空' });
+      const scriptPath = join(scriptDir, 'nagi_scripts', `${name}.py`);
+      if (!existsSync(scriptPath)) return sendJson(res, 404, { ok: false, error: `脚本不存在: ${name}.py` });
+      const defaultPort = Number(new URL(nagiUrl).port || 7842);
+      const port = Number(body.port || defaultPort);
+      const argsArr = Array.isArray(body.args) ? body.args : (body.args ? String(body.args).split(/\s+/) : []);
+      const cmd = `python "${scriptPath}" ${argsArr.map((a) => `"${a}"`).join(' ')} --port ${port}`;
+      log(`⚙️ 执行脚本: ${name} (port ${port})`);
+      const runResult = await new Promise((resolvePromise) => {
+        exec(cmd, { cwd: scriptDir, env: { ...process.env, PYTHONIOENCODING: 'utf-8' }, timeout: 300000, maxBuffer: 1024 * 1024 * 8 }, (err, stdout, stderr) => {
+          resolvePromise({ ok: !err, error: err ? String(err.message || err).slice(0, 500) : undefined, stdout: String(stdout || '').slice(-2000), stderr: String(stderr || '').slice(-800) });
+        });
+      });
+      return sendJson(res, 200, runResult);
     }
     // ── think 中转端点 ──
     // char_agent POST /think → 存队列，返回 id
