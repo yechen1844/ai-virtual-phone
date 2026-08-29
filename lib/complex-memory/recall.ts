@@ -307,7 +307,10 @@ async function rerankCandidates(
   const apiConfig = resolveAuxiliaryApiConfig("complexRerankApiConfigId");
   if (!apiConfig) return fallback();
 
-  const candidatesText = candidates
+  // 键兜底：重排序的整个副 API 调用都包进 try/catch，任何异常（网络/解析/格式）都回退到
+  // 向量评分排序再注入，避免异常冒泡导致该轮复杂记忆整块丢失（固定注入 + 向量召回不受影响）。
+  try {
+    const candidatesText = candidates
     .map((c, i) => `${i + 1}. [${c.kind}] ${c.timestamp} ${c.content}`)
     .join("\n");
 
@@ -337,6 +340,9 @@ async function rerankCandidates(
     .sort((a, b) => b.score - a.score)
     .slice(0, config.rerankKeepMax)
     .map((x) => ({ ...x.item, score: x.score }));
+  } catch {
+    return fallback();
+  }
 }
 
 function parseRerankScores(text: string): Map<string, number> {

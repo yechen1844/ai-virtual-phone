@@ -175,7 +175,10 @@ export function DebugPromptPanel() {
         const sessions = loadChatSessions();
         const chars = loadCharacters();
         const charNameById = new Map(chars.map(c => [c.id, c.name]));
-        return sessions.map(session => {
+        return sessions
+            // 星露谷会话单独走「星露谷」独立预览标签，不在聊天页的 char 下拉混入
+            .filter(s => !s.id?.startsWith("sess_stardew_"))
+            .map(session => {
             if (session.isGroup) {
                 const fallbackName = (session.participantIds || [])
                     .map(id => charNameById.get(id) || id)
@@ -186,12 +189,7 @@ export function DebugPromptPanel() {
                     label: `群聊 · ${session.groupName || fallbackName || "未命名群聊"}`,
                 };
             }
-            // 星露谷会话单独显示成「星露谷 · 角色名」，与普通私聊区分
-            if (session.id?.startsWith("sess_stardew_")) {
-                const charId = (session.contactId || "").replace(/^stardew:/, "");
-                const charLabel = charNameById.get(charId) || "角色";
-                return { session, label: `星露谷 · ${charLabel}` };
-            }
+            // 星露谷会话已在上方 filter 掉，这里只处理普通私聊
             return {
                 session,
                 label: charNameById.get(session.contactId) || session.alias || session.contactId,
