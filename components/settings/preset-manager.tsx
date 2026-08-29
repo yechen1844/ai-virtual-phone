@@ -162,7 +162,8 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
     // ── 按 App 筛选（高亮/仅显示/仅折叠/同类折叠） ──
     const [appFilterOpen, setAppFilterOpen] = useState(false);
     const [appFilterMode, setAppFilterMode] = useState<"highlight" | "only-show" | "collapse" | "group-collapse">("highlight");
-    const [appFilterTagKey, setAppFilterTagKey] = useState<string>(""); // 选中的 minor tag key（JSON.stringify(tags)）
+    const [appFilterTag, setAppFilterTag] = useState<string>(""); // 选中的大类 tag（如 "chat"）
+    const [expandedCollapseGroups, setExpandedCollapseGroups] = useState<Set<string>>(new Set()); // 已展开的折叠组 key
 
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -1163,10 +1164,10 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                             <button
                                                 type="button"
                                                 onClick={() => setAppFilterOpen(true)}
-                                                className={`inline-flex h-8 items-center justify-center gap-1 rounded-full border px-3 text-xs font-bold shadow-sm transition-all active:scale-95 ${appFilterTagKey ? "border-[var(--c-icon-active)] bg-[var(--c-icon-active)] text-white" : "border-black/10 bg-white text-gray-800 hover:bg-gray-50"}`}
+                                                className={`inline-flex h-8 items-center justify-center gap-1 rounded-full border px-3 text-xs font-bold shadow-sm transition-all active:scale-95 ${appFilterTag ? "border-[var(--c-icon-active)] bg-[var(--c-icon-active)] text-white" : "border-black/10 bg-white text-gray-800 hover:bg-gray-50"}`}
                                             >
                                                 <Filter size={14} strokeWidth={1.8} />
-                                                <span>按 App{appFilterTagKey ? " · 已选" : ""}</span>
+                                                <span>按 App{appFilterTag ? " · 已选" : ""}</span>
                                             </button>
                                         </div>
                                         {selectMode ? (
@@ -1210,58 +1211,70 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                             // 按 prompt_order + 孤儿构建唯一列表（identifier 去重，避免重复条目/索引错位/拖错条目）
                                             const allPrompts = buildDisplayedPrompts(preset);
 
-                                            // ── 按 App 筛选 ──
-                                            const filterTags = appFilterTagKey ? JSON.parse(appFilterTagKey) as string[] : null;
+                                            // ── 按 App 大类筛选 ──
+                                            // 选的是大类 tag（如 "chat"），匹配条件：条目 tags 包含该大类 tag
+                                            const filterTag = appFilterTag || null;
                                             const matchesFilter = (p: Prompt) => {
-                                                if (!filterTags) return true;
+                                                if (!filterTag) return true;
                                                 const pt = getPromptTags(p);
-                                                if (filterTags.length === 0) return pt.length === 0;
-                                                return areTagsEqual(pt, filterTags);
+                                                if (filterTag === "__universal__") return pt.length === 0;
+                                                return pt.includes(filterTag);
                                             };
 
-                                            if (appFilterMode === "only-show" && filterTags) {
+                                            if (appFilterMode === "only-show" && filterTag) {
                                                 return allPrompts.filter(matchesFilter).map(p => ({ type: "item" as const, prompt: p }));
                                             }
 
-                                            // collapse = 相邻折叠：连续匹配的条目折叠成一组（分散在别处的不动）
+                                            // collapse = 相邻折叠：连续匹配的条目折叠成一组
                                             // group-collapse = 整组折叠：所有匹配条目折叠成一组（不管分散在哪），不影响真实顺序
-                                            if (filterTags && (appFilterMode === "collapse" || appFilterMode === "group-collapse")) {
+                                            if (filterTag && (appFilterMode === "collapse" || appFilterMode === "group-collapse")) {
                                                 type RenderItem =
                                                     | { type: "item"; prompt: Prompt }
-                                                    | { type: "collapsed"; prompts: Prompt[]; indices: number[] };
+                                                    | { type: "collapsed"; prompts: Prompt[]; groupKey: string }
+                                                    | { type: "collapse-header"; groupKey: string; label: string; count: number };
                                                 const result: RenderItem[] = [];
+                                                const groupKey = `g-${filterTag}`;
+                                                const groupLabel = appFilterTag === "__universal__"
+                                                    ? "通用"
+                                                    : (tagGroups.find(g => g.tags[0] === appFilterTag)?.label || appFilterTag);
+
+                                                const makeCollapsedOrExpanded = (prompts: Prompt[], key: string): RenderItem[] => {
+                                                    if (expandedCollapseGroups.has(key)) {
+                                                        // 已展开：header（可收起）+ 逐条 item
+                                                        return [{ type: "collapse-header", groupKey: key, label: groupLabel, count: prompts.length },
+                                                            ...prompts.map(p => ({ type: "item" as const, prompt: p }))];
+                                                    }
+                                                    return [{ type: "collapsed", prompts, groupKey: key }];
+                                                };
+
+                                                if (appFilterMode === "group-collapse") {
+                                                    const matched = allPrompts.filter(matchesFilter);
+                                                    if (matched.length >= 2) {
+                                                        const firstMatchIdx = allPrompts.findIndex(matchesFilter);
+                                                        for (let j = 0; j < allPrompts.length; j++) {
+                                                            if (j === firstMatchIdx) {
+                                                                result.push(...makeCollapsedOrExpanded(matched, groupKey));
+                                                            } else if (!matchesFilter(allPrompts[j])) {
+                                                                result.push({ type: "item", prompt: allPrompts[j] });
+                                                            }
+                                                        }
+                                                        return result;
+                                                    }
+                                                    return allPrompts.map(p => ({ type: "item" as const, prompt: p }));
+                                                }
+
+                                                // collapse：收集连续匹配段
                                                 let i = 0;
+                                                let segIdx = 0;
                                                 while (i < allPrompts.length) {
                                                     if (matchesFilter(allPrompts[i])) {
-                                                        // 收集连续匹配段（collapse）或全部匹配（group-collapse）
                                                         const group: Prompt[] = [];
-                                                        const indices: number[] = [];
-                                                        if (appFilterMode === "group-collapse") {
-                                                            // 整组：把所有匹配的都收进同一个组，非匹配的在原位保留为 item
-                                                            for (let j = 0; j < allPrompts.length; j++) {
-                                                                if (matchesFilter(allPrompts[j])) {
-                                                                    group.push(allPrompts[j]);
-                                                                    indices.push(j);
-                                                                }
-                                                            }
-                                                            // 只在第一次遇到时生成折叠组，其余匹配项跳过（已被收进组里）
-                                                            result.push({ type: "collapsed", prompts: group, indices });
-                                                            // 把非匹配项按原位输出
-                                                            for (let j = 0; j < allPrompts.length; j++) {
-                                                                if (!matchesFilter(allPrompts[j])) {
-                                                                    result.push({ type: "item", prompt: allPrompts[j] });
-                                                                }
-                                                            }
-                                                            return result;
-                                                        }
-                                                        // collapse：收集连续匹配段
                                                         while (i < allPrompts.length && matchesFilter(allPrompts[i])) {
                                                             group.push(allPrompts[i]);
-                                                            indices.push(i);
                                                             i++;
                                                         }
                                                         if (group.length >= 2) {
-                                                            result.push({ type: "collapsed", prompts: group, indices });
+                                                            result.push(...makeCollapsedOrExpanded(group, `${groupKey}-seg${segIdx++}`));
                                                         } else {
                                                             result.push({ type: "item", prompt: group[0] });
                                                         }
@@ -1275,16 +1288,41 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
 
                                             return allPrompts.map(p => ({ type: "item" as const, prompt: p }));
                                         })().flatMap((renderItem, _flatIndex) => {
-                                            if (renderItem.type === "collapsed") {
-                                                const group = renderItem.prompts;
-                                                const groupLabel = getPromptTagsInlineLabel(group[0]);
+                                            const toggleExpand = (gKey: string) => {
+                                                setExpandedCollapseGroups(prev => {
+                                                    const next = new Set(prev);
+                                                    if (next.has(gKey)) next.delete(gKey);
+                                                    else next.add(gKey);
+                                                    return next;
+                                                });
+                                            };
+
+                                            if (renderItem.type === "collapse-header") {
                                                 return [
-                                                    <div key={`collapsed-${_flatIndex}`} className="ui-entry-card ui-entry-collapsed-group" data-app-match="1">
-                                                        <div className="flex items-center justify-between cursor-pointer" onClick={() => setAppFilterMode("highlight")}>
+                                                    <div key={`collapse-header-${_flatIndex}`} className="ui-entry-card ui-entry-collapsed-group" data-app-match="1" onClick={() => toggleExpand(renderItem.groupKey)}>
+                                                        <div className="flex items-center justify-between cursor-pointer">
+                                                            <div className="flex items-center gap-2">
+                                                                <ChevronDown size={16} />
+                                                                <span className="text-xs font-bold text-gray-800">{renderItem.label}</span>
+                                                                <span className="menu-desc ts-11">· {renderItem.count} 个条目</span>
+                                                            </div>
+                                                            <span className="menu-desc ts-11">点击收起</span>
+                                                        </div>
+                                                    </div>,
+                                                ];
+                                            }
+
+                                            if (renderItem.type === "collapsed") {
+                                                const groupLabel = appFilterTag === "__universal__"
+                                                    ? "通用"
+                                                    : (tagGroups.find(g => g.tags[0] === appFilterTag)?.label || appFilterTag);
+                                                return [
+                                                    <div key={`collapsed-${_flatIndex}`} className="ui-entry-card ui-entry-collapsed-group" data-app-match="1" onClick={() => toggleExpand(renderItem.groupKey)}>
+                                                        <div className="flex items-center justify-between cursor-pointer">
                                                             <div className="flex items-center gap-2">
                                                                 <ChevronDown size={16} style={{ transform: "rotate(-90deg)" }} />
                                                                 <span className="text-xs font-bold text-gray-800">{groupLabel}</span>
-                                                                <span className="menu-desc ts-11">· {group.length} 个条目已折叠</span>
+                                                                <span className="menu-desc ts-11">· {renderItem.prompts.length} 个条目已折叠</span>
                                                             </div>
                                                             <span className="menu-desc ts-11">点击展开</span>
                                                         </div>
@@ -1293,7 +1331,6 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                             }
                                             const prompt = renderItem.prompt;
                                             const index = (() => {
-                                                // 找到在 allPrompts 中的真实 index（拖拽需要正确 index）
                                                 const allPrompts = buildDisplayedPrompts(preset);
                                                 return allPrompts.findIndex(p => p.identifier === prompt.identifier);
                                             })();
@@ -1375,11 +1412,10 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                     data-selected={selectMode && selectedIds.has(prompt.identifier) ? "true" : undefined}
                                                     data-disabled={!effectiveEnabled}
                                                     data-app-match={(() => {
-                                                        if (!appFilterTagKey) return undefined;
+                                                        if (!appFilterTag) return undefined;
                                                         if (appFilterMode === "only-show") return undefined;
-                                                        const ft = JSON.parse(appFilterTagKey) as string[];
                                                         const pt = getPromptTags(prompt);
-                                                        const m = ft.length === 0 ? pt.length === 0 : areTagsEqual(pt, ft);
+                                                        const m = appFilterTag === "__universal__" ? pt.length === 0 : pt.includes(appFilterTag);
                                                         return m ? "1" : "0";
                                                     })()}
                                                     style={{
@@ -1915,25 +1951,24 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
 
             {/* ── 按 App 筛选弹窗 ── */}
             {appFilterOpen && editingId && (() => {
-                const allMinors = tagGroups.flatMap(g => g.minors.map(m => ({ ...m, groupLabel: g.label })));
                 return (
                     <BottomSheet title="按 App 筛选条目" onClose={() => setAppFilterOpen(false)}>
                         <div className="flex flex-col gap-4">
-                            {/* 选择 App tag */}
+                            {/* 选择 App 大类（不细分 minor / 起效范围） */}
                             <div>
                                 <div className="menu-label ts-12 mb-2">选择 App</div>
                                 <div className="flex flex-wrap gap-2">
-                                    {allMinors.map(m => {
-                                        const key = JSON.stringify(m.tags);
-                                        const selected = appFilterTagKey === key;
+                                    {tagGroups.map(g => {
+                                        const tag = g.tags.length > 0 ? g.tags[0] : "__universal__";
+                                        const selected = appFilterTag === tag;
                                         return (
                                             <button
-                                                key={m.id}
+                                                key={g.id}
                                                 type="button"
-                                                onClick={() => setAppFilterTagKey(selected ? "" : key)}
+                                                onClick={() => setAppFilterTag(selected ? "" : tag)}
                                                 className={`inline-flex items-center justify-center gap-1 rounded-full border px-3 py-1.5 text-xs font-bold transition-all active:scale-95 ${selected ? "border-[var(--c-icon-active)] bg-[var(--c-icon-active)] text-white" : "border-black/10 bg-white text-gray-800 hover:bg-gray-50"}`}
                                             >
-                                                {m.groupLabel}{m.tags.length > 0 ? ` · ${m.label}` : ""}
+                                                {g.label}
                                             </button>
                                         );
                                     })}
@@ -1947,8 +1982,8 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                     {([
                                         { id: "highlight", label: "高亮显示", desc: "匹配条目高亮，其它变暗" },
                                         { id: "only-show", label: "仅显示", desc: "只显示匹配条目，隐藏其它" },
-                                        { id: "collapse", label: "仅折叠", desc: "匹配条目折叠为摘要" },
-                                        { id: "group-collapse", label: "同类折叠", desc: "相同 App tag 的条目折叠成一组" },
+                                        { id: "collapse", label: "仅折叠", desc: "相邻同类条目折叠为摘要，可点击展开/收起" },
+                                        { id: "group-collapse", label: "同类折叠", desc: "所有同类条目折叠成一组（不管分散在哪），可点击展开/收起" },
                                     ] as const).map(opt => (
                                         <button
                                             key={opt.id}
@@ -1967,10 +2002,10 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                             </div>
 
                             {/* 清除按钮 */}
-                            {appFilterTagKey && (
+                            {appFilterTag && (
                                 <button
                                     type="button"
-                                    onClick={() => { setAppFilterTagKey(""); setAppFilterMode("highlight"); }}
+                                    onClick={() => { setAppFilterTag(""); setAppFilterMode("highlight"); setExpandedCollapseGroups(new Set()); }}
                                     className="ui-btn w-full"
                                 >
                                     清除筛选
