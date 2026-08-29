@@ -10,6 +10,7 @@ import { isKnownStickerLabel } from "@/lib/sticker-data";
 import { translateReasoningText } from "@/lib/reasoning-translate";
 import { MessageBubble, MediaDetailModal, prewarmStickerCache, BilingualTextBlock, isStandaloneHtmlPreviewContent, normalizeTextBubbleContent } from "./message-bubble";
 import { GeneratedImageErrorDialog } from "./generated-image-error-dialog";
+import { CharScheduleChip } from "./char-schedule-chip";
 import { PhotoInputModal, TextPhotoModal, VoiceRecordModal, RedPacketModal, LocationInputModal, SystemInstructionModal } from "./rich-input-modals";
 import { EmojiPanel, StickerPanel } from "./emoji-panel";
 import { StickerSearchSuggest } from "./sticker-search-suggest";
@@ -95,6 +96,17 @@ const CALL_SYS_RE = /\[我(?:向.+)?(?:发起了|挂断了|拒绝了|取消了)(
 function isCallSysMsg(msg: ChatMessage): boolean {
     return CALL_SYS_RE.test(msg.content);
 }
+
+/**
+ * 等待下一帧绘制完成后再继续。用于在进入阻塞主线程的重活（记忆召回/重排序/建提示词）
+ * 之前，先让最近一次 setState（如"对方正在输入"）真正上屏，避免指示器滞后肉眼可见的时间。
+ */
+const waitForPaint = () =>
+    new Promise<void>((resolve) => {
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => resolve());
+        });
+    });
 /** Returns the effective UI role: call messages render as "system" regardless of stored role */
 const ACTION_MEDIA_TYPES = new Set(["poke", "accept_red_packet", "decline_red_packet", "accept_transfer", "decline_transfer", "accept_payment_request", "decline_payment_request", "group_admin_notice"]);
 // 拍一拍/群管理通知/通话留痕渲染成灰色系统小字，没有 💭 面板入口——
@@ -3199,6 +3211,11 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
         setIsGenerating(true);
         setGenerationLock(session.id);
 
+        // 立即让"对方正在输入"指示器先上屏：先让主线程把状态提起并交给浏览器绘制，
+        // 再进入下方重活（记忆召回/重排序/建提示词 buildChatPromptMessages 是同步进入的，
+        // 会整段阻塞主线程，若不等一帧会导致指示器滞后 1~2s 才出现）。
+        await waitForPaint();
+
         try {
             if (session.isGroup) {
                 let roundReasoning: string | undefined;
@@ -5401,17 +5418,25 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                     <button className="page-back-btn" type="button" onClick={onBack} aria-label="返回">
                         <ChevronLeft size={24} strokeWidth={1.5} />
                     </button>
-                    <span className="page-title" style={{ position: 'relative' }}>
-                        {offlineMode ? "线下 · " : ""}
-                        {session.isGroup
-                            ? `${session.groupName || "群聊"}(${(session.participantIds?.length || 0) + (session.isSpectator ? 0 : 1)})`
-                            : (session.alias || character?.name || `User_${session.contactId.slice(-4)}`)}
-                        {(isGenerating || isOfflineGenerating) && (
-                            <span className="chat-typing-indicator">
-                                {offlineMode ? "线下生成中" : "对方正在输入"}<span className="chat-typing-dots"><i/><i/><i/></span>
-                            </span>
+                    <div className="page-title chat-title-block" style={{ position: 'relative' }}>
+                        <span className="chat-title-row">
+                            {offlineMode ? "线下 · " : ""}
+                            {session.isGroup
+                                ? `${session.groupName || "群聊"}(${(session.participantIds?.length || 0) + (session.isSpectator ? 0 : 1)})`
+                                : (session.alias || character?.name || `User_${session.contactId.slice(-4)}`)}
+                            {(isGenerating || isOfflineGenerating) && (
+                                <span className="chat-typing-indicator">
+                                    {offlineMode ? "线下生成中" : "对方正在输入"}<span className="chat-typing-dots"><i/><i/><i/></span>
+                                </span>
+                            )}
+                        </span>
+                        {!session.isGroup && (
+                            <CharScheduleChip
+                                contactId={session.contactId}
+                                charName={session.alias || character?.name || "对方"}
+                            />
                         )}
-                    </span>
+                    </div>
                     <span className="page-header-right">
                         <button className="page-back-btn" type="button" onClick={() => setShowSettings(true)} aria-label="更多">
                             <MoreHorizontal size={22} strokeWidth={1.5} />

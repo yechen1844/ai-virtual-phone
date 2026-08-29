@@ -167,6 +167,30 @@ function isImageGenerationMediaMessage(msg: ChatMessage): boolean {
         && Boolean(msg.mediaData?.imageGenerationPrompt);
 }
 
+/**
+ * 提取「本轮用户输入」{{input}}：从历史末尾向前，收集连续的 user 发言
+ * （system 消息跳过不中断、不计入；一旦遇到 assistant/char 回复即视为上一轮结束）。
+ * 返回本轮全部 user 消息的合并文本，按时间正序逐条换行拼接——区别于
+ * {{lastUserMessage}}（只取最后一条 user 消息）。
+ */
+function getCurrentUserInput(history: ChatMessage[]): string {
+    const collected: ChatMessage[] = [];
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+        const role = resolveHistoryPromptRole(history[i]);
+        if (role === "user") {
+            collected.push(history[i]);
+        } else if (role === "assistant") {
+            break;
+        }
+        // system：跳过继续，不中断"本轮"判定
+    }
+    return collected
+        .reverse()
+        .map(m => (m.content || "").trim())
+        .filter(Boolean)
+        .join("\n");
+}
+
 function formatPhotoDirective(msg: ChatMessage, prefix = ""): string {
     const description = msg.mediaData?.label?.trim() || "图片";
     const mode = msg.mediaData?.useReferenceImage === true ? "使用参考图" : "不使用参考图";
@@ -654,6 +678,7 @@ export function assemblePromptPayload(input: AssemblerInput): LLMMessage[] {
         engine.lastUserMessage = history.filter(m => m.role === "user").pop()?.content ?? "";
         engine.lastCharMessage = history.filter(m => m.role === "assistant").pop()?.content ?? "";
         engine.lastMessage = history.length > 0 ? history[history.length - 1].content : "";
+        engine.currentInput = getCurrentUserInput(history);
         engine.description = character.persona ?? "";
         engine.personality = character.personality ?? "";
         engine.persona = userIdentity?.bio ?? "";
@@ -1856,6 +1881,7 @@ export function assembleGroupPromptPayload(input: GroupAssemblerInput): LLMMessa
         engine.lastUserMessage = history.filter(msg => resolveHistoryPromptRole(msg) === "user").pop()?.content ?? "";
         engine.lastCharMessage = history.filter(msg => resolveHistoryPromptRole(msg) === "assistant").pop()?.content ?? "";
         engine.lastMessage = history.length > 0 ? history[history.length - 1].content : "";
+        engine.currentInput = getCurrentUserInput(history);
         engine.customStickerNames = input.customStickerNames ?? "";
         engine.customStickerExample = input.customStickerExample ?? "";
         engine.musicLocal = input.musicLocal ?? "";
@@ -1984,6 +2010,7 @@ export function assembleGroupPromptPayload(input: GroupAssemblerInput): LLMMessa
         groupEngine.lastUserMessage = history.filter(msg => resolveHistoryPromptRole(msg) === "user").pop()?.content ?? "";
         groupEngine.lastCharMessage = history.filter(msg => resolveHistoryPromptRole(msg) === "assistant").pop()?.content ?? "";
         groupEngine.lastMessage = history.length > 0 ? history[history.length - 1].content : "";
+        groupEngine.currentInput = getCurrentUserInput(history);
         groupEngine.customStickerNames = input.customStickerNames ?? "";
         groupEngine.customStickerExample = input.customStickerExample ?? "";
         groupEngine.musicLocal = input.musicLocal ?? "";
