@@ -3919,6 +3919,17 @@
 .ui-entry-card[data-active="true"] { border-color: var(--c-icon-active); }
 .ui-entry-card[data-disabled="true"] { opacity: 0.5; }
 
+/* ── 预设条目按 App 筛选：高亮/变暗 ── */
+.ui-entry-card[data-app-match="1"] {
+  border-color: var(--c-icon-active);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--c-icon-active) 30%, transparent);
+  background: color-mix(in srgb, var(--c-icon-active) 6%, var(--c-card, #fff));
+}
+.ui-entry-card[data-app-match="0"] {
+  opacity: 0.3;
+  filter: grayscale(0.5);
+}
+
 /* ── Entry card 左滑操作（新增/删除） ── */
 .ui-swipe-wrap {
   position: relative;

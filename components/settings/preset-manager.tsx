@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useContext, useCallback, useMemo } from "react";
-import { Plus, Upload, Download, Trash2, RotateCcw, ChevronLeft, ChevronDown, GripVertical, MessageSquare, AlertCircle, Maximize2, Copy, Replace, CheckSquare, Check, RefreshCw } from "lucide-react";
+import { Plus, Upload, Download, Trash2, RotateCcw, ChevronLeft, ChevronDown, GripVertical, MessageSquare, AlertCircle, Maximize2, Copy, Replace, CheckSquare, Check, RefreshCw, Filter } from "lucide-react";
 import {
     loadPresets,
     savePresets,
@@ -158,6 +158,11 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
     const [selectMode, setSelectMode] = useState(false);
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [confirmDeleteSelected, setConfirmDeleteSelected] = useState(false);
+
+    // ── 按 App 筛选（高亮/仅显示/仅折叠/同类折叠） ──
+    const [appFilterOpen, setAppFilterOpen] = useState(false);
+    const [appFilterMode, setAppFilterMode] = useState<"highlight" | "only-show" | "collapse" | "group-collapse">("highlight");
+    const [appFilterTagKey, setAppFilterTagKey] = useState<string>(""); // 选中的 minor tag key（JSON.stringify(tags)）
 
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -1153,7 +1158,17 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                 {/* Prompts Section */}
                                 <div className="flex flex-col gap-4 mt-3">
                                     <div className="mx-2 mb-0 mt-2 flex items-center justify-between">
-                                        <h2 className="ts-20 font-bold leading-none text-black">Prompt Entries ({preset.prompts?.length || 0})</h2>
+                                        <div className="flex items-center gap-2">
+                                            <h2 className="ts-20 font-bold leading-none text-black">Prompt Entries ({preset.prompts?.length || 0})</h2>
+                                            <button
+                                                type="button"
+                                                onClick={() => setAppFilterOpen(true)}
+                                                className={`inline-flex h-8 items-center justify-center gap-1 rounded-full border px-3 text-xs font-bold shadow-sm transition-all active:scale-95 ${appFilterTagKey ? "border-[var(--c-icon-active)] bg-[var(--c-icon-active)] text-white" : "border-black/10 bg-white text-gray-800 hover:bg-gray-50"}`}
+                                            >
+                                                <Filter size={14} strokeWidth={1.8} />
+                                                <span>按 App{appFilterTagKey ? " · 已选" : ""}</span>
+                                            </button>
+                                        </div>
                                         {selectMode ? (
                                             <div className="flex items-center gap-2">
                                                 <span className="menu-desc ts-12">已选 {selectedIds.size} 项</span>
@@ -1193,7 +1208,21 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                     >
                                         {(() => {
                                             // 按 prompt_order + 孤儿构建唯一列表（identifier 去重，避免重复条目/索引错位/拖错条目）
-                                            return buildDisplayedPrompts(preset);
+                                            const allPrompts = buildDisplayedPrompts(preset);
+
+                                            // ── 按 App 筛选 ──
+                                            const filterTags = appFilterTagKey ? JSON.parse(appFilterTagKey) as string[] : null;
+                                            const matchesFilter = (p: Prompt) => {
+                                                if (!filterTags) return true;
+                                                const pt = getPromptTags(p);
+                                                if (filterTags.length === 0) return pt.length === 0;
+                                                return areTagsEqual(pt, filterTags);
+                                            };
+
+                                            if (appFilterMode === "only-show" && filterTags) {
+                                                return allPrompts.filter(matchesFilter);
+                                            }
+                                            return allPrompts;
                                         })().map((prompt, index) => {
                                             const isEditing = editingPromptId === prompt.identifier;
                                             // Effective enabled: prompt_order overrides prompt.enabled
@@ -1272,6 +1301,14 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                     data-active={isEditing}
                                                     data-selected={selectMode && selectedIds.has(prompt.identifier) ? "true" : undefined}
                                                     data-disabled={!effectiveEnabled}
+                                                    data-app-match={(() => {
+                                                        if (!appFilterTagKey) return undefined;
+                                                        if (appFilterMode === "only-show") return undefined;
+                                                        const ft = JSON.parse(appFilterTagKey) as string[];
+                                                        const pt = getPromptTags(prompt);
+                                                        const m = ft.length === 0 ? pt.length === 0 : areTagsEqual(pt, ft);
+                                                        return m ? "1" : "0";
+                                                    })()}
                                                     style={{
                                                         gap: isEditing ? "12px" : "0px",
                                                         userSelect: isEditing ? undefined : "none",
@@ -1800,6 +1837,74 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                         placeholder="在此输入提示词内容..."
                         onClose={() => setExpandTarget(null)}
                     />
+                );
+            })()}
+
+            {/* ── 按 App 筛选弹窗 ── */}
+            {appFilterOpen && editingId && (() => {
+                const allMinors = tagGroups.flatMap(g => g.minors.map(m => ({ ...m, groupLabel: g.label })));
+                return (
+                    <BottomSheet title="按 App 筛选条目" onClose={() => setAppFilterOpen(false)}>
+                        <div className="flex flex-col gap-4">
+                            {/* 选择 App tag */}
+                            <div>
+                                <div className="menu-label ts-12 mb-2">选择 App</div>
+                                <div className="flex flex-wrap gap-2">
+                                    {allMinors.map(m => {
+                                        const key = JSON.stringify(m.tags);
+                                        const selected = appFilterTagKey === key;
+                                        return (
+                                            <button
+                                                key={m.id}
+                                                type="button"
+                                                onClick={() => setAppFilterTagKey(selected ? "" : key)}
+                                                className={`inline-flex items-center justify-center gap-1 rounded-full border px-3 py-1.5 text-xs font-bold transition-all active:scale-95 ${selected ? "border-[var(--c-icon-active)] bg-[var(--c-icon-active)] text-white" : "border-black/10 bg-white text-gray-800 hover:bg-gray-50"}`}
+                                            >
+                                                {m.groupLabel}{m.tags.length > 0 ? ` · ${m.label}` : ""}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
+                            {/* 选择模式 */}
+                            <div>
+                                <div className="menu-label ts-12 mb-2">操作模式</div>
+                                <div className="flex flex-col gap-2">
+                                    {([
+                                        { id: "highlight", label: "高亮显示", desc: "匹配条目高亮，其它变暗" },
+                                        { id: "only-show", label: "仅显示", desc: "只显示匹配条目，隐藏其它" },
+                                        { id: "collapse", label: "仅折叠", desc: "匹配条目折叠为摘要" },
+                                        { id: "group-collapse", label: "同类折叠", desc: "相同 App tag 的条目折叠成一组" },
+                                    ] as const).map(opt => (
+                                        <button
+                                            key={opt.id}
+                                            type="button"
+                                            onClick={() => setAppFilterMode(opt.id)}
+                                            className={`flex items-center justify-between rounded-xl border px-4 py-3 text-left transition-all active:scale-[0.98] ${appFilterMode === opt.id ? "border-[var(--c-icon-active)] bg-[var(--c-icon-active)]/5" : "border-black/10 bg-white hover:bg-gray-50"}`}
+                                        >
+                                            <div className="flex flex-col gap-0.5">
+                                                <span className="text-xs font-bold text-gray-800">{opt.label}</span>
+                                                <span className="menu-desc ts-11">{opt.desc}</span>
+                                            </div>
+                                            <div className={`h-4 w-4 rounded-full border-2 ${appFilterMode === opt.id ? "border-[var(--c-icon-active)] bg-[var(--c-icon-active)]" : "border-gray-300"}`} />
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* 清除按钮 */}
+                            {appFilterTagKey && (
+                                <button
+                                    type="button"
+                                    onClick={() => { setAppFilterTagKey(""); setAppFilterMode("highlight"); }}
+                                    className="ui-btn w-full"
+                                >
+                                    清除筛选
+                                </button>
+                            )}
+                        </div>
+                    </BottomSheet>
                 );
             })()}
         </div>
