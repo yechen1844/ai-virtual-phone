@@ -21,6 +21,7 @@ import {
   saveDaily,
   savePeriod,
   getDaily,
+  deleteDaily,
 } from "./storage";
 import { getUserName, dateString, dateFromTimestamp, extractJsonObject, clampNum, capSourceMaterials } from "./utils";
 import { pushFeedAudit } from "./feed-audit";
@@ -278,6 +279,17 @@ function parseDailyJson(text: string): DailyParseResult | null {
   } catch {
     return null;
   }
+}
+
+/** 手动重新总结某一天的日记：删除旧日记后按当日时间线重新生成（自选日期重新总结）。 */
+export async function regenerateDaily(
+  characterId: string,
+  characterName: string,
+  date: string,
+): Promise<{ success: boolean; error?: string }> {
+  const existing = await getDaily(characterId, date);
+  if (existing) await deleteDaily(existing.id);
+  return generateDaily(characterId, characterName, date, { suppressChain: true });
 }
 
 async function applyPeriodCheck(

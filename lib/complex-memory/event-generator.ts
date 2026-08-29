@@ -266,6 +266,39 @@ async function generateEventForWindow(
  * 每窗一次 LLM 调用，返回下一窗索引与是否完成，天然支持断点续跑。
  * 迁移期间抑制 float 镜像，避免与既有 float 长期记忆重复。
  */
+/** 手动重新总结单条事件：基于该事件的原始素材重新提炼并替换内容（自选事件重新总结）。 */
+export async function regenerateEvent(
+  characterId: string,
+  characterName: string,
+  event: ComplexEvent,
+): Promise<{ success: boolean; error?: string }> {
+  const config = loadComplexMemoryConfig();
+  const apiConfig = resolveAuxiliaryApiConfig("complexMemoryApiConfigId");
+  if (!apiConfig) return { success: false, error: "未配置复杂记忆生成 API" };
+  const material = event.sourceMaterials?.trim() || event.content;
+  const prompt = `请把下面的原始素材重新提炼为一条约 ${config.eventTargetLength} 字的第一人称事件记忆，保留关键情节、情绪与延续性；只需输出事件正文，不要多余解释：\n\n【原始素材】\n${material}\n\n【现有事件(可参考可改写)】\n${event.content}`;
+  const result = await simpleLLMCall(apiConfig, [{ role: "user", content: prompt }], {
+    temperature: 0.4,
+    label: `复杂记忆·事件重写·${characterName}`,
+  });
+  if (!result.content) return { success: false, error: result.error || "LLM 返回空内容" };
+  const content = result.content.trim();
+  const updated: ComplexEvent = { ...event, content, lastAccessedAt: new Date().toISOString() };
+  await saveEvent(updated);
+  if (config.vectorRecallEnabled) {
+    const embApi = resolveAuxiliaryApiConfig("embeddingApiConfigId");
+    if (embApi && resolveEmbeddingModel(embApi)) {
+      try {
+        const emb = await generateEmbedding(content, embApi);
+        if (emb) await saveEvent({ ...updated, embedding: emb });
+      } catch {
+        /* 向量失败不阻断 */
+      }
+    }
+  }
+  return { success: true };
+}
+
 export async function generateEventWindow(
   characterId: string,
   characterName: string,

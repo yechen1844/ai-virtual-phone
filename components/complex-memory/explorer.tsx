@@ -82,9 +82,9 @@ import {
   deleteCoreEntry,
   sanitizeCoreEntryText,
 } from "@/lib/complex-memory/core-builder";
-import { generateDaily } from "@/lib/complex-memory/daily-generator";
+import { generateDaily, regenerateDaily } from "@/lib/complex-memory/daily-generator";
 import { distillPeriod, createPeriodManual } from "@/lib/complex-memory/period-distiller";
-import { runEventGeneration } from "@/lib/complex-memory/event-generator";
+import { runEventGeneration, regenerateEvent } from "@/lib/complex-memory/event-generator";
 import {
   getMigrationState,
   startMigration,
@@ -719,6 +719,20 @@ function DailyTab({ characterId, characterName, notify, refresh }: {
     await load();
   };
 
+  const handleRegenerate = async (d: ComplexDaily) => {
+    setBusy(true);
+    const res = await regenerateDaily(characterId, characterName, d.date);
+    setBusy(false);
+    if (res.success) {
+      notify({ kind: "ok", text: `「${d.date}」日记已重新总结` });
+      await load();
+      refresh();
+    } else {
+      await load();
+      notify({ kind: "err", text: res.error ?? "重新总结失败" });
+    }
+  };
+
   const handleToggleSpecial = async (d: ComplexDaily) => {
     await saveDaily({ ...d, special: d.special === true ? false : true });
     notify({ kind: "ok", text: d.special === true ? "已取消特殊日期标记" : "已标记为特殊一天" });
@@ -868,6 +882,9 @@ function DailyTab({ characterId, characterName, notify, refresh }: {
                         <div className="cm-card-actions">
                           <span className="cm-meta-text">情绪 {d.emotionVector.valence.toFixed(2)} / {d.emotionVector.arousal.toFixed(2)}</span>
                         <span className="cm-spacer" />
+                        <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => void handleRegenerate(d)} disabled={busy}>
+                          <RefreshCw size={14} /> 重新总结
+                        </button>
                         <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => void handleToggleSpecial(d)}>
                           <Flame size={14} /> {d.special === true ? "取消特殊" : "标记特殊"}
                         </button>
@@ -1382,6 +1399,19 @@ function EventTab({ characterId, characterName, notify, refresh }: {
     await load();
   };
 
+  const handleRegenerate = async (e: ComplexEvent) => {
+    setBusy(true);
+    const res = await regenerateEvent(characterId, characterName, e);
+    setBusy(false);
+    if (res.success) {
+      notify({ kind: "ok", text: "事件已重新总结" });
+      await load();
+      refresh();
+    } else {
+      notify({ kind: "err", text: res.error ?? "重新总结失败" });
+    }
+  };
+
   return (
     <div className="cm-section">
       <div className="cm-section-head">
@@ -1432,6 +1462,9 @@ function EventTab({ characterId, characterName, notify, refresh }: {
                         <div className="cm-card-actions">
                           <span className="cm-meta-text">情绪 {e.emotion.valence.toFixed(2)} / {e.emotion.arousal.toFixed(2)}</span>
                           <span className="cm-spacer" />
+                          <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => void handleRegenerate(e)} disabled={busy}>
+                            <RefreshCw size={14} /> 重新总结
+                          </button>
                           <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => void handleBoost(e)}>
                             <Zap size={14} /> 充能
                           </button>
@@ -1833,10 +1866,14 @@ function MigrationTab({ characterId, characterName, notify }: {
   const [rangeEnd, setRangeEnd] = useState("");
   const [estimate, setEstimate] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  const [periods, setPeriods] = useState<ComplexPeriod[]>([]);
+  const [regenPeriodId, setRegenPeriodId] = useState("");
+  const [regenBusy, setRegenBusy] = useState(false);
   const autoRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadCounts = useCallback(async () => {
     setCounts(await countByCharacter(characterId));
+    setPeriods(await loadPeriods(characterId));
   }, [characterId]);
 
   const refreshState = useCallback(() => {
@@ -1909,6 +1946,20 @@ function MigrationTab({ characterId, characterName, notify }: {
   const handleEstimate = () => {
     const custom = migMode === "custom" && (rangeStart || rangeEnd);
     setEstimate(custom ? estimateMigration(characterId, 0, { start: rangeStart || undefined, end: rangeEnd || undefined }) : estimateMigration(characterId, days));
+  };
+
+  const handleRegeneratePeriod = async () => {
+    if (!regenPeriodId) { notify({ kind: "err", text: "请先选择一个周期" }); return; }
+    const p = periods.find((x) => x.id === regenPeriodId);
+    setRegenBusy(true);
+    const res = await distillPeriod(characterId, characterName, regenPeriodId, {});
+    setRegenBusy(false);
+    if (res.success) {
+      notify({ kind: "ok", text: `周期「${p?.title ?? ""}」已重新总结替换` });
+      await loadCounts();
+    } else {
+      notify({ kind: "err", text: res.error ?? "重新总结失败" });
+    }
   };
 
   const handleExport = async () => {
@@ -1997,6 +2048,20 @@ function MigrationTab({ characterId, characterName, notify }: {
             {estimate !== null && (
               <span className="cm-meta-text">预估约 {fmtTokens(estimate)}</span>
             )}
+          </div>
+          <div className="cm-mig-regen">
+            <span className="cm-config-label">重新总结指定周期（替换原总结）</span>
+            <div className="cm-mig-range">
+              <Select value={regenPeriodId} onChange={(e) => setRegenPeriodId(e.target.value)} className="cm-filter-select" aria-label="选择周期">
+                <option value="">选择周期…</option>
+                {periods.map((p) => (
+                  <option key={p.id} value={p.id}>{p.title}（{p.startTime} ~ {p.endTime ?? "至今"}）</option>
+                ))}
+              </Select>
+              <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => void handleRegeneratePeriod()} disabled={regenBusy || !regenPeriodId}>
+                {regenBusy ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} 重新总结替换
+              </button>
+            </div>
           </div>
           {counts && (
             <div className="cm-meta-row">
