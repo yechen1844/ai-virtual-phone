@@ -1220,10 +1220,83 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                             };
 
                                             if (appFilterMode === "only-show" && filterTags) {
-                                                return allPrompts.filter(matchesFilter);
+                                                return allPrompts.filter(matchesFilter).map(p => ({ type: "item" as const, prompt: p }));
                                             }
-                                            return allPrompts;
-                                        })().map((prompt, index) => {
+
+                                            // collapse = 相邻折叠：连续匹配的条目折叠成一组（分散在别处的不动）
+                                            // group-collapse = 整组折叠：所有匹配条目折叠成一组（不管分散在哪），不影响真实顺序
+                                            if (filterTags && (appFilterMode === "collapse" || appFilterMode === "group-collapse")) {
+                                                type RenderItem =
+                                                    | { type: "item"; prompt: Prompt }
+                                                    | { type: "collapsed"; prompts: Prompt[]; indices: number[] };
+                                                const result: RenderItem[] = [];
+                                                let i = 0;
+                                                while (i < allPrompts.length) {
+                                                    if (matchesFilter(allPrompts[i])) {
+                                                        // 收集连续匹配段（collapse）或全部匹配（group-collapse）
+                                                        const group: Prompt[] = [];
+                                                        const indices: number[] = [];
+                                                        if (appFilterMode === "group-collapse") {
+                                                            // 整组：把所有匹配的都收进同一个组，非匹配的在原位保留为 item
+                                                            for (let j = 0; j < allPrompts.length; j++) {
+                                                                if (matchesFilter(allPrompts[j])) {
+                                                                    group.push(allPrompts[j]);
+                                                                    indices.push(j);
+                                                                }
+                                                            }
+                                                            // 只在第一次遇到时生成折叠组，其余匹配项跳过（已被收进组里）
+                                                            result.push({ type: "collapsed", prompts: group, indices });
+                                                            // 把非匹配项按原位输出
+                                                            for (let j = 0; j < allPrompts.length; j++) {
+                                                                if (!matchesFilter(allPrompts[j])) {
+                                                                    result.push({ type: "item", prompt: allPrompts[j] });
+                                                                }
+                                                            }
+                                                            return result;
+                                                        }
+                                                        // collapse：收集连续匹配段
+                                                        while (i < allPrompts.length && matchesFilter(allPrompts[i])) {
+                                                            group.push(allPrompts[i]);
+                                                            indices.push(i);
+                                                            i++;
+                                                        }
+                                                        if (group.length >= 2) {
+                                                            result.push({ type: "collapsed", prompts: group, indices });
+                                                        } else {
+                                                            result.push({ type: "item", prompt: group[0] });
+                                                        }
+                                                    } else {
+                                                        result.push({ type: "item", prompt: allPrompts[i] });
+                                                        i++;
+                                                    }
+                                                }
+                                                return result;
+                                            }
+
+                                            return allPrompts.map(p => ({ type: "item" as const, prompt: p }));
+                                        })().flatMap((renderItem, _flatIndex) => {
+                                            if (renderItem.type === "collapsed") {
+                                                const group = renderItem.prompts;
+                                                const groupLabel = getPromptTagsInlineLabel(group[0]);
+                                                return [
+                                                    <div key={`collapsed-${_flatIndex}`} className="ui-entry-card ui-entry-collapsed-group" data-app-match="1">
+                                                        <div className="flex items-center justify-between cursor-pointer" onClick={() => setAppFilterMode("highlight")}>
+                                                            <div className="flex items-center gap-2">
+                                                                <ChevronDown size={16} style={{ transform: "rotate(-90deg)" }} />
+                                                                <span className="text-xs font-bold text-gray-800">{groupLabel}</span>
+                                                                <span className="menu-desc ts-11">· {group.length} 个条目已折叠</span>
+                                                            </div>
+                                                            <span className="menu-desc ts-11">点击展开</span>
+                                                        </div>
+                                                    </div>,
+                                                ];
+                                            }
+                                            const prompt = renderItem.prompt;
+                                            const index = (() => {
+                                                // 找到在 allPrompts 中的真实 index（拖拽需要正确 index）
+                                                const allPrompts = buildDisplayedPrompts(preset);
+                                                return allPrompts.findIndex(p => p.identifier === prompt.identifier);
+                                            })();
                                             const isEditing = editingPromptId === prompt.identifier;
                                             // Effective enabled: prompt_order overrides prompt.enabled
                                             const effectiveEnabled = preset.prompt_order

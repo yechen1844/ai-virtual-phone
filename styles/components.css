@@ -3930,6 +3930,14 @@
   filter: grayscale(0.5);
 }
 
+/* ── 折叠组：轻量摘要卡 ── */
+.ui-entry-collapsed-group {
+  padding: 10px 16px !important;
+  gap: 0 !important;
+  border-style: dashed !important;
+  border-width: 1.5px !important;
+}
+
 /* ── Entry card 左滑操作（新增/删除） ── */
 .ui-swipe-wrap {
   position: relative;
