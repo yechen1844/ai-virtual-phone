@@ -449,6 +449,26 @@ export async function generateReadingChat(
     );
     if (!responseText) return null;
 
+    // ── 临时诊断：打印模型原始返回 + 解析结果，定位批注操作为何没被提取 ──
+    try {
+        const diag = parseReadingDiscussResponse(responseText);
+        console.log("[Reading/Diag] rawReply length:", responseText.length);
+        console.log("[Reading/Diag] rawReply (first 600 chars):", responseText.slice(0, 600));
+        console.log("[Reading/Diag] parsed actions count:", diag.actions.length);
+        console.log("[Reading/Diag] parsed actions:", JSON.stringify(diag.actions));
+        console.log("[Reading/Diag] reply (first 300 chars):", diag.reply.slice(0, 300));
+        // 检查原始文本里有没有"新增批注"关键字
+        const hasKeyword = responseText.includes("新增批注") || responseText.includes("删除批注") || responseText.includes("修改批注");
+        console.log("[Reading/Diag] contains action keyword:", hasKeyword);
+        if (hasKeyword) {
+            // 找到关键字附近的原文
+            const idx = responseText.search(/新增批注|删除批注|修改批注/);
+            console.log("[Reading/Diag] keyword context:", JSON.stringify(responseText.slice(Math.max(0, idx - 30), idx + 100)));
+        }
+    } catch (e) {
+        console.log("[Reading/Diag] diag error:", e);
+    }
+
     // Return raw text — caller is responsible for parsing and saving (like chat-room's splitAndSaveAIMessages)
     return responseText;
 }
