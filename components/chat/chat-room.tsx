@@ -472,6 +472,8 @@ function shouldShowTimestamp(currentMsg: string, prevMsg: string | null): boolea
 type ChatRoomProps = {
     session: ChatSession;
     onBack: () => void;
+    /** 上游新增：该会话被删除后回调（供会话列表刷新/离开） */
+    onDeleted?: () => void;
 };
 
 type OfflineActionTarget = {

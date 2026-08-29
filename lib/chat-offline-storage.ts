@@ -241,3 +241,16 @@ export function parseOfflineResponse(rawText: string, summaryTag: string): Parse
         summaryTag: effectiveSummaryTag,
     };
 }
+
+// 官方上游新增：线下轮次「最后一条」与列表预览展示（兼容上游调用方）
+export function getLastChatOfflineTurn(sessionId: string): ChatOfflineTurn | null {
+    const turns = loadChatOfflineTurns(sessionId);
+    return turns.length ? turns[turns.length - 1] : null;
+}
+
+export function getChatOfflineTurnPreview(turn: ChatOfflineTurn | null): string {
+    if (!turn) return "";
+    const source = turn.summary.trim() || turn.assistantContent.trim() || turn.userContent.trim();
+    const text = compactProjectionText(source, 60);
+    return text ? `[线下] ${text}` : "";
+}
