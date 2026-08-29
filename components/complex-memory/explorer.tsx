@@ -29,6 +29,7 @@ import {
   Trash2,
   Upload,
   Zap,
+  Link,
 } from "lucide-react";
 import { Input, Select, Textarea, Toggle } from "@/components/ui/form";
 import { loadCharacters } from "@/lib/character-storage";
@@ -918,6 +919,8 @@ function PeriodTab({ characterId, characterName, notify, refresh }: {
   const [thinkBusy, setThinkBusy] = useState(false);
   const [thinkResult, setThinkResult] = useState<PeriodThinkResult | null>(null);
   const [thinkError, setThinkError] = useState("");
+  // 手动关联：把日记挂到周期上（修正机器判断，供提炼与按日期填充）
+  const [linkDailyForId, setLinkDailyForId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const [ps, ds] = await Promise.all([loadPeriods(characterId), loadDailies(characterId)]);
@@ -979,6 +982,16 @@ function PeriodTab({ characterId, characterName, notify, refresh }: {
     await load();
   };
 
+  const handleLinkDaily = async (p: ComplexPeriod, daily: ComplexDaily, link: boolean) => {
+    const belongs = new Set(daily.belongsToPeriods);
+    if (link) belongs.add(p.id); else belongs.delete(p.id);
+    await saveDaily({ ...daily, belongsToPeriods: [...belongs] });
+    const dates = new Set(p.associatedDates);
+    if (link) dates.add(daily.date); else dates.delete(daily.date);
+    await savePeriod({ ...p, associatedDates: [...dates].sort() });
+    await load();
+  };
+
   // ── 周期思考：多选日记 → 模型综合判定是否开启长期事件 ──
   const toggleThink = () => {
     setShowThink((v) => {
@@ -1008,16 +1021,20 @@ function PeriodTab({ characterId, characterName, notify, refresh }: {
       setThinkError(res.error ?? "周期思考失败");
       return;
     }
-    setThinkResult(res.result ?? { newPeriods: [], existing: [] });
+    setThinkResult(res.result ?? { periods: [], existing: [] });
   };
 
   const handleCreateFromThink = async (np: PeriodThinkNew) => {
     setBusy(true);
-    const start = [...thinkSelected].sort()[0] ?? "";
-    const res = await createPeriodManual(characterId, np.title, start, null);
+    const start = np.startDate || [...thinkSelected].sort()[0] || "";
+    const end = np.endDate || null;
+    const res = await createPeriodManual(characterId, np.title, start, end, {
+      dates: np.dates?.length ? np.dates : undefined,
+      timeline: np.timeline,
+    });
     setBusy(false);
     if (res.success) {
-      notify({ kind: "ok", text: `周期「${np.title}」已创建（起始 ${start}）` });
+      notify({ kind: "ok", text: `周期「${np.title}」已创建（${start} ~ ${end ?? "至今"}）` });
       await load();
       refresh();
     } else {
@@ -1120,15 +1137,26 @@ function PeriodTab({ characterId, characterName, notify, refresh }: {
           {thinkResult && (
             <div className="cm-think-result">
               <div className="cm-think-result-group">
-                <div className="cm-meta-text cm-think-group-title">建议开启的新周期（{thinkResult.newPeriods.length}）</div>
-                {thinkResult.newPeriods.length === 0 && <p className="cm-muted">这段时间未检出值得作为长期事件的新周期。</p>}
-                {thinkResult.newPeriods.map((np, i) => (
+                <div className="cm-meta-text cm-think-group-title">建议开启的新周期（{thinkResult.periods.length}）</div>
+                {thinkResult.periods.length === 0 && <p className="cm-muted">这段时间未检出值得作为长期事件的新周期。</p>}
+                {thinkResult.periods.map((np, i) => (
                   <div key={`${np.title}-${i}`} className="cm-think-period-item">
                     <div className="cm-think-item-head">
                       <span className="cm-badge">新周期</span>
                       <strong>{np.title}</strong>
                     </div>
+                    {np.startDate && (
+                      <p className="cm-meta-text">起止：{np.startDate} ~ {np.endDate || "至今"} · 覆盖 {np.dates?.length ?? 0} 天</p>
+                    )}
                     <p className="cm-meta-text">{np.reason}</p>
+                    {np.dates && np.dates.length > 0 && (
+                      <div className="cm-think-timeline-preview">
+                        {np.dates.slice(0, 10).map((d) => (
+                          <span key={d} className="cm-badge cm-badge-soft">{d}</span>
+                        ))}
+                        {np.dates.length > 10 && <span className="cm-meta-text">+{np.dates.length - 10} 天</span>}
+                      </div>
+                    )}
                     <div className="cm-card-actions">
                       <span className="cm-spacer" />
                       <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={() => void handleCreateFromThink(np)} disabled={busy}>
@@ -1234,6 +1262,27 @@ function PeriodTab({ characterId, characterName, notify, refresh }: {
                   {p.linkedPeriods.length > 0 && (
                     <p className="cm-meta-text">丝线关联：{p.linkedPeriods.join("、")}</p>
                   )}
+                  {linkDailyForId === p.id && (
+                    <div className="cm-period-edit-col">
+                      <div className="cm-meta-text">关联日记（勾选归属该周期，供提炼与按日期填充；共 {dailies.length} 篇，可修正机器判断）</div>
+                      <div className="cm-link-daily-list">
+                        {[...dailies].sort((a, b) => b.date.localeCompare(a.date)).map((d) => {
+                          const linked = d.belongsToPeriods.includes(p.id) || p.associatedDates.includes(d.date);
+                          return (
+                            <label key={d.id} className="cm-link-daily-row">
+                              <input type="checkbox" checked={linked} onChange={(e) => void handleLinkDaily(p, d, e.target.checked)} />
+                              <span className="cm-meta-text cm-link-daily-date">{d.date}</span>
+                              <span className="cm-link-daily-content">{d.content.slice(0, 40)}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                      <div className="cm-card-actions">
+                        <span className="cm-spacer" />
+                        <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={() => setLinkDailyForId(null)}>完成</button>
+                      </div>
+                    </div>
+                  )}
                   {briefForId === p.id ? (
                     <div className="cm-period-edit-col">
                       <Textarea className="cm-core-editor" rows={3} value={briefDraft} onChange={(e) => setBriefDraft(e.target.value)} placeholder="补充该周期的主线/重点，作为提炼输入（可选）" />
@@ -1248,6 +1297,9 @@ function PeriodTab({ characterId, characterName, notify, refresh }: {
                     <div className="cm-card-actions">
                       <span className="cm-meta-text">覆盖事件 {p.coveredEventIds.length} 条 · 电压 {voltagePct(effectiveVoltage(p, { kind: "period" }))}</span>
                       <span className="cm-spacer" />
+                      <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => setLinkDailyForId(linkDailyForId === p.id ? null : p.id)}>
+                        <Link size={14} /> 关联日记
+                      </button>
                       <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => { setBriefForId(p.id); setBriefDraft(""); }}>
                         <Flame size={14} /> 手动总结
                       </button>
@@ -1776,6 +1828,9 @@ function MigrationTab({ characterId, characterName, notify }: {
   const [counts, setCounts] = useState<{ events: number; dailies: number; periods: number; coreEntries: number } | null>(null);
   const [state, setState] = useState<MigrationState | null>(() => getMigrationState(characterId));
   const [days, setDays] = useState<number>(() => loadComplexMemoryConfig().migrationDefaultDays);
+  const [migMode, setMigMode] = useState<"fixed" | "custom">("fixed");
+  const [rangeStart, setRangeStart] = useState("");
+  const [rangeEnd, setRangeEnd] = useState("");
   const [estimate, setEstimate] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const autoRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -1816,7 +1871,10 @@ function MigrationTab({ characterId, characterName, notify }: {
 
   const handleStart = async () => {
     setBusy(true);
-    const res = await startMigration(characterId, characterName, days);
+    const custom = migMode === "custom" && (rangeStart || rangeEnd);
+    const res = custom
+      ? await startMigration(characterId, characterName, 0, false, { start: rangeStart || undefined, end: rangeEnd || undefined })
+      : await startMigration(characterId, characterName, days);
     setBusy(false);
     if (res.success) {
       notify({ kind: "ok", text: `迁移已启动，预估约 ${fmtTokens(res.estimate ?? 0)}` });
@@ -1849,7 +1907,8 @@ function MigrationTab({ characterId, characterName, notify }: {
   };
 
   const handleEstimate = () => {
-    setEstimate(estimateMigration(characterId, days));
+    const custom = migMode === "custom" && (rangeStart || rangeEnd);
+    setEstimate(custom ? estimateMigration(characterId, 0, { start: rangeStart || undefined, end: rangeEnd || undefined }) : estimateMigration(characterId, days));
   };
 
   const handleExport = async () => {
@@ -1910,13 +1969,28 @@ function MigrationTab({ characterId, characterName, notify }: {
                 <button
                   key={o.value}
                   type="button"
-                  className={`cm-mig-day ${days === o.value ? "is-active" : ""}`}
-                  onClick={() => { setDays(o.value); setEstimate(null); }}
+                  className={`cm-mig-day ${migMode === "fixed" && days === o.value ? "is-active" : ""}`}
+                  onClick={() => { setDays(o.value); setMigMode("fixed"); setEstimate(null); }}
                 >
                   {o.label}
                 </button>
               ))}
+              <button
+                type="button"
+                className={`cm-mig-day ${migMode === "custom" ? "is-active" : ""}`}
+                onClick={() => { setMigMode("custom"); setEstimate(null); }}
+              >
+                自定义范围
+              </button>
             </div>
+            {migMode === "custom" && (
+              <div className="cm-mig-range">
+                <Input type="date" value={rangeStart} onChange={(e) => { setRangeStart(e.target.value); setEstimate(null); }} aria-label="起始日期" className="cm-config-input" />
+                <span className="cm-meta-text">至</span>
+                <Input type="date" value={rangeEnd} onChange={(e) => { setRangeEnd(e.target.value); setEstimate(null); }} aria-label="结束日期" className="cm-config-input" />
+                <span className="cm-meta-text">（留空表示不限一端）</span>
+              </div>
+            )}
             <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={handleEstimate}>
               估算 token
             </button>

@@ -23,7 +23,7 @@ import { getUserName, dateString, dateFromTimestamp, extractJsonObject, capSourc
 import { pushFeedAudit } from "./feed-audit";
 import { runEraseScan } from "./voltage";
 import { fineTuneCoreMemory } from "./core-builder";
-import type { ComplexPeriod } from "./types";
+import type { ComplexDaily, ComplexPeriod } from "./types";
 
 export async function distillPeriod(
   characterId: string,
@@ -48,8 +48,9 @@ export async function distillPeriod(
     if (!apiConfig) return { success: false, error: "未配置复杂记忆生成 API" };
 
     const [dailies, events] = await Promise.all([loadDailies(characterId), loadEvents(characterId)]);
-    const periodDailies = dailies.filter((d) => d.belongsToPeriods.includes(periodId));
-    const periodEvents = events.filter((e) => e.periodsRef.includes(periodId));
+    const coverageSet = new Set(buildPeriodCoverage(period, dailies));
+    const periodDailies = dailies.filter((d) => d.belongsToPeriods.includes(periodId) || coverageSet.has(d.date));
+    const periodEvents = events.filter((e) => e.periodsRef.includes(periodId) || coverageSet.has(String(e.timestamp).slice(0, 10)));
 
     const dailiesText = periodDailies.map((d) => `[${d.date}] ${d.content}`).join("\n\n");
     const eventsText = periodEvents.map((e) => `[${dateFromTimestamp(e.timestamp)}] ${e.content}`).join("\n\n");
@@ -147,6 +148,24 @@ export async function distillPeriod(
   return outcome;
 }
 
+/** 周期提炼素材覆盖日期：优先用已关联日期；未关联时回退到周期起止范围内有日记的日期（活跃期只取到今天，避免误取未来）。 */
+function buildPeriodCoverage(period: ComplexPeriod, dailies: ComplexDaily[]): string[] {
+  const set = new Set<string>(period.associatedDates ?? []);
+  const start = period.startTime;
+  const end = period.endTime;
+  const today = dateString(0);
+  for (const d of dailies) {
+    if (d.date < start) continue;
+    if (end) {
+      if (d.date <= end) set.add(d.date);
+    } else {
+      // 活跃期（未结束）：只取 start ~ 今天，避免误取未来/遥远日期
+      if (d.date <= today) set.add(d.date);
+    }
+  }
+  return [...set].sort();
+}
+
 function parsePeriodJson(text: string): { summary: string; timelineIndex: Record<string, string> } | null {
   const json = extractJsonObject(text);
   if (!json) return null;
@@ -192,10 +211,12 @@ export async function createPeriodManual(
   title: string,
   startTime: string,
   endTime?: string | null,
+  opts?: { dates?: string[]; timeline?: Record<string, string> },
 ): Promise<{ success: boolean; error?: string; periodId?: string }> {
   if (!title.trim()) return { success: false, error: "周期标题不能为空" };
   if (!startTime) return { success: false, error: "起始日期不能为空" };
   const now = new Date().toISOString();
+  const dates = opts?.dates?.length ? opts.dates.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)) : [startTime];
   const period: ComplexPeriod = {
     id: `period_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     characterId,
@@ -204,8 +225,8 @@ export async function createPeriodManual(
     endTime: endTime || null,
     status: "active",
     summary: "",
-    timelineIndex: {},
-    associatedDates: [startTime],
+    timelineIndex: opts?.timeline ?? {},
+    associatedDates: dates,
     linkedPeriods: [],
     coveredEventIds: [],
     voltage: 1,

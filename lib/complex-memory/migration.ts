@@ -82,8 +82,8 @@ export function getMigrationState(characterId: string): MigrationState | null {
 }
 
 /** 动态 token 估算：基于真实时间线条数，替换固定 1400/天。 */
-export function estimateMigration(characterId: string, days: number): number {
-  const dates = computeDates(characterId, days);
+export function estimateMigration(characterId: string, days: number, range?: { start?: string; end?: string }): number {
+  const dates = computeDates(characterId, days, range);
   const timeline = loadNativeTimeline(characterId);
   const config = loadComplexMemoryConfig();
   const windowSize = config.eventWindowMaxEntries;
@@ -120,6 +120,7 @@ export async function startMigration(
   characterName: string,
   days: number,
   force = false,
+  range?: { start?: string; end?: string },
 ): Promise<{ success: boolean; error?: string; estimate?: number }> {
   const existing = getMigrationState(characterId);
   if (existing && !force) {
@@ -128,7 +129,7 @@ export async function startMigration(
     }
   }
 
-  const dates = computeDates(characterId, days);
+  const dates = computeDates(characterId, days, range);
   const timeline = loadSourceTimeline(characterId);
   if (dates.length === 0 && timeline.length < 4) {
     return { success: false, error: "该角色没有可回溯的聊天/时间线历史" };
@@ -524,7 +525,7 @@ async function createLegacyPeriod(characterId: string): Promise<void> {
   await savePeriod(period);
 }
 
-function computeDates(characterId: string, days: number): string[] {
+function computeDates(characterId: string, days: number, range?: { start?: string; end?: string }): string[] {
   const today = dateString(0);
   const timeline = loadNativeTimeline(characterId);
   const byDate = new Map<string, number>();
@@ -532,6 +533,8 @@ function computeDates(characterId: string, days: number): string[] {
     const d = dateFromTimestamp(e.timestamp);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
     if (d >= today) continue;
+    if (range?.start && d < range.start) continue;
+    if (range?.end && d > range.end) continue;
     const ts = new Date(e.timestamp).getTime();
     const prev = byDate.get(d);
     if (prev === undefined || ts > prev) byDate.set(d, ts);

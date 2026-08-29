@@ -14,10 +14,17 @@ import { pushFeedAudit } from "./feed-audit";
 import { getUserName, extractJsonObject } from "./utils";
 import type { ComplexDaily } from "./types";
 
-export type PeriodThinkNew = { title: string; reason: string };
+export type PeriodThinkNew = {
+  title: string;
+  reason: string;
+  startDate: string;
+  endDate: string;
+  dates: string[];
+  timeline: Record<string, string>;
+};
 export type PeriodThinkExisting = { title: string; note: string };
 export type PeriodThinkResult = {
-  newPeriods: PeriodThinkNew[];
+  periods: PeriodThinkNew[];
   existing: PeriodThinkExisting[];
 };
 
@@ -47,11 +54,18 @@ const THINK_TEMPLATE = `{{//周期思考 · 多日综合判定}}
 【这几天的事件记忆（佐证连贯性）】
 {{events}}
 
-请综合上面多天的连贯内容，判断这段连续时间内是否发生了「值得作为一个长期事件/周期来记录」的事情——例如一段持续的关系进展、一个阶段性任务/冒险、一段反复出现的主题。
-注意：你每次只看到单一当天的聊天记录，容易把一个持续多天的长期事件误判为"没有长期事件开始"。请放宽视野，识别跨多天的主题或阶段性事件；但也不要为凑数硬造——只有确实构成"持续一段时间的长期事件"才判定为开启。
+请综合上面多天的连贯内容，识别这次你选中的整个时间窗口里，实际发生了哪些「值得作为一个长期事件/周期来记录的事情」——例如一段持续的关系进展、一个阶段性任务/冒险、一段反复出现的主题。
+关键：一个周期由【内容/主题】决定，可能横跨很多天、不必连续，也可能不止一个。请为每个周期给出：
+- title：明确的周期标题（主线描述）
+- startDate：该周期的起始日期（YYYY-MM-DD）
+- endDate：该周期的结束日期（YYYY-MM-DD）——是你识别到这个主题/事件真正收尾的日期；若到窗口末尾仍在进行，endDate 设为窗口内最后一天，绝不要写成"现实今天"
+- dates：该周期实际覆盖的日期列表（窗口内属于它的那些天，按日期填充用）
+- reason：为什么开启（引用多天里的具体证据）
+- timeline：精简的每个覆盖日期要点，形如 { "2026-08-05": "Day 1: 当天发生了什么" }
+不要为凑数硬造；同一段里若确实没有周期，periods 返回空数组。
 
 输出 JSON：
-{ "newPeriods": [ { "title": "周期标题", "reason": "为什么开启（引用多天里的具体证据）" } ], "existing": [ { "title": "已在进行的周期", "note": "这几天与它的关联" } ] }`;
+{ "periods": [ { "title": "周期标题", "startDate": "YYYY-MM-DD", "endDate": "YYYY-MM-DD", "dates": ["YYYY-MM-DD", ...], "reason": "为什么开启（引用多天里的具体证据）", "timeline": { "YYYY-MM-DD": "Day N: 当天要点" } } ], "existing": [ { "title": "已在进行的周期", "note": "这几天与它的关联" } ] }`;
 
 function buildPrompt(
   characterName: string,
@@ -90,17 +104,35 @@ function parseThinkJson(text: string): PeriodThinkResult | null {
       Array.isArray(v)
         ? (v as Array<Record<string, unknown>>).map((x) => cb(x ?? {})).filter(Boolean)
         : [];
-    const newPeriods = arr<PeriodThinkNew>(obj.newPeriods, (x) => {
+    const periods = arr<PeriodThinkNew>(obj.periods ?? obj.newPeriods, (x) => {
       const title = typeof x.title === "string" ? x.title.trim() : "";
       if (!title) return null as unknown as PeriodThinkNew;
-      return { title, reason: typeof x.reason === "string" ? x.reason.trim() : "" };
+      const startDate = typeof x.startDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(x.startDate) ? x.startDate : "";
+      const endDate = typeof x.endDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(x.endDate) ? x.endDate : "";
+      const dates = Array.isArray(x.dates)
+        ? (x.dates as unknown[]).filter((d): d is string => typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d))
+        : [];
+      const timeline: Record<string, string> = {};
+      if (x.timeline && typeof x.timeline === "object") {
+        for (const [k, v] of Object.entries(x.timeline as Record<string, unknown>)) {
+          if (typeof v === "string") timeline[k] = v;
+        }
+      }
+      return {
+        title,
+        reason: typeof x.reason === "string" ? x.reason.trim() : "",
+        startDate,
+        endDate,
+        dates,
+        timeline,
+      };
     });
     const existing = arr<PeriodThinkExisting>(obj.existing, (x) => {
       const title = typeof x.title === "string" ? x.title.trim() : "";
       if (!title) return null as unknown as PeriodThinkExisting;
       return { title, note: typeof x.note === "string" ? x.note.trim() : "" };
     });
-    return { newPeriods, existing };
+    return { periods, existing };
   } catch {
     return null;
   }
