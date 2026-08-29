@@ -36,6 +36,7 @@ import {
   mdiDatabase,
   mdiAccount,
   mdiHome,
+  mdiBridge,
   mdiHammerWrench,
   mdiGlassCocktail,
   mdiStorefrontOutline,
@@ -77,6 +78,7 @@ const MDI_PATHS: Record<IconId, string> = {
   resource_hub: mdiStorefrontOutline,
   characters: mdiAccount,
   dwelling: mdiHome,
+  realitybridge: mdiBridge,
 };
 
 export function IconGlyph({ id, className }: IconGlyphProps) {

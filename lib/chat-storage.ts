@@ -250,6 +250,8 @@ export type ChatMessage = {
         externalId?: string;
         direction?: "inbound" | "outbound" | "local";
         syncedAt?: string;
+        /** 云端主动回复对应的本地触发消息，用于跨时钟因果排序。 */
+        replyAfterLocalMessageId?: string;
     };
     // Group chat fields
     senderCharacterId?: string; // which character sent this assistant message in a group chat
@@ -1145,6 +1147,23 @@ export function deleteChatSession(sessionId: string) {
     clearChatSessionMessages(sessionId); // Cleanup associated messages
 }
 
+// 把一个会话的全部消息挪到另一个会话名下（重复会话合并用）。
+// 两边的 order 序号各自从 0 起，直接混排会串位，挪完后按时间重排目标会话。
+export function reassignChatSessionMessages(fromSessionId: string, toSessionId: string): number {
+    if (fromSessionId === toSessionId) return 0;
+    const changed: ChatMessage[] = [];
+    _messagesCache = _messagesCache.map(message => {
+        if (message.sessionId !== fromSessionId) return message;
+        const updated = { ...message, sessionId: toSessionId };
+        changed.push(updated);
+        return updated;
+    });
+    if (changed.length === 0) return 0;
+    dbPutMessages(changed);
+    reindexSessionMessageOrdersByTime(toSessionId);
+    return changed.length;
+}
+
 // ── CRUD for Messages ─────────────────────────
 export function loadChatMessages(sessionId: string, limit?: number): ChatMessage[] {
     if (limit && limit > 0) return loadRecentSessionTail(sessionId, limit);
@@ -1183,11 +1202,14 @@ export function createToolExecutionId(): string {
     return `toolrun_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 }
 
-export function pushChatMessage(msg: Omit<ChatMessage, "id" | "createdAt" | "status"> & { status?: ChatMessageStatus }): ChatMessage {
+export function pushChatMessage(msg: Omit<ChatMessage, "id" | "createdAt" | "status"> & {
+    status?: ChatMessageStatus;
+    createdAt?: string;
+}): ChatMessage {
     let newMsg: ChatMessage = {
         ...msg,
         id: createMessageId(),
-        createdAt: new Date().toISOString(),
+        createdAt: msg.createdAt || new Date().toISOString(),
         order: getNextMessageOrder(msg.sessionId),
         status: msg.status || "sent"
     };

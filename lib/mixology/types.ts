@@ -589,6 +589,13 @@ export type MixTurn = {
     role: "user" | "assistant";
     /** 正文（assistant 侧已剥离小票块） */
     text: string;
+    /**
+     * 这一轮的原始输出（assistant 侧）：进剥离/滤网/机括之前的完整原文，
+     * 含机括标记行与被滤网洗掉的字；状态栏补写的块也并在里面（它算这一轮产出的一部分）。
+     * 「编辑原始输出」展示并回写的就是这一份；老数据没有这个字段，
+     * 编辑时退回用产物拼装（mixTurnRawText 的兜底路径）。
+     */
+    rawText?: string;
     /** 该轮小票壳内原文（有小票材料且 AI 按契约输出时才有）；多块时为第一块，全量见 ticketRaws */
     ticketRaw?: string;
     /** 该轮小剧场壳内原文（尾调写了契约且 AI 输出时才有）；多块时为第一块，全量见 encoreRaws */
@@ -613,6 +620,22 @@ export type MixTurn = {
      * 直接取剩下最后一轮的这份快照还原，数字不会停留在被丢掉的未来。
      */
     state?: MixState;
+    /**
+     * 这一轮结束时的机括存储（与 state 同一套语义，只在 assistant 轮上）。
+     * 有它才谈得上"干净回溯"：机括存储是任意可读写的，不像 turns 那样只增不改，
+     * 砍掉几轮推不出过去的样子，只能当时拍照留档。
+     *
+     * 只留最近 MIX_STORE_SNAPSHOT_TURNS 轮（见 engine.ts）——存储桶单件上限 100KB，
+     * 逐轮全留会把对局存档撑爆。窗口外的回溯退到现存最早的那份；老对局没有这个
+     * 字段，回溯时维持现状，绝不清空。
+     */
+    mechanismStore?: Record<string, Record<string, string>>;
+    /**
+     * 玩家在机括面板里手改过的桶（materialId → 桶），记在手改发生的那一轮上。
+     * 编辑早先某一轮后要把后面每一轮按原文重画一遍，重画走到这一轮时会拿它再盖一次：
+     * 手改是玩家亲手定的事实，永远压过重画算出来的结果。
+     */
+    mechanismStoreEdits?: Record<string, Record<string, string>>;
     createdAt: number;
 };
 
@@ -645,12 +668,6 @@ export type MixSession = {
      */
     mechanismStorePrev?: Record<string, Record<string, string>>;
     mechanismStorePrevTurn?: string;
-    /**
-     * 同一轮出杯后钩子跑完的存储快照：和当前存储一对比就知道出杯之后
-     * 玩家有没有在面板里手改过数据。没改过 → 编辑原文后静默替换重跑；
-     * 改过 → 弹窗问（替换会把手改的一起滚掉）。
-     */
-    mechanismStorePost?: Record<string, Record<string, string>>;
     /**
      * 玩家自己拖动/缩放过的面板位置（materialId → 摆放），只在这一局有效。
      * 不写回材料：材料是作者的作品，玩家挪一下自己的屏幕不该改到别人的作品。

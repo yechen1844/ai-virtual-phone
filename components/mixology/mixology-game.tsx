@@ -6,12 +6,12 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { ChevronLeft, Copy, History, MoreHorizontal, Pencil, Plus, RotateCcw, Send, Sun, WandSparkles, X } from "lucide-react";
-import { continueMix, editMixTurn, generateMixReply, MIX_REPAIR_EVENT, mixTurnRawText, refreshMixOpening, regenerateMixTail, rerollMixReply, runMixEditSync, runMixSessionEnd, truncateMixAfterTurn, type MixRepairEventDetail } from "@/lib/mixology/engine";
-import { getMixMaterial, getMixSession, listMixPickables, MIX_CABINET_UPDATED_EVENT, resolveMixRecipeMaterials, saveMixSession } from "@/lib/mixology/storage";
+import { continueMix, editMixTurn, generateMixReply, canReplayMixFrom, MIX_REPAIR_EVENT, MIX_STORE_SNAPSHOT_TURNS, mixTurnRawText, recordMixPanelStore, refreshMixOpening, regenerateMixTail, rerollMixReply, runMixEditSync, runMixSessionEnd, truncateMixAfterTurn, type MixRepairEventDetail } from "@/lib/mixology/engine";
+import { getMixMaterial, getMixSession, isMixBuiltinId, listMixPickables, MIX_CABINET_UPDATED_EVENT, resolveMixRecipeMaterials, saveMixMaterial, saveMixSession } from "@/lib/mixology/storage";
 import { applyMixMacros, MIX_DEFAULT_USER_NAME } from "@/lib/mixology/assembler";
 import { buildMixConditionContext, pickActiveMixMaterials } from "@/lib/mixology/state";
 import { scopeMixCss } from "@/lib/mixology/css-scope";
-import { MIX_KIND_LABELS, MIX_SLOT_ORDER, mixEncoreRenderHtml, mixPanelLayoutOf, mixPanelSlotOf, mixSlotEntries, mixTurnEncoreBlocks, mixTurnTicketBlocks, type MixCharacterCard, type MixFilterRule, type MixMaterialKind, type MixMechanismMaterial, type MixPanelLayout, type MixSession, type MixSlotEntry, type MixState, type MixTicketMaterial, type MixTurn } from "@/lib/mixology/types";
+import { MIX_KIND_LABELS, MIX_SLOT_ORDER, mixEncoreRenderHtml, mixPanelLayoutOf, mixPanelSlotOf, mixSlotEntries, mixTurnEncoreBlocks, mixTurnTicketBlocks, type MixCharacterCard, type MixFilterRule, type MixMaterial, type MixMaterialKind, type MixMechanismMaterial, type MixPanelLayout, type MixSession, type MixSlotEntry, type MixState, type MixTicketMaterial, type MixTurn } from "@/lib/mixology/types";
 import { applyMixFilterRules, mixStreamText } from "@/lib/mixology/prose";
 import { MixProseView } from "./prose-view";
 import { MixRichText } from "./rich-text";
@@ -19,6 +19,8 @@ import { KindGlyph, MixConfirm } from "./mixology-shared";
 import { MixTicketFrame } from "./ticket-frame";
 import { MixMechanismInline, MixMechanismPanel } from "./mechanism-panel";
 import { MixSlotEditor } from "./slot-editor";
+import { MixMaterialEditor } from "./mixology-editor";
+import { disposeMixSandboxesForMaterial } from "@/lib/mixology/mechanism-runtime";
 
 /** 当前真正挂着的对局：严格模式的重复挂载靠它区分「真退出」与「假卸载」 */
 const liveMixGames = new Set<string>();
@@ -160,12 +162,15 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
         // eslint-disable-next-line react-hooks/exhaustive-deps -- 只关心开/关，别在每次敲字时重挂监听
     }, [Boolean(editing)]);
     const [confirm, setConfirm] = useState<{ type: "rewind" | "edit"; turnId: string } | null>(null);
-    /** 编辑完角色回复后待确认的「同步给机括」：存的是刚编辑的那一轮 id */
-    const [editSyncId, setEditSyncId] = useState<string | null>(null);
     const [recipeOpen, setRecipeOpen] = useState(false);
     /** 局内的叠层编辑：排序 / 生效条件 / 移除，和吧台同一套编辑器 */
     const [slotEdit, setSlotEdit] = useState<MixMaterialKind | null>(null);
     const [slotPick, setSlotPick] = useState<MixMaterialKind | null>(null);
+    /**
+     * 局内材料编辑器：复用酒柜的创建弹窗（MixMaterialEditor），觉得哪里不对味
+     * 不用退出对局回酒柜改。slot 有值 = 从某格的「+」新建，保存后顺手放进那一格。
+     */
+    const [matEditor, setMatEditor] = useState<{ kind: MixMaterialKind; initial?: MixMaterial; slot?: MixMaterialKind } | null>(null);
     const [wheelIndex, setWheelIndex] = useState(0);
     /**
      * 酒柜外部变更计数：小卷（吉祥物工具）改完材料会广播这个事件，对局里的
@@ -362,7 +367,8 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
     const handlePanelStore = useCallback((materialId: string, store: Record<string, string>) => {
         const current = getMixSession(sessionId);
         if (!current) return;
-        saveMixSession({ ...current, mechanismStore: { ...(current.mechanismStore ?? {}), [materialId]: store } });
+        // 手改记在当前这一轮上：日后编辑早先某轮重画时，走到这里会再盖一次
+        saveMixSession(recordMixPanelStore(current, materialId, store));
         setSession(getMixSession(sessionId));
     }, [sessionId]);
 
@@ -602,6 +608,50 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
         return idx < 0 ? 0 : session.turns.length - idx - 1;
     };
 
+    /**
+     * 回溯到某一轮时机括能退到什么程度：
+     * exact = 那一轮留着快照，精确退回；oldest = 比保留窗口还早，只能退到现存最早的那份；
+     * none = 一份快照都没有（更新前的老对局），机括不动。
+     * 后两种要在弹窗里说明白，别让玩家以为机括也跟着回到了当时。
+     */
+    const mechanismRewindKind = (turnId: string): "exact" | "oldest" | "none" => {
+        const idx = session.turns.findIndex((t) => t.id === turnId);
+        if (idx < 0) return "exact";
+        if (session.turns.slice(0, idx + 1).some((t) => t.mechanismStore)) return "exact";
+        return session.turns.some((t) => t.mechanismStore) ? "oldest" : "none";
+    };
+
+    /** 本局有没有机括：没有就别拿这段说明打扰玩家 */
+    const hasMechanism = () => mixSlotEntries(session.recipe.slots, "mechanism")
+        .some((e) => getMixMaterial(e.materialId)?.kind === "mechanism");
+
+    const mechanismRewindHint = (turnId: string) => {
+        if (!hasMechanism()) return null;
+        const kind = mechanismRewindKind(turnId);
+        if (kind === "exact") return null;
+        return (
+            <>
+                <br />
+                {kind === "oldest"
+                    ? `机括存档仅保留最近 ${MIX_STORE_SNAPSHOT_TURNS} 轮，此轮已超出，机括数据将回退至现存最早的存档。`
+                    : "此轮无机括存档，机括数据不会回退。"}
+            </>
+        );
+    };
+
+    /**
+     * 保存这一条编辑会不会连带删掉后文。
+     * 玩家发言：后面的回复是冲着旧发言写的，要删掉重新生成。
+     * 角色回复：后面每一轮都能按原文重画时一条不删；重画不了才截断
+     *（它们的记住的值与机括存储都是从这一轮累积算出来的，重算不了就只能作废）。
+     */
+    const editWillTruncate = (turnId: string) => {
+        const idx = session.turns.findIndex((t) => t.id === turnId);
+        if (idx < 0 || idx === session.turns.length - 1) return false;
+        if (session.turns[idx].role === "user") return true;
+        return !canReplayMixFrom(session, idx);
+    };
+
     const doRewind = (turnId: string) => {
         try {
             truncateMixAfterTurn(sessionId, turnId);
@@ -627,34 +677,20 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
             void run((signal, _commit, onDelta) => regenerateMixTail(sessionId, signal, onDelta));
             return;
         }
-        // 编辑的是角色回复且本局带钩子机括：把新原文交给机括重新收数
-        // （机括的标记行只有它自己的钩子认得，不重跑的话补写的标记行会留在正文里裸奔）。
-        // 常规情形直接静默替换；只有替换有代价（面板手改过会被滚掉）或做不到
-        // （不是最后生成的那一轮，底稿失效）时才弹窗问。
-        if (target?.role === "assistant") {
-            const hasHooked = mixSlotEntries(session.recipe.slots, "mechanism")
-                .some((e) => {
-                    const m = getMixMaterial(e.materialId);
-                    return m?.kind === "mechanism" && Boolean(m.script?.trim());
-                });
-            if (hasHooked) {
-                const fresh = getMixSession(sessionId) ?? session;
-                const canReplace = fresh.mechanismStorePrevTurn === editing.id && Boolean(fresh.mechanismStorePrev);
-                const untouched = canReplace
-                    && JSON.stringify(fresh.mechanismStore ?? {}) === JSON.stringify(fresh.mechanismStorePost ?? {});
-                if (untouched) doEditSync(editing.id, "replace");
-                else setEditSyncId(editing.id);
-            }
-        }
+        // 编辑的是角色回复且本局带钩子机括：把新原文交给机括重新收数，不问、不弹窗。
+        // 机括的标记行只有它自己的钩子认得，不重跑就会留在正文里裸奔；而"要不要重跑"
+        // 从来不是玩家该决定的事——编辑完就该是编辑后的样子。
+        // 回滚基准由引擎自己找（前一轮的快照），这里不做判断。
+        if (target?.role === "assistant") doEditSync(editing.id);
     };
 
-    const doEditSync = (turnId: string, mode: "replace" | "append") => {
-        setEditSyncId(null);
-        void runMixEditSync(sessionId, turnId, mode).then((ok) => {
+    const doEditSync = (turnId: string) => {
+        void runMixEditSync(sessionId, turnId).then((mode) => {
             setSession(getMixSession(sessionId));
-            onToast(ok
-                ? (mode === "replace" ? "已替换：机括按编辑后的原文重新记了这一轮。" : "已追加：机括按编辑后的原文补记了一轮。")
-                : "同步失败，这一轮没有变化。");
+            // 追加要说一声：这一轮太旧、快照已不在，机括那儿会被记成两笔
+            onToast(mode === "replayed" ? "已按编辑后的内容重跑这一轮及之后各轮。"
+                : mode === "appended" ? "已重跑这一轮（这一轮太旧，重画不了后文，已截断）。"
+                : "重跑失败，这一轮没有变化。");
         });
     };
 
@@ -1138,17 +1174,25 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
                                     const mat = stack[0] ? getMixMaterial(stack[0].materialId) : null;
                                     const extra = stack.length - 1;
                                     const locked = kind === "character";
+                                    // 角色卡本局不可换，但原地编辑放行（与酒柜同一条准入线：
+                                    // 官方出厂件、导入的别人的卡不给改）。引擎每轮从酒柜实时取卡，
+                                    // 改完下一轮生效，「同一件改版全局换皮」照旧
+                                    const charEditable = locked && mat ? !isMixBuiltinId(mat.id) && !mat.imported : false;
                                     return (
                                         <div
                                             className="mix-slot"
                                             data-filled={mat ? "true" : undefined}
-                                            data-locked={locked ? "true" : undefined}
+                                            data-locked={locked && !charEditable ? "true" : undefined}
                                             key={kind}
-                                            onClick={() => { if (!locked) setSlotEdit(kind); }}
+                                            onClick={() => {
+                                                if (!locked) { setSlotEdit(kind); return; }
+                                                if (charEditable && mat) setMatEditor({ kind: "character", initial: mat });
+                                                else if (mat) onToast("官方出厂件和导入的别人的角色卡不能编辑。");
+                                            }}
                                         >
                                             <div className="mix-slot-kind">
                                                 <b>{MIX_KIND_LABELS[kind]}</b>
-                                                {locked ? <i>本局不可换</i> : <i>可留空</i>}
+                                                {locked ? <i>{charEditable ? "不可换 · 点击编辑" : "本局不可换"}</i> : <i>可留空</i>}
                                             </div>
                                             <div className="mix-slot-body">
                                                 {mat ? (
@@ -1197,6 +1241,8 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
                     varNames={slotVarNames}
                     onChange={(next) => writeSlot(slotEdit, next)}
                     onPickMore={() => setSlotPick(slotEdit)}
+                    onEdit={(material) => setMatEditor({ kind: material.kind, initial: material })}
+                    onCreate={() => setMatEditor({ kind: slotEdit, slot: slotEdit })}
                     onClose={() => setSlotEdit(null)}
                 />
             ) : null}
@@ -1208,6 +1254,7 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
                             <div className="mix-sheet-title">
                                 {MIX_KIND_LABELS[slotPick]} · 已放 {mixSlotEntries(session.recipe.slots, slotPick).length} 件
                             </div>
+                            <button type="button" className="mix-icon-btn" onClick={() => setMatEditor({ kind: slotPick, slot: slotPick })} aria-label={`自建一件${MIX_KIND_LABELS[slotPick]}`} title={`自建一件${MIX_KIND_LABELS[slotPick]}`}><Plus size={18} /></button>
                             <button type="button" className="mix-icon-btn" onClick={() => setSlotPick(null)} aria-label="关闭"><X size={18} /></button>
                         </div>
                         <div className="mix-sheet-body">
@@ -1235,12 +1282,71 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
                                             </div>
                                             {m.hook ? <div className="mix-mat-hook">{m.hook}</div> : null}
                                         </div>
+                                        {/* 与酒柜同一条准入线：官方出厂件、从酒材页拿来的别人的材料都不给编辑 */}
+                                        {!isMixBuiltinId(m.id) && !m.imported ? (
+                                            <button
+                                                type="button"
+                                                className="mix-icon-btn"
+                                                style={{ flex: "0 0 auto", alignSelf: "center" }}
+                                                onClick={(e) => { e.stopPropagation(); setMatEditor({ kind: m.kind, initial: m }); }}
+                                                aria-label="编辑"
+                                            >
+                                                <Pencil size={15} />
+                                            </button>
+                                        ) : null}
                                     </div>
                                 ))}
                                 {listMixPickables(slotPick).length === 0 ? (
-                                    <div className="mix-comment-empty">酒柜里还没有{MIX_KIND_LABELS[slotPick]}——去酒柜页自建一件。</div>
+                                    <div className="mix-comment-empty">酒柜里还没有{MIX_KIND_LABELS[slotPick]}——点右上角的「+」现场自建一件。</div>
                                 ) : null}
                             </div>
+                        </div>
+                    </div>
+                </div>
+            ) : null}
+
+            {/* 局内材料编辑/新建：复用酒柜的创建弹窗。保存逻辑与酒柜同款——
+                保留云端发布关联、机括改完收掉旧沙盒；从「+」新建的顺手放进那一格 */}
+            {matEditor ? (
+                <div className="mix-sheet-mask">
+                    <div className="mix-sheet" style={{ maxHeight: "92%" }} onClick={(e) => e.stopPropagation()}>
+                        <div className="mix-sheet-head">
+                            <div className="mix-sheet-title">{matEditor.initial ? "编辑" : "自建"}{MIX_KIND_LABELS[matEditor.kind]}</div>
+                            <button type="button" className="mix-icon-btn" onClick={() => setMatEditor(null)} aria-label="关闭"><X size={18} /></button>
+                        </div>
+                        <div className="mix-sheet-body">
+                            <MixMaterialEditor
+                                key={matEditor.initial?.id ?? "new"}
+                                kind={matEditor.kind}
+                                initial={matEditor.initial}
+                                onSave={(material) => {
+                                    // 编辑器不经手发布记账字段，保存时从原件带回来，别把云端关联弄丢
+                                    saveMixMaterial(matEditor.initial?.publishedId
+                                        ? { ...material, publishedId: matEditor.initial.publishedId, publishedAt: matEditor.initial.publishedAt }
+                                        : material);
+                                    // 机括改完，正在跑的沙盒里还是老代码——收掉，下次调用重建
+                                    if (material.kind === "mechanism") disposeMixSandboxesForMaterial(material.id);
+                                    if (matEditor.slot && !matEditor.initial) {
+                                        // 从「+」现场新建的就是为这一格建的：保存即入格，排在已有的后面
+                                        writeSlot(matEditor.slot, [...mixSlotEntries(session.recipe.slots, matEditor.slot), { materialId: material.id }]);
+                                        onToast(`「${material.name}」已入柜并放进本局，下一轮生效。`);
+                                    } else {
+                                        if (material.kind === "character" && material.id === mixSlotEntries(session.recipe.slots, "character")[0]?.materialId) {
+                                            // 改的是本局这张角色卡：charName 快照要对齐——生成时的
+                                            // meta 与机括钩子读的都是快照，不是酒柜里的实时卡；
+                                            // 还没开口的局顺手把开场白换成新版（refreshMixOpening 自己判）
+                                            const fresh = getMixSession(sessionId);
+                                            const nextName = material.charName.trim() || material.name;
+                                            if (fresh && nextName && nextName !== fresh.charName) saveMixSession({ ...fresh, charName: nextName });
+                                            refreshMixOpening(sessionId);
+                                        }
+                                        setSession(getMixSession(sessionId));
+                                        onToast(`「${material.name}」已更新，下一轮生效。`);
+                                    }
+                                    setMatEditor(null);
+                                }}
+                                onCancel={() => setMatEditor(null)}
+                            />
                         </div>
                     </div>
                 </div>
@@ -1274,7 +1380,7 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
                                         type="button"
                                         className="mix-pill-btn"
                                         onClick={() => {
-                                            if (laterCount(editing.id) > 0) setConfirm({ type: "edit", turnId: editing.id });
+                                            if (editWillTruncate(editing.id)) setConfirm({ type: "edit", turnId: editing.id });
                                             else saveEdit();
                                         }}
                                     >
@@ -1291,7 +1397,7 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
                 <MixConfirm
                     title={confirm.type === "rewind" ? "回溯到这条消息？" : "保存修改？"}
                     body={confirm.type === "rewind"
-                        ? `这条消息之后的 ${laterCount(confirm.turnId)} 条内容将被删除。`
+                        ? <>这条消息之后的 {laterCount(confirm.turnId)} 条内容将被删除。{mechanismRewindHint(confirm.turnId)}</>
                         : `保存后，这条消息之后的 ${laterCount(confirm.turnId)} 条内容将被删除${session.turns.find((t) => t.id === confirm.turnId)?.role === "user" ? "，并重新生成回复" : ""}。`}
                     confirmText={confirm.type === "rewind" ? "回溯" : "保存"}
                     tone="danger"
@@ -1305,30 +1411,6 @@ export function MixologyGame({ sessionId, onBack, onToast }: GameProps) {
                 />
             ) : null}
 
-            {editSyncId ? (() => {
-                // 替换要有这一轮记账前的底稿才做得到；底稿只属于最后生成的那一轮
-                const canReplace = session.mechanismStorePrevTurn === editSyncId && Boolean(session.mechanismStorePrev);
-                return (
-                    <div className="mix-confirm-mask" onClick={() => setEditSyncId(null)}>
-                        <div className="mix-confirm" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="同步给机括">
-                            <div className="mix-confirm-title">同步给机括？</div>
-                            <div className="mix-confirm-body">
-                                把编辑后的这一轮重新交给机括收数：标记行会被摘走，面板数据照新原文更新。
-                                {canReplace
-                                    ? <><br />「替换」先撤销这一轮机括原来记的账再重跑，一般选它；「追加」保留原账再记一遍。替换会连带丢掉这一轮之后你在机括面板里手改的内容。</>
-                                    : <><br />这一轮的记账底稿已不在（不是最后生成的那一轮），只能在现有数据上追加。</>}
-                            </div>
-                            <div className="mix-confirm-actions">
-                                <button type="button" className="mix-confirm-btn" onClick={() => setEditSyncId(null)}>不同步</button>
-                                <button type="button" className="mix-confirm-btn" onClick={() => doEditSync(editSyncId, "append")}>追加</button>
-                                {canReplace ? (
-                                    <button type="button" className="mix-confirm-btn" data-tone="primary" onClick={() => doEditSync(editSyncId, "replace")}>替换</button>
-                                ) : null}
-                            </div>
-                        </div>
-                    </div>
-                );
-            })() : null}
         </div>
     );
 }

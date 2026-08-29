@@ -24,6 +24,7 @@ import {
     mixTurnTicketBlocks,
     type MixCharacterCard,
     type MixEncoreMaterial,
+    type MixFilterRule,
     type MixMaterial,
     type MixMechanismMaterial,
     type MixState,
@@ -107,11 +108,13 @@ function blockText(open: string, close: string, block: MixTurnBlock, named: bool
 }
 
 /**
- * 还原一条消息的"原始输出"：assistant 轮把剥掉的状态栏/小剧场块拼回去。
- * 历史回放与「编辑原始输出」共用——编辑时看到的就是模型当初写的完整样子。
+ * 一条消息的"原始输出"。存了真原文（rawText，新数据）就直接给——机括标记行、
+ * 被滤网洗掉的字只存在于这一份里，拼装还原不出来。
+ * 老数据没有 rawText，退回把剥掉的状态栏/小剧场块拼回去的近似还原。
  */
 export function mixTurnRawText(turn: MixTurn): string {
     if (turn.role !== "assistant") return turn.text;
+    if (turn.rawText !== undefined) return turn.rawText;
     // 顺序与输出要求一致：状态栏在正文前、小剧场在正文后——历史回放就是模型的"输出习惯"示范
     const tickets = mixTurnTicketBlocks(turn);
     const encores = mixTurnEncoreBlocks(turn);
@@ -239,6 +242,9 @@ export function startMixSession(
             id: createMixId("mixturn"),
             role: "assistant",
             text: assembled.opening,
+            // 开局这一刻机括存储是空的，照实拍一份：一路回溯到开局就该退回这个空
+            //（开局钩子随后跑完会覆盖成它的结果，见 runMixSessionStart）
+            mechanismStore: {},
             createdAt: Date.now(),
         });
     }
@@ -261,7 +267,11 @@ export async function runMixSessionStart(sessionId: string): Promise<void> {
     const changed = JSON.stringify(nextState) !== JSON.stringify(latest.state ?? {})
         || JSON.stringify(result.store) !== JSON.stringify(latest.mechanismStore ?? {});
     if (!changed) return;
-    saveMixSession({ ...latest, state: nextState, mechanismStore: result.store });
+    // 开场白那一轮也盖一份快照：一路回溯到开局时，取到的就是开局钩子跑完的样子
+    const turns = latest.turns.map((t, i) => (
+        i === 0 && t.role === "assistant" ? { ...t, mechanismStore: result.store } : t
+    ));
+    saveMixSession({ ...latest, turns, state: nextState, mechanismStore: result.store });
 }
 
 /**
@@ -356,7 +366,7 @@ async function runMechanismHooks(
     hook: MixHook,
     input: { text?: string; ticketRaws?: string[]; encoreRaws?: string[]; edited?: boolean },
     roster?: MixMechanismMaterial[],
-): Promise<{ text?: string; notes: string[]; state: MixState; store: Record<string, Record<string, string>>; roster: MixMechanismMaterial[] }> {
+): Promise<{ text?: string; notes: string[]; state: MixState; store: Record<string, Record<string, string>>; roster: MixMechanismMaterial[]; wrote: string[] }> {
     // roster：这一轮的机括名单。生效条件一轮只判一次（落杯前那次），之后
     // 由调用方原封传回来——否则小票一更新记住的值，条件在同一轮里翻脸，
     // 落杯前注入的标记行就没人回收，原样漏进正文。
@@ -367,7 +377,8 @@ async function runMechanismHooks(
         mechanisms = (active.mechanism ?? []).filter((m): m is MixMechanismMaterial => m.kind === "mechanism");
     }
     const store = { ...(session.mechanismStore ?? {}) };
-    const out = { text: input.text, notes: [] as string[], state: {} as MixState, store, roster: mechanisms };
+    // wrote：这一趟真正重新记了账的机括。调用方据此判断"谁没记"，别让它原来的账被连累
+    const out = { text: input.text, notes: [] as string[], state: {} as MixState, store, roster: mechanisms, wrote: [] as string[] };
     if (!mechanisms.length) return out;
     for (const material of mechanisms) {
         const script = material.script?.trim();
@@ -392,7 +403,7 @@ async function runMechanismHooks(
         if (typeof result.text === "string") out.text = result.text;
         if (result.note) out.notes.push(result.note);
         if (result.state) out.state = mergeHookState(out.state, result.state);
-        if (result.store) store[material.id] = result.store;
+        if (result.store) { store[material.id] = result.store; out.wrote.push(material.id); }
     }
     return out;
 }
@@ -442,6 +453,24 @@ function orderMixBlocks(blocks: MixTurnBlock[], mats: { id: string }[]): MixTurn
         if (!ordered.includes(block)) ordered.push(block);
     }
     return ordered;
+}
+
+/**
+ * 把一份"模型原文"过一遍剥离管线：剥块 → 对号入座 → 按槽位归位 → 滤网清洗正文。
+ * 出杯与「编辑原始输出」共用同一条管线——编辑保存等于拿新原文当一次模型输出重跑，
+ * 剥离与渲染（渲染是块原文 + 渲染皮现算的）自然全部重来。
+ */
+function stripMixReply(
+    raw: string,
+    ticketPool: { id: string; name: string }[],
+    encorePool: { id: string; name: string }[],
+    filterRules: MixFilterRule[] | undefined,
+): { text: string; ticketBlocks: MixTurnBlock[]; encoreBlocks: MixTurnBlock[] } {
+    const extracted = extractMixBlocks(raw);
+    const ticketBlocks = orderMixBlocks(matchMixBlocks(extracted.tickets, ticketPool), ticketPool);
+    const encoreBlocks = orderMixBlocks(matchMixBlocks(extracted.encores, encorePool), encorePool);
+    const text = applyMixFilterRules(extracted.text, filterRules?.length ? filterRules : undefined, "context");
+    return { text, ticketBlocks, encoreBlocks };
 }
 
 /**
@@ -538,21 +567,24 @@ async function runMixGeneration(
     } else {
         raw = await sendLLMRequest(apiConfig, null, messages, [], meta, llmOptions);
     }
-    const extracted = extractMixBlocks(raw);
     // 块对号入座：有契约的小票/尾调才是块的候选归属（纯静态小品不收块）
     const contractTickets = tickets.filter((t) => t.contract.trim());
     const contractEncores = encores.filter((e) => e.contract?.trim());
-    let ticketBlocks = matchMixBlocks(extracted.tickets, contractTickets);
-    let encoreBlocks = matchMixBlocks(extracted.encores, contractEncores);
     // 滤网「进上下文」模式：拆完块后清洗正文再入库，历史发回模型的就是洗过的。
     // 这一格是累加型，条件命中的几张滤网按顺序串联清洗。
     const filterRules = (active.filter ?? [])
         .flatMap((m) => (m.kind === "filter" ? m.rules : []));
-    const text = applyMixFilterRules(extracted.text, filterRules.length ? filterRules : undefined, "context");
+    const stripped = stripMixReply(raw, contractTickets, contractEncores, filterRules);
+    let ticketBlocks = stripped.ticketBlocks;
+    const encoreBlocks = stripped.encoreBlocks;
+    const text = stripped.text;
     if (!text && !ticketBlocks.length) {
         throw new ChatEngineError("模型没有给出内容，请再试一次。");
     }
-    // 状态栏补写：逐张核对，漏了哪张就单独把哪张要回来
+    // 状态栏补写：逐张核对，漏了哪张就单独把哪张要回来。
+    // 补出的块同时并进"原始输出"存档——它算这一轮产出的一部分，不并进去的话
+    // 玩家编辑一次别的字，重跑剥离管线时这一块就凭空消失了。
+    const repairedTexts: string[] = [];
     if (text) {
         const missing = contractTickets.filter(
             (ticket) => ticket.renderHtml.trim() && !ticketBlocks.some((b) => b.id === ticket.id),
@@ -562,7 +594,11 @@ async function runMixGeneration(
                 for (const ticket of missing) {
                     emitMixRepair({ sessionId: working.id, name: ticket.name });
                     const repaired = await repairMixTicket(apiConfig, working, ticket, text, signal);
-                    if (repaired) ticketBlocks.push({ id: ticket.id, raw: repaired });
+                    if (repaired) {
+                        const block: MixTurnBlock = { id: ticket.id, raw: repaired };
+                        ticketBlocks.push(block);
+                        repairedTexts.push(blockText(MIX_TICKET_OPEN, MIX_TICKET_CLOSE, block, contractTickets.length > 1));
+                    }
                 }
             } finally {
                 // 无论补成没补成都要收 toast，别让它挂在屏幕上过夜
@@ -571,7 +607,8 @@ async function runMixGeneration(
         }
     }
     ticketBlocks = orderMixBlocks(ticketBlocks, contractTickets);
-    encoreBlocks = orderMixBlocks(encoreBlocks, contractEncores);
+    // 原始输出存档：模型原文 + 按规范位置（回复最开头）并进去的补写块
+    const rawStored = repairedTexts.length ? [...repairedTexts, raw].join("\n\n") : raw;
     // 记住的值：用这一轮各张小票自己的块更新，抽不到的保留上一轮；顺带把结果快照在这一轮上，
     // 回溯/重说/编辑时直接取剩下最后一轮的快照还原。
     const stateFromTicket = advanceMixStateWithBlocks(working.state, contractTickets, ticketBlocks);
@@ -595,24 +632,26 @@ async function runMixGeneration(
         id: createMixId("mixturn"),
         role: "assistant",
         text: finalText,
+        // 真原文存档：机括改写/摘标记行之前的那份，「编辑原始输出」展示的就是它
+        rawText: rawStored,
         // 单块字段冗余存第一块：老读取路径与跨版本数据都还认得
         ticketRaw: keptTickets[0]?.raw,
         encoreRaw: keptEncores[0]?.raw,
         ticketRaws: keptTickets.length ? keptTickets : undefined,
         encoreRaws: keptEncores.length ? keptEncores : undefined,
         state: nextState,
+        // 这一轮结束时的机括存储：回溯/重说/撤回回到这里，不必让机括自己复位
+        mechanismStore: afterHook.store,
         createdAt: Date.now(),
     };
     const updated: MixSession = {
         ...working,
-        turns: [...working.turns, turn],
+        turns: trimMixStoreSnapshots([...working.turns, turn]),
         state: nextState,
         mechanismStore: afterHook.store,
-        // 记账前底稿：编辑这一轮原文后「替换重跑」的回滚基准；
-        // 记账后快照：对比出"出杯之后面板里有没有手改过"，没改过就能静默替换
+        // 记账前底稿：编辑这一轮原文后自动回滚重跑的基准
         mechanismStorePrev: working.mechanismStore ?? {},
         mechanismStorePrevTurn: turn.id,
-        mechanismStorePost: afterHook.store,
     };
     saveMixSession(updated);
     return { session: updated, turn };
@@ -665,12 +704,69 @@ function sessionEncores(session: MixSession): MixEncoreMaterial[] {
 }
 
 /**
- * 截断历史之后把记住的值退回去：取剩下最后一轮的快照，全删光就退回开局初值。
- * 不做这一步的话，回溯三轮重打，好感度还停在被丢掉的那个未来上。
+ * 机括存储逐轮快照的保留轮数。
+ * 存储桶单件上限 100KB，逐轮全留会把对局存档撑爆；只留最近这么多轮，
+ * 成本与对局长度无关（30 × 实际桶大小，通常几十 KB 封顶）。
+ */
+export const MIX_STORE_SNAPSHOT_TURNS = 30;
+
+/** 落库前修剪：只保留最近 N 份机括存储快照，更早的删掉 */
+function trimMixStoreSnapshots(turns: MixTurn[]): MixTurn[] {
+    let kept = 0;
+    let cutAt = -1;
+    for (let i = turns.length - 1; i >= 0; i -= 1) {
+        if (!turns[i].mechanismStore) continue;
+        kept += 1;
+        if (kept > MIX_STORE_SNAPSHOT_TURNS) { cutAt = i; break; }
+    }
+    if (cutAt < 0) return turns;
+    return turns.map((t, i) => (i <= cutAt && t.mechanismStore ? { ...t, mechanismStore: undefined } : t));
+}
+
+/**
+ * 取这一串轮次末尾的机括存储快照。
+ * 修剪永远从最旧的删起，所以"有快照的轮次"是连续的一段后缀——往回找不到快照，
+ * 就是真的没留（老对局，或回溯得比保留窗口还早），返回 null 让调用方维持现状。
+ */
+function lastMixStoreSnapshot(turns: MixTurn[]): Record<string, Record<string, string>> | null {
+    for (let i = turns.length - 1; i >= 0; i -= 1) {
+        const snapshot = turns[i].mechanismStore;
+        if (snapshot) return { ...snapshot };
+    }
+    return null;
+}
+
+/**
+ * 现存最早的一份机括存储快照。
+ * 回溯到保留窗口之外时用它——那一轮当时的样子已经没了，但退到现存最早的那份
+ * （约 MIX_STORE_SNAPSHOT_TURNS 轮前）总好过让机括停在被丢掉的未来上。
+ */
+function firstMixStoreSnapshot(turns: MixTurn[]): Record<string, Record<string, string>> | null {
+    for (let i = 0; i < turns.length; i += 1) {
+        const snapshot = turns[i].mechanismStore;
+        if (snapshot) return { ...snapshot };
+    }
+    return null;
+}
+
+/**
+ * 截断历史之后把记住的值与机括存储一起退回去：各取剩下最后一轮的快照。
+ * 不做这一步的话，回溯三轮重打，好感度还停在被丢掉的那个未来上，
+ * 机括面板里也还留着那三轮记下的东西。
  */
 function withRolledBackState(session: MixSession, turns: MixTurn[]): MixSession {
     const initial = initialMixState(sessionTickets(session));
-    return { ...session, turns, state: rollbackMixState(turns, initial) };
+    // 记住的值全删光退回开局初值。机括存储：目标轮次之内有快照就精确退回；
+    // 目标比保留窗口还早，就退到现存最早的那份（能退多远退多远）。
+    // 一份快照都没有（更新前的老对局）才维持现状——没记过的东西造不出来，
+    // 而清空会把玩家在面板里手写的内容一起抹掉。
+    const store = lastMixStoreSnapshot(turns) ?? firstMixStoreSnapshot(session.turns);
+    return {
+        ...session,
+        turns,
+        state: rollbackMixState(turns, initial),
+        mechanismStore: store ?? session.mechanismStore,
+    };
 }
 
 /** 重说：丢弃最后一条 assistant 回复重新生成（开场白除外） */
@@ -756,7 +852,6 @@ export function editMixTurn(sessionId: string, turnId: string, newText: string):
     const kept = current.turns.slice(0, idx);
     let edited: MixTurn;
     if (current.turns[idx].role === "assistant") {
-        const parsed = extractMixBlocks(trimmed);
         // 块归属候选：这一轮原本的供稿材料在前（换过装的旧轮编辑后皮不跑偏），
         // 再补当前槽位里的材料（编辑时条件现场已不可考，名字对得上就认）
         const tickets = sessionTickets(current).filter((t) => t.contract.trim());
@@ -772,84 +867,202 @@ export function editMixTurn(sessionId: string, turnId: string, newText: string):
             }
             return pool;
         };
-        const ticketBlocks = matchMixBlocks(parsed.tickets, withPrior(mixTurnTicketBlocks(current.turns[idx]), tickets));
-        const encoreBlocks = matchMixBlocks(parsed.encores, withPrior(mixTurnEncoreBlocks(current.turns[idx]), encores));
-        // 状态栏被手工改过，这一轮的快照要按新原文重算，否则数字和界面对不上
-        const before = withRolledBackState(current, kept).state;
+        // 编辑保存 = 拿新原文当一次模型输出重跑剥离管线（滤网也过，与出杯同一口径）。
+        // 滤网条件按"这一轮之前的历史 + 回滚后的记住的值"重建的现场判——
+        // 与真实出杯时判条件看到的现场同构（出杯时回复也还不存在）。
+        const rolled = withRolledBackState(current, kept);
+        const activeNow = pickActiveMixMaterials(
+            resolveMixRecipeMaterials(current.recipe).entries,
+            buildMixConditionContext(rolled),
+        );
+        const filterRules = (activeNow.filter ?? []).flatMap((m) => (m.kind === "filter" ? m.rules : []));
+        const stripped = stripMixReply(
+            trimmed,
+            withPrior(mixTurnTicketBlocks(current.turns[idx]), tickets),
+            withPrior(mixTurnEncoreBlocks(current.turns[idx]), encores),
+            filterRules,
+        );
         edited = {
             ...current.turns[idx],
-            text: parsed.text,
-            ticketRaw: ticketBlocks[0]?.raw,
-            encoreRaw: encoreBlocks[0]?.raw,
-            ticketRaws: ticketBlocks.length ? ticketBlocks : undefined,
-            encoreRaws: encoreBlocks.length ? encoreBlocks : undefined,
+            text: stripped.text,
+            // 编辑后的正文就是新的"原始输出"：下次再编辑看到的还是这一份，
+            // 机括标记行可往返改（本局带钩子机括时，调用方随后会跑 runMixEditSync 收数摘行）
+            rawText: trimmed,
+            ticketRaw: stripped.ticketBlocks[0]?.raw,
+            encoreRaw: stripped.encoreBlocks[0]?.raw,
+            ticketRaws: stripped.ticketBlocks.length ? stripped.ticketBlocks : undefined,
+            encoreRaws: stripped.encoreBlocks.length ? stripped.encoreBlocks : undefined,
             // 换装戳作废：编辑后的块自带归属，旧戳留着会把渲染指错皮
             ticketId: undefined,
             encoreId: undefined,
-            state: advanceMixStateWithBlocks(before, tickets, ticketBlocks),
+            // 状态栏被手工改过，这一轮的快照要按新原文重算，否则数字和界面对不上
+            state: advanceMixStateWithBlocks(rolled.state, tickets, stripped.ticketBlocks),
         };
     } else {
         edited = { ...current.turns[idx], text: trimmed };
     }
-    const updated = withRolledBackState(current, [...kept, edited]);
+    // 后面的轮次：每一轮的原文都在，就照原样留着——调用方随后跑 runMixEditSync
+    // 把这一轮连同后面每一轮按原文重画一遍（"换掉这一笔，后面的笔重画"）。
+    // 重画不了（后面有更新前的老轮次没存原文，或这一轮之前没留快照）才截掉：
+    // 它们的记住的值与机括存储都是从这一轮累积算出来的，重算不了就只能作废。
+    const later = canReplayMixFrom(current, idx) ? current.turns.slice(idx + 1) : [];
+    const updated = withRolledBackState(current, [...kept, edited, ...later]);
     saveMixSession(updated);
     return updated;
 }
 
 /**
- * 编辑原始输出后的机括补跑：玩家在确认框里选了「替换」或「追加」才走这条。
- * 拿编辑后的这一轮重跑一次出杯后钩子——机括按新正文重新收数（摘标记行、写存储、
- * 补记住的值），钩子入参带 edited: true 供机括知情。
- * - replace：从这一轮记账前的底稿（mechanismStorePrev）起跑，原来那笔账作废，
- *   反复编辑反复同步也只记一笔。底稿必须还属于这一轮，不属于就退 false 让界面收窄选项。
- * - append：从当前存储起跑，原有记录保留、再记一遍。
- * turnCount 按"这一轮还没落库"的口径给（和真实出杯时一致），机括两次看到的世界相同。
+ * 面板里手改了某件机括的存储：写进对局，同时记在当前这一轮上。
+ * 记这一笔是为了重画——编辑早先某一轮会把后面每一轮按原文重跑，走到这一轮时
+ * 拿这份手改再盖一次，玩家亲手定的事实不会被重画冲掉。
  */
-export async function runMixEditSync(sessionId: string, turnId: string, mode: "replace" | "append"): Promise<boolean> {
+export function recordMixPanelStore(
+    session: MixSession,
+    materialId: string,
+    bucket: Record<string, string>,
+): MixSession {
+    const store = { ...(session.mechanismStore ?? {}), [materialId]: bucket };
+    let at = -1;
+    for (let i = session.turns.length - 1; i >= 0; i -= 1) {
+        if (session.turns[i].role === "assistant") { at = i; break; }
+    }
+    if (at < 0) return { ...session, mechanismStore: store };
+    const turns = [...session.turns];
+    turns[at] = {
+        ...turns[at],
+        mechanismStore: store,
+        mechanismStoreEdits: { ...(turns[at].mechanismStoreEdits ?? {}), [materialId]: bucket },
+    };
+    return { ...session, turns, mechanismStore: store };
+}
+
+/**
+ * 编辑某一轮后，能不能把它和它之后的每一轮按原文重画一遍。
+ * 要两个条件：这一轮之前留着快照（起跑点），后面每一轮都存着原文（笔怎么画的）。
+ */
+export function canReplayMixFrom(session: MixSession, idx: number): boolean {
+    if (idx < 0 || idx >= session.turns.length) return false;
+    if (session.turns[idx].role !== "assistant") return false;
+    if (!lastMixStoreSnapshot(session.turns.slice(0, idx))) return false;
+    // 这一轮自己的原文由 editMixTurn 现写，不在这里要求
+    return session.turns.every((t, i) => i <= idx || t.role !== "assistant" || typeof t.rawText === "string");
+}
+
+/**
+ * 编辑某一轮之后的机括补跑。
+ *
+ * 每一轮的原文都存着，所以能把这一轮连同它之后的每一轮按顺序重跑一遍——
+ * 相当于"把这一笔换掉，后面的笔照原样重画"，一条消息都不用删（→ "replayed"）。
+ * 面板里手改过的桶记在它发生的那一轮上（mechanismStoreEdits），重画走到那一轮时
+ * 照样再盖一次：手改始终压过重画的结果，不会被冲掉。
+ *
+ * 重画不了（这一轮之前没留快照，或后面有更新前的老轮次没存原文）就退回老办法，
+ * 只重跑这一轮（→ "appended"；调用方那边相应地把后文截掉）。
+ *
+ * 补跑名单是本局全部带脚本的机括，不判生效条件：生成时名单是落杯前判一次、出杯后
+ * 照单回收，那份名单事后没留下，现场也早变了（关键词看的是不同的最近几轮，
+ * 「随机 N%」重判必然翻脸）。重判等于换一份名单——漏掉的那件，它当初注入正文的
+ * 标记行就再也没人回收。标记行只有写它的机括认得，所以宁可全员过一遍。
+ */
+export async function runMixEditSync(sessionId: string, turnId: string): Promise<"replayed" | "appended" | false> {
     const session = getMixSession(sessionId);
     if (!session) return false;
     const idx = session.turns.findIndex((t) => t.id === turnId);
     if (idx < 0 || session.turns[idx].role !== "assistant") return false;
-    let baseStore = session.mechanismStore;
-    if (mode === "replace") {
-        if (session.mechanismStorePrevTurn !== turnId || !session.mechanismStorePrev) return false;
-        baseStore = session.mechanismStorePrev;
-    }
-    const turn = session.turns[idx];
-    const ticketRaws = mixTurnTicketBlocks(turn).map((b) => b.raw);
-    const encoreRaws = mixTurnEncoreBlocks(turn).map((b) => b.raw);
-    const result = await runMechanismHooks(
-        { ...session, turns: session.turns.slice(0, idx), mechanismStore: baseStore },
-        "afterReply",
-        {
-            text: turn.text,
-            ticketRaws: ticketRaws.length ? ticketRaws : undefined,
-            encoreRaws: encoreRaws.length ? encoreRaws : undefined,
-            edited: true,
-        },
-    );
-    // 钩子是异步的，落库前重读一遍，别把补跑期间发生的改动盖掉
-    const latest = getMixSession(sessionId);
-    if (!latest) return false;
-    const at = latest.turns.findIndex((t) => t.id === turnId);
-    if (at < 0) return false;
-    const nextState = mergeHookState(latest.turns[at].state ?? latest.state ?? {}, result.state);
-    const turns = [...latest.turns];
-    turns[at] = {
-        ...turns[at],
-        text: typeof result.text === "string" ? result.text : turns[at].text,
-        state: nextState,
+    const roster = mixSlotEntries(session.recipe.slots, "mechanism")
+        .map((entry) => getMixMaterial(entry.materialId))
+        .filter((m): m is MixMechanismMaterial => m?.kind === "mechanism" && Boolean(m.script?.trim()));
+
+    const replay = canReplayMixFrom(session, idx);
+    const allTickets = sessionTickets(session);
+    const tickets = allTickets.filter((t) => t.contract.trim());
+    const encores = sessionEncores(session).filter((e) => e.contract?.trim());
+    // 块归属候选：那一轮原本的供稿材料在前，再补当前槽位里的（同 editMixTurn）
+    const poolOf = (prior: { id?: string }[], mats: { id: string; name: string }[]) => {
+        const pool: { id: string; name: string }[] = [];
+        for (const block of prior) {
+            if (!block.id || pool.some((p) => p.id === block.id)) continue;
+            pool.push({ id: block.id, name: getMixMaterial(block.id)?.name ?? "" });
+        }
+        for (const mat of mats) {
+            if (!pool.some((p) => p.id === mat.id)) pool.push(mat);
+        }
+        return pool;
     };
+    const before = session.turns.slice(0, idx);
+    const filterRules = (pickActiveMixMaterials(
+        resolveMixRecipeMaterials(session.recipe).entries,
+        buildMixConditionContext(withRolledBackState(session, before)),
+    ).filter ?? []).flatMap((m) => (m.kind === "filter" ? m.rules : []));
+
+    // 起跑点：重画从这一轮之前那份快照起；快照没留就试记账前底稿；都没有就在当前存储上补记
+    let store = (replay ? lastMixStoreSnapshot(before) : null)
+        ?? (session.mechanismStorePrevTurn === turnId ? session.mechanismStorePrev ?? null : null)
+        ?? { ...(session.mechanismStore ?? {}) };
+    let state = rollbackMixState(before, initialMixState(allTickets));
+    const turns = [...session.turns];
+    const last = replay ? turns.length - 1 : idx;
+
+    for (let i = idx; i <= last; i += 1) {
+        const turn = turns[i];
+        if (turn.role !== "assistant") continue;
+        // 这一轮的正文已由 editMixTurn 按新原文剥好；后面几轮各自按自己的原文重剥
+        const stripped = i === idx
+            ? { text: turn.text, ticketBlocks: mixTurnTicketBlocks(turn), encoreBlocks: mixTurnEncoreBlocks(turn) }
+            : stripMixReply(
+                turn.rawText ?? turn.text,
+                poolOf(mixTurnTicketBlocks(turn), tickets),
+                poolOf(mixTurnEncoreBlocks(turn), encores),
+                filterRules,
+            );
+        const ticketRaws = stripped.ticketBlocks.map((b) => b.raw);
+        const encoreRaws = stripped.encoreBlocks.map((b) => b.raw);
+        const result = await runMechanismHooks(
+            { ...session, turns: turns.slice(0, i), state, mechanismStore: store },
+            "afterReply",
+            {
+                text: stripped.text,
+                ticketRaws: ticketRaws.length ? ticketRaws : undefined,
+                encoreRaws: encoreRaws.length ? encoreRaws : undefined,
+                edited: true,
+            },
+            roster,
+        );
+        // 这一趟没重新记账的机括保留它原来的账，不跟着起跑点一起退回去——钩子出错、
+        // 超时、或者自己决定这一轮不记，都不该让面板上已有的内容凭空消失。
+        const next = { ...result.store };
+        for (const [id, bucket] of Object.entries(turn.mechanismStore ?? session.mechanismStore ?? {})) {
+            if (!result.wrote.includes(id)) next[id] = bucket;
+        }
+        // 面板手改过的桶：走到它发生的那一轮就再盖一次，手改永远是权威
+        Object.assign(next, turn.mechanismStoreEdits ?? {});
+        state = mergeHookState(advanceMixStateWithBlocks(state, tickets, stripped.ticketBlocks), result.state);
+        store = next;
+        turns[i] = {
+            ...turn,
+            text: typeof result.text === "string" ? result.text : stripped.text,
+            ticketRaw: stripped.ticketBlocks[0]?.raw,
+            encoreRaw: stripped.encoreBlocks[0]?.raw,
+            ticketRaws: stripped.ticketBlocks.length ? stripped.ticketBlocks : undefined,
+            encoreRaws: stripped.encoreBlocks.length ? stripped.encoreBlocks : undefined,
+            state,
+            mechanismStore: store,
+        };
+    }
+
+    // 钩子是异步的，落库前重读一遍：这期间玩家动过历史（回溯、又编辑一条）就整趟作废，
+    // 别把算了一半的旧账盖上去
+    const latest = getMixSession(sessionId);
+    if (!latest || latest.turns.length !== turns.length) return false;
+    if (latest.turns.some((t, i) => t.id !== turns[i].id)) return false;
+    const tail = turns[turns.length - 1];
     saveMixSession({
         ...latest,
-        turns,
-        // 对局的当前值跟最后一轮的快照走；补跑的不是最后一轮就别动全局
-        state: at === turns.length - 1 ? nextState : latest.state,
-        mechanismStore: result.store,
-        // 记账后快照同步刷新：再次编辑同一轮时"没手改过"的判断继续成立
-        mechanismStorePost: result.store,
+        turns: trimMixStoreSnapshots(turns),
+        state: tail?.state ?? latest.state,
+        mechanismStore: tail?.mechanismStore ?? latest.mechanismStore,
     });
-    return true;
+    return replay ? "replayed" : "appended";
 }
 
 /** 对当前历史直接生成回复（编辑玩家发言后的重新生成） */

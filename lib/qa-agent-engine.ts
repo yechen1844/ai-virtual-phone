@@ -730,6 +730,22 @@ async function callQaAgentNative(apiConfig: ApiConfig, history: QaEngineMessage[
                 rawResponse: "",
                 providerKind: fallbackRequest.providerKind,
             };
+            // 流式失败转非流式成功的这一跳也要进工坊「调用记录」：主路径（sendLLMToolStreamRequest）
+            // 由聊天引擎按 appId 分流落日志，这条 fallback 是本文件自己发的请求，不补就漏一条，
+            // 而恰恰是刚出过流式故障、最需要排障记录的场景。
+            pushApiLog({
+                characterName: "工坊",
+                source: "qa",
+                channel: "qa",
+                model: apiConfig.defaultModel,
+                messages: fallbackRequest.messagesForLog.map(m => ({
+                    role: m.role,
+                    content: typeof m.content === "string" ? m.content : "[vision: 含图片的多模态消息]",
+                })),
+                rawResponse: JSON.stringify({ content: result.content, reasoning: result.reasoning, toolCalls: result.toolCalls }),
+                reasoning: parsed.reasoning?.trim() || undefined,
+                usage: parsed.usage,
+            });
         }
         await filter.flush();
 
