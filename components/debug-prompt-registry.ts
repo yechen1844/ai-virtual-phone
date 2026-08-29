@@ -8,7 +8,8 @@ export type ExtraPromptAppId =
     | "cocreate"
     | "shopping"
     | "interview"
-    | "adventure";
+    | "adventure"
+    | "stardew";
 
 export type ExtraPromptAppDefinition = {
     id: ExtraPromptAppId;
@@ -27,6 +28,7 @@ export const EXTRA_PROMPT_APPS: ExtraPromptAppDefinition[] = [
     { id: "shopping", label: "购物", emptyText: "选择购物任务后点击「预览」" },
     { id: "interview", label: "在场", emptyText: "选择角色与在场任务后点击「预览」" },
     { id: "adventure", label: "冒险", emptyText: "选择角色与冒险存档后点击「预览」" },
+    { id: "stardew", label: "星露谷", emptyText: "选择角色并点击「预览」查看星露谷 Prompt" },
 ];
 
 export const EXTRA_PROMPT_APP_LABELS = Object.fromEntries(

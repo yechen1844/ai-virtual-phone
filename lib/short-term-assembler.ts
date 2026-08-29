@@ -173,6 +173,10 @@ export function applyTranslationFeedMode(content: string, mode?: "both" | "origi
  * @param characterId - The character to load data for
  * @param options.afterTimestamp - Only include entries after this ISO timestamp
  */
+// 原生时间线里每个会话最多载入的最近消息条数：时间线最终按 shortTermTokenBudget 截断到最
+// 近一段窗口，取最近这批已足够；避免 2.8 万条级大会话在每次构建时全量载入+逐条格式化卡死主线程。
+const NATIVE_TIMELINE_TAIL_LIMIT = 1500;
+
 export function loadNativeTimeline(
     characterId: string,
     options?: {
@@ -201,7 +205,7 @@ export function loadNativeTimeline(
 
     // Process group sessions
     for (const gs of groupSessions) {
-        const messages = loadChatMessages(gs.id);
+        const messages = loadChatMessages(gs.id, NATIVE_TIMELINE_TAIL_LIMIT);
         for (const msg of messages) {
             if (msg.isRetracted) continue;
             if (isPromptHiddenChatMessage(msg)) continue;
@@ -291,7 +295,7 @@ export function loadNativeTimeline(
     }
 
     if (session) {
-        const messages = loadChatMessages(session.id);
+        const messages = loadChatMessages(session.id, NATIVE_TIMELINE_TAIL_LIMIT);
         for (const msg of messages) {
             if (msg.isRetracted) continue;
             if (isPromptHiddenChatMessage(msg)) continue;
