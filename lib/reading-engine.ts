@@ -194,8 +194,41 @@ function formatAnnotationActionContext(annotations: ReadingAnnotation[]): string
         .join("\n");
 }
 
+// ── 共读讨论：批注操作解析 ──
+// 兼容 char 把【新增/删除/修改批注】动作行放在回复任意位置（不只在末尾），
+// 并容忍格式微偏（全角空格、= 两边空格、全角＝），避免动作行漏解析后原样
+// 显示在讨论页正文里（用户反馈的"掉格式、全跑到讨论页"问题）。
+
+const ACTION_ADD_RE = /^【\s*新增批注\s*段落\s*[=＝]\s*(\d+)\s*】([\s\S]*)$/;
+const ACTION_DEL_RE = /^【\s*删除批注\s*ID\s*[=＝]\s*([^\s】]+)\s*】/;
+const ACTION_UPD_RE = /^【\s*修改批注\s*ID\s*[=＝]\s*([^\s】]+)\s*】([\s\S]*)$/;
+
 function isDiscussActionLine(line: string): boolean {
-    return /^【(?:新增批注\s+段落\s*=\s*\d+|删除批注\s+ID\s*=\s*[^\s】]+|修改批注\s+ID\s*=\s*[^\s】]+)】/.test(line);
+    return ACTION_ADD_RE.test(line) || ACTION_DEL_RE.test(line) || ACTION_UPD_RE.test(line);
+}
+
+function parseDiscussActionLine(line: string): ReadingDiscussAction | null {
+    let m = line.match(ACTION_ADD_RE);
+    if (m) {
+        const paragraphIndex = Number(m[1]) - 1;
+        const content = m[2].trim();
+        if (Number.isInteger(paragraphIndex) && paragraphIndex >= 0 && content) {
+            return { type: "add_annotation", paragraphIndex, content };
+        }
+        return null;
+    }
+    m = line.match(ACTION_DEL_RE);
+    if (m) {
+        return { type: "delete_annotation", annotationId: m[1] };
+    }
+    m = line.match(ACTION_UPD_RE);
+    if (m) {
+        const content = m[2].trim();
+        if (content) {
+            return { type: "update_annotation", annotationId: m[1], content };
+        }
+    }
+    return null;
 }
 
 export function parseReadingDiscussResponse(raw: string): {
@@ -206,60 +239,23 @@ export function parseReadingDiscussResponse(raw: string): {
     if (!normalized) return { reply: "", actions: [] };
 
     const lines = normalized.split("\n");
-    const actionLines: string[] = [];
-    let actionStart = lines.length;
-    let foundActionTail = false;
-
-    for (let i = lines.length - 1; i >= 0; i -= 1) {
-        const trimmed = lines[i].trim();
-        if (!foundActionTail) {
-            if (!trimmed) continue;
-            if (!isDiscussActionLine(trimmed)) break;
-            foundActionTail = true;
-            actionStart = i;
-            actionLines.unshift(trimmed);
-            continue;
-        }
-
-        if (!trimmed) {
-            actionStart = i;
-            continue;
-        }
-        if (!isDiscussActionLine(trimmed)) break;
-        actionStart = i;
-        actionLines.unshift(trimmed);
-    }
-
-    if (!foundActionTail) return { reply: normalized.trim(), actions: [] };
-
     const actions: ReadingDiscussAction[] = [];
-    for (const line of actionLines) {
-        let match = line.match(/^【新增批注\s+段落\s*=\s*(\d+)】([\s\S]+)$/);
-        if (match) {
-            const paragraphIndex = Number(match[1]) - 1;
-            const content = match[2].trim();
-            if (Number.isInteger(paragraphIndex) && paragraphIndex >= 0 && content) {
-                actions.push({ type: "add_annotation", paragraphIndex, content });
-            }
+    const replyLines: string[] = [];
+
+    // 全文扫描：逐行检查是否为动作行。是 → 提取为 action、不进 reply；
+    // 不是 → 留在 reply。无论 char 把动作放末尾还是穿插在正文中，都能被
+    // 正确提取执行，且不会原样泄漏到讨论页显示。
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (isDiscussActionLine(trimmed)) {
+            const action = parseDiscussActionLine(trimmed);
+            if (action) actions.push(action);
             continue;
         }
-
-        match = line.match(/^【删除批注\s+ID\s*=\s*([^\s】]+)】$/);
-        if (match) {
-            actions.push({ type: "delete_annotation", annotationId: match[1] });
-            continue;
-        }
-
-        match = line.match(/^【修改批注\s+ID\s*=\s*([^\s】]+)】([\s\S]+)$/);
-        if (match) {
-            const content = match[2].trim();
-            if (content) {
-                actions.push({ type: "update_annotation", annotationId: match[1], content });
-            }
-        }
+        replyLines.push(line);
     }
 
-    const reply = lines.slice(0, actionStart).join("\n").trim();
+    const reply = replyLines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
     return { reply, actions };
 }
 
