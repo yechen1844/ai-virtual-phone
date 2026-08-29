@@ -227,3 +227,13 @@
   padding: 40px 16px;
 }
 
+/* ---------------- 键盘开合黑闪防护 ---------------- */
+/* 软键盘弹出/收起会触发视口 resize，WebView 在这瞬间把带 backdrop-filter
+   （毛玻璃）的层重合成黑色，导致整屏黑闪一下。这里在键盘期间（<html> 带
+   kb-open）临时禁用所有 backdrop-filter，收起后自动恢复，肉眼几乎无感。 */
+html.kb-open,
+html.kb-open * {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
