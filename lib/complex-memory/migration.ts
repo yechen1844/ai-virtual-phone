@@ -84,7 +84,7 @@ export function getMigrationState(characterId: string): MigrationState | null {
 /** 动态 token 估算：基于真实时间线条数，替换固定 1400/天。 */
 export function estimateMigration(characterId: string, days: number, range?: { start?: string; end?: string }): number {
   const dates = computeDates(characterId, days, range);
-  const timeline = loadNativeTimeline(characterId);
+  const timeline = loadSourceTimeline(characterId);
   const config = loadComplexMemoryConfig();
   const windowSize = config.eventWindowMaxEntries;
 
@@ -388,20 +388,22 @@ async function stepDaily(
 ): Promise<MigrationState> {
   const date = state.pendingDates[0];
   const res = await generateDaily(characterId, characterName, date, { suppressChain: true, migrated: true });
-  const failedDates = [...(state.failedDates ?? [])];
-  if (!res.success && res.error !== "当日日记已存在（幂等）") failedDates.push(date);
+  // 幂等：当日日记已存在（如中断后恢复）视为成功，不重复生成。
+  if (res.success || res.error === "当日日记已存在（幂等）") {
+    const next: MigrationState = {
+      ...base,
+      phase: "stream",
+      pendingDates: state.pendingDates.slice(1),
+      doneDays: state.doneDays + 1,
+      currentDate: date,
+    };
+    // 核心链在迁移内同步 await，保证下一步事件/日记生成读到最新核心
+    return await runMigrationChain(characterId, characterName, next);
+  }
 
-  const next: MigrationState = {
-    ...base,
-    phase: "stream",
-    pendingDates: state.pendingDates.slice(1),
-    doneDays: state.doneDays + 1,
-    currentDate: date,
-    failedDates,
-  };
-
-  // 核心链在迁移内同步 await，保证下一步事件/日记生成读到最新核心
-  return await runMigrationChain(characterId, characterName, next);
+  // 失败：不丢弃该日期（保留在 pendingDates 队首），抛错让 runMigrationStep 指数退避重试；
+  // 重试耗尽会置 paused，用户可「继续」再次尝试，避免"缺日记还被静默掩盖"。
+  throw new Error(res.error ?? "日记生成失败");
 }
 
 /** 迁移内核心定期重构：迁移内日记计数满 coreDailyInterval 篇 → 重构核心（与正常双触发之一一致）。 */
@@ -527,7 +529,9 @@ async function createLegacyPeriod(characterId: string): Promise<void> {
 
 function computeDates(characterId: string, days: number, range?: { start?: string; end?: string }): string[] {
   const today = dateString(0);
-  const timeline = loadNativeTimeline(characterId);
+  // 与事件生成口径一致：统一走来源过滤后的时间线，避免把"被关来源主导/素材过少"的低活动日纳入 dates，
+  // 这类日期事件被跳过、日记又因素材过少必然失败，最终静默缺失。
+  const timeline = loadSourceTimeline(characterId);
   const byDate = new Map<string, number>();
   for (const e of timeline) {
     const d = dateFromTimestamp(e.timestamp);
