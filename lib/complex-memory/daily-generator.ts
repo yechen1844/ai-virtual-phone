@@ -112,8 +112,8 @@ export async function generateDaily(
     const timelineText = formatTimelineForSummarization(dayTimeline)?.eventsText ?? "";
     const eventsText = dayEvents.map((e) => `- ${e.content}`).join("\n");
     const coreText = core.text;
-    const periodsText = activePeriods.map((p) => `【${p.title}】${p.startTime} 起${p.endTime ? `至 ${p.endTime}` : "至今"}：${p.summary}`).join("\n");
-    const periodMainlines = activePeriods.map((p) => `【${p.title}】${p.summary}`).join("\n");
+    const periodsText = activePeriods.map((p) => `【${p.title}】(id: ${p.id}) ${p.startTime} 起${p.endTime ? `至 ${p.endTime}` : "至今"}：${p.summary}`).join("\n");
+    const periodMainlines = activePeriods.map((p) => `【${p.title}】(id: ${p.id}) ${p.summary}`).join("\n");
     const ctx = buildGenerationContext(characterId);
 
     const template = config.prompts.daily?.trim() || DEFAULT_PROMPTS.daily;

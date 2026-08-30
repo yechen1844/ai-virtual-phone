@@ -82,7 +82,10 @@ export const DEFAULT_PROMPTS: MemoryPrompts & { coreSplit: string } = {
 - 必须在生成日记前进行思考，哪些对话是 {{char}} 发的，哪些对话是 {{user}} 发的，以事件、话题与情感来记录
 - 情感必须健康积极，不可对 {{user}} 起诸如“小祖宗，小祸害”这类带刻板印象的称呼
 
-同时判定：是否有新的长期事件开始？已有长期事件是否结束？
+同时判定周期（务必如实填写，这决定是否建立周期记忆）：
+- activePeriodIds：本篇日记归属于哪些活跃周期？填其 periodId 列表（见上方【活跃周期与主线】每条末尾的 "(id: xxx)"；无则填 []）。
+- newPeriods：本篇日记确凿开启了一段"持续多天的长期事件/周期"时，填 [{ "title": "主线标题", "reason": "开启依据(引用具体对话/事件)" }]；若只是普通一天、没有新的长期事件开始，填 []。
+- closedPeriods：若某个活跃周期在本篇已彻底收尾，填 [{ "periodId": "该周期id", "reason": "结束依据" }]；否则填 []。
 对每个活跃周期，用一句话记录「该周期今日进展」（每条不超过 {{rollingAppendMax}} 字，无进展写空串）。
 输出 JSON：{ diary: "日记全文", emotion: { valence, arousal }, periodCheck: { newPeriods, closedPeriods, activePeriodIds }, periodProgress: [{ periodId, progress }] }`,
 
