@@ -1139,19 +1139,24 @@ export function prepareShortTermContext(
         }
     }
 
-    // Determine survivors（时间线条目可选条数上限：保留最新的 maxShortTermEntries 条，防"短期记忆超100条"）
-    const survivingEntries: Array<{ id: string; ts: string }> = [];
-    const survivingMsgIndices = new Set<number>();
+    // Determine survivors（短期上下文总条数上限：默认取 fixedShortTermEntries，覆盖"时间线条目 + 历史消息"，
+    // 统一保留最新 N 条，真正压制"短期记忆超100条/特别多"的问题）
+    const allSurviving: Array<{ kind: "entry" | "history"; ts: string; entryId?: string; msgIdx?: number }> = [];
     for (let i = startIdx; i < pool.length; i++) {
         const p = pool[i];
-        if (p.kind === "entry") survivingEntries.push({ id: p.entryId, ts: p.timestamp });
-        else survivingMsgIndices.add(p.msgIdx);
+        if (p.kind === "entry") allSurviving.push({ kind: "entry", ts: p.timestamp, entryId: p.entryId });
+        else allSurviving.push({ kind: "history", ts: p.timestamp, msgIdx: p.msgIdx });
     }
     const maxShortTermEntries = options?.maxShortTermEntries ?? 0;
-    const keptEntries = maxShortTermEntries > 0 && survivingEntries.length > maxShortTermEntries
-        ? survivingEntries.slice(-maxShortTermEntries)
-        : survivingEntries;
-    const survivingEntryIds = new Set<string>(keptEntries.map((e) => e.id));
+    const kept = maxShortTermEntries > 0 && allSurviving.length > maxShortTermEntries
+        ? allSurviving.slice(-maxShortTermEntries)
+        : allSurviving;
+    const survivingEntryIds = new Set<string>();
+    const survivingMsgIndices = new Set<number>();
+    for (const it of kept) {
+        if (it.kind === "entry" && it.entryId) survivingEntryIds.add(it.entryId);
+        else if (it.kind === "history" && it.msgIdx !== undefined) survivingMsgIndices.add(it.msgIdx);
+    }
 
     // Build truncated history (preserve original order)
     const truncatedHistoryWithOrigIdx = history

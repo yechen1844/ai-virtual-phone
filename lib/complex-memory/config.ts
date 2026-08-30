@@ -68,7 +68,7 @@ export const DEFAULT_COMPLEX_MEMORY_CONFIG: ComplexMemoryConfig = {
   eventDecayFactor: 0.94,
   periodDecayFactor: 0.995,
   specialDateDecayFactor: 0.995,
-  fixedShortTermEntries: 120,
+  fixedShortTermEntries: 60,
   fixedRecentEventCount: 2,
   recallTopK: 6,
   rerankKeepMax: 6,
