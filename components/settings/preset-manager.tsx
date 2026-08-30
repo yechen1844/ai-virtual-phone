@@ -708,7 +708,25 @@ const [draggedPromptIndex, setDraggedPromptIndex] = useState<number | null>(null
         updatePreset(preset.id, { prompt_order: newOrder });
     }, [actionableSelectedIds, editingId, presets, promptRenderItems, selectMode]);
 
-    const { containerRef: promptListRef, onTouchStart: onPromptTouchStart, onTouchMove: onPromptTouchMove, onTouchEnd: onPromptTouchEnd } = useTouchSort(handlePromptReorder);
+    const getPromptDragIndices = useCallback((pressedIndex: number) => {
+        const pressedItem = promptRenderItems[pressedIndex];
+        if (
+            !selectMode
+            || pressedItem?.type !== "item"
+            || !actionableSelectedIds.has(pressedItem.prompt.identifier)
+        ) {
+            return [pressedIndex];
+        }
+        return promptRenderItems.flatMap((item, index) => (
+            item.type === "item" && actionableSelectedIds.has(item.prompt.identifier) ? [index] : []
+        ));
+    }, [actionableSelectedIds, promptRenderItems, selectMode]);
+
+    const { containerRef: promptListRef, onTouchStart: onPromptTouchStart, onTouchMove: onPromptTouchMove, onTouchEnd: onPromptTouchEnd } = useTouchSort(
+        handlePromptReorder,
+        400,
+        getPromptDragIndices,
+    );
 
     // ── 条目左滑操作（微信式：左滑露出「新增/删除」） ──
     const swipe = useSwipeActions();
