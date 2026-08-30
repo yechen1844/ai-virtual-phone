@@ -22,7 +22,15 @@ export function recordEvents(characterId: string, characterName: string, count: 
   if (pendingCount >= config.eventTriggerCount && !generatingSet.has(characterId)) {
     generatingSet.add(characterId);
     runEventGeneration(characterId, characterName)
-      .catch((err) => console.warn("[ComplexMemory] 事件生成失败:", err))
+      .then((r) => {
+        if (r && !r.success && r.error) {
+          console.warn("[ComplexMemory] 事件生成失败:", r.error);
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent("global-notice", { detail: `复杂记忆·事件生成失败：${r.error}` }));
+          }
+        }
+      })
+      .catch((err) => console.warn("[ComplexMemory] 事件生成失败(异常):", err))
       .finally(() => generatingSet.delete(characterId));
   }
 }

@@ -17,7 +17,15 @@ export function ensureWatermarkAnchored(characterId: string): void {
   if (ring.watermarkTimestamp !== null || ring.watermarkEventId !== null) return;
 
   const timeline = loadSourceTimeline(characterId);
-  if (timeline.length === 0) return;
+  if (timeline.length === 0) {
+    // 时间线为空：锚定到「此刻」，此后新对话（时间戳 > now）才会被纳入自动总结。
+    // 若此处不锚定，首次触发生成时才锚定到「当时最新」，会把开启后的首批对话一并吞掉、导致「聊了很多却不总结」。
+    updateRingBuffer(characterId, {
+      watermarkTimestamp: new Date().toISOString(),
+      pendingCount: ring.pendingCount || 0,
+    });
+    return;
+  }
 
   const last = timeline[timeline.length - 1];
   updateRingBuffer(characterId, {
