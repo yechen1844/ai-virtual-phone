@@ -4,7 +4,7 @@
 
 import { simpleLLMCall } from "../api-helpers";
 import { resolveAuxiliaryApiConfig } from "../settings-storage";
-import { loadNativeTimeline, formatTimelineForSummarization } from "../short-term-assembler";
+import { loadNativeTimeline } from "../short-term-assembler";
 import { generateEmbedding, resolveEmbeddingModel } from "../memory-embedding";
 import {
   acquireGenerationLock,
@@ -109,7 +109,11 @@ export async function generateDaily(
     const dayEvents = (await loadEvents(characterId)).filter((e) => dateFromTimestamp(e.timestamp) === date);
     const [core, activePeriods] = await Promise.all([getCurrentCoreView(characterId), loadActivePeriods(characterId)]);
 
-    const timelineText = formatTimelineForSummarization(dayTimeline)?.eventsText ?? "";
+    // 当日时间线直接展示原始聊天（标时间，不标成“事件”），让模型看清当天真实聊了什么；
+    // 避免 1~3 条消息被 formatTimelineForSummarization 标成“- 事件:”后，模型误以为“只有事件记忆、没有实质聊天”而写不出日记。
+    const timelineText = dayTimeline
+      .map((e) => `- [${e.timestamp.slice(11, 16)}] ${e.content}`)
+      .join("\n");
     const eventsText = dayEvents.map((e) => `- ${e.content}`).join("\n");
     const coreText = core.text;
     const periodsText = activePeriods.map((p) => `【${p.title}】(id: ${p.id}) ${p.startTime} 起${p.endTime ? `至 ${p.endTime}` : "至今"}：${p.summary}`).join("\n");
