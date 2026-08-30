@@ -7,7 +7,7 @@
 
 import { incrementEventCounter } from "../memory-storage";
 import { maybeRunSummarization } from "../memory-summarizer";
-import { isComplexMemoryEnabled } from "./config";
+import { isComplexMemoryEnabled, loadComplexMemoryConfig } from "./config";
 import { recordEvents } from "./ring-buffer";
 
 export function recordCharacterActivity(
@@ -16,7 +16,10 @@ export function recordCharacterActivity(
   count = 1,
 ): void {
   if (isComplexMemoryEnabled(characterId)) {
-    recordEvents(characterId, characterName, count);
+    // 自动总结开关：开启才把对话沉淀为事件记忆；关闭则复杂记忆不再自动生成事件。
+    if (loadComplexMemoryConfig().autoSummarizeEnabled) {
+      recordEvents(characterId, characterName, count);
+    }
     return;
   }
   for (let i = 0; i < count; i++) {
