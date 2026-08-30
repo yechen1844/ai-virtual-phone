@@ -1,31 +1,24 @@
 // lib/complex-memory/scheduler.ts
-// 复杂记忆系统 · 后台调度器。
-// 复刻 diary-entry-timer-service 的 Web Worker 定时 + 页面可见性补偿模式，每分钟检查：
-//   1. 日记补生成（跨天即补；当天需静默 X 分钟）
-//   2. 周期维护（重试未提炼的结束周期；stabilized 30 天无引用 → archived）
-//   3. 核心记忆 bootstrap / 定期重构检查
-//   4. 电压落库（每天一次懒计算结果物理化 + 消磨扫描）
-// 全角色并行检查（并发上限 maxParallel 防限流）；任务失败先静默重试（指数退避），
-// 仍失败则弹窗报错（复用应用全局通知机制），绝不静默跳过。
+// 复杂记忆系统 · 后台调度器 —— 仅保留「电压维护」（记忆衰减/消磨，非生成）。
+// 日记/周期/核心 的生成已改为「触发式」：
+//   · 事件记忆：活动驱动（聊天攒够触发）；
+//   · 每日日记：跨天触发（一天结束、进入新的一天后，为在用角色补「昨天」日记）；
+//   · 周期/核心：由日记生成链式触发。
+// 因此不再每分钟轮询全角色生成（避免与一键迁移/自动总结互相污染、避免反复补无意义历史）。
 
 import { bgSetInterval } from "../bg-timer";
 import { loadCharacters } from "../character-storage";
 import { getEnabledCharacterIds, loadCharacterState, loadComplexMemoryConfig } from "./config";
-import { maybeGenerateDaily } from "./daily-generator";
-import { runPeriodMaintenance } from "./period-distiller";
 import { runVoltageMaintenance } from "./voltage";
-import { getCurrentCoreView } from "./storage";
 
 const CHECK_INTERVAL_MS = 60_000;
 const VOLTAGE_INTERVAL_MS = 24 * 60 * 60 * 1000;
-const BOOTSTRAP_COOLDOWN_MS = 10 * 60 * 1000;
 
 /** 复杂记忆调度失败上报事件：explorer 查看器监听后于页内展示。 */
 export const COMPLEX_MEMORY_SCHEDULER_ERROR_EVENT = "complex-memory-scheduler-error";
 
 let stopInterval: (() => void) | null = null;
 let running = false;
-const bootstrapCooldown = new Map<string, number>();
 
 function dispatchGlobalNotice(message: string): void {
   if (typeof window === "undefined") return;
@@ -39,7 +32,6 @@ function sleep(ms: number): Promise<void> {
 
 type TaskResult = { ok: boolean; error?: string };
 
-/** 任务执行：失败先静默重试（指数退避），仍失败则弹窗报错，绝不静默跳过。 */
 async function runTaskWithRetry(
   characterName: string,
   label: string,
@@ -65,34 +57,22 @@ async function runTaskWithRetry(
   dispatchGlobalNotice(msg);
 }
 
-async function runCharacterTasks(characterId: string, characterName: string): Promise<void> {
-  // 自动补生成开关：被关闭，或正有一键迁移执行中 → 跳过「生成/总结类」后台任务（日记/周期/核心），
-  // 避免自动补生成与手动迁移互相污染时间线与生成逻辑（两者同时跑是时间混乱的根因）。
-  // 电压维护（记忆衰减，非生成）与生成无关，始终运行。
-  // 自动总结统管后台生成（事件/日记/周期/核心）；迁移进行中强制暂停，避免相互污染
-  const autoPaused =
-    !loadComplexMemoryConfig().autoSummarizeEnabled ||
-    loadCharacterState(characterId).migration?.status === "running";
+async function runVoltageCheck(characterId: string): Promise<void> {
+  const state = loadCharacterState(characterId);
+  const last = state.lastVoltageRunAt ? new Date(state.lastVoltageRunAt).getTime() : 0;
+  if (Date.now() - last < VOLTAGE_INTERVAL_MS) return;
+  await runVoltageMaintenance(characterId);
+}
 
-  if (!autoPaused) {
-    await runTaskWithRetry(characterName, "日记补生成", async () => {
-      const r = await maybeGenerateDaily(characterId, characterName);
-      return { ok: r.generated || !r.error, error: r.error };
-    });
-    await runTaskWithRetry(characterName, "周期维护", async () => {
-      await runPeriodMaintenance(characterId, characterName);
-      return { ok: true };
-    });
-    await runTaskWithRetry(characterName, "核心记忆检查", async () => {
-      await maybeBootstrapCore(characterId, characterName);
+async function workerLoop(queue: string[], nameById: Map<string, string>): Promise<void> {
+  while (queue.length > 0) {
+    const characterId = queue.shift()!;
+    const characterName = nameById.get(characterId) ?? "角色";
+    await runTaskWithRetry(characterName, "电压维护", async () => {
+      await runVoltageCheck(characterId);
       return { ok: true };
     });
   }
-
-  await runTaskWithRetry(characterName, "电压维护", async () => {
-    await maybeRunVoltageMaintenance(characterId);
-    return { ok: true };
-  });
 }
 
 async function runSchedulerCheck(): Promise<void> {
@@ -107,7 +87,6 @@ async function runSchedulerCheck(): Promise<void> {
     const config = loadComplexMemoryConfig();
     const maxParallel = Math.max(1, config.maxParallel);
 
-    // 全角色并行检查：并发上限防限流；轮询期间新触发不丢弃，状态持久化下轮自然拾取
     const queue = characterIds.slice();
     const workers: Promise<void>[] = [];
     for (let i = 0; i < Math.min(maxParallel, queue.length); i++) {
@@ -117,36 +96,6 @@ async function runSchedulerCheck(): Promise<void> {
   } finally {
     running = false;
   }
-}
-
-async function workerLoop(queue: string[], nameById: Map<string, string>): Promise<void> {
-  while (queue.length > 0) {
-    const characterId = queue.shift()!;
-    const characterName = nameById.get(characterId) ?? "角色";
-    await runCharacterTasks(characterId, characterName);
-  }
-}
-
-async function maybeBootstrapCore(characterId: string, characterName: string): Promise<void> {
-  const now = Date.now();
-  const last = bootstrapCooldown.get(characterId) ?? 0;
-  if (now - last < BOOTSTRAP_COOLDOWN_MS) return;
-  bootstrapCooldown.set(characterId, now);
-
-  const core = await getCurrentCoreView(characterId);
-  if (core.snapshot) return;
-  const { bootstrapCoreMemory } = await import("./core-builder");
-  const result = await bootstrapCoreMemory(characterId, characterName);
-  if (!result.success) {
-    throw new Error(result.error || "bootstrap 未完成");
-  }
-}
-
-async function maybeRunVoltageMaintenance(characterId: string): Promise<void> {
-  const state = loadCharacterState(characterId);
-  const last = state.lastVoltageRunAt ? new Date(state.lastVoltageRunAt).getTime() : 0;
-  if (Date.now() - last < VOLTAGE_INTERVAL_MS) return;
-  await runVoltageMaintenance(characterId);
 }
 
 function handleVisibilityChange(): void {

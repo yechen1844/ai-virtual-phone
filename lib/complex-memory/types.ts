@@ -122,6 +122,8 @@ export type CharacterRuntimeState = {
   lastDailyDate: string | null;      // 最近已生成的日记日期 YYYY-MM-DD
   dailyCountSinceCoreUpdate: number; // 距上次核心定期重构的日记累计数
   lastVoltageRunAt: string | null;   // 电压落库时间
+  lastDailyCheckDate: string | null;  // 跨天触发检查日：最新一天日记检查到哪天
+  failedDailyDates: { date: string; reason: string; at: string }[]; // 生成失败的日记（供用户手动重新生成）
   migration?: MigrationState;         // 迁移断点
   generationLock?: {
     kind: "event" | "daily" | "period" | "core" | "migration";

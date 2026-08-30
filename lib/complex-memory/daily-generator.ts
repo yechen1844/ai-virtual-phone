@@ -11,6 +11,8 @@ import {
   loadComplexMemoryConfig,
   loadCharacterState,
   saveCharacterState,
+  setLastDailyCheckDate,
+  markFailedDaily,
 } from "./config";
 import { renderMemoryPrompt, DEFAULT_PROMPTS } from "./prompts";
 import {
@@ -75,6 +77,30 @@ export async function maybeGenerateDaily(
   const result = await generateDaily(characterId, characterName, yesterday);
   if (!result.success) return { generated: false, error: result.error };
   return { generated: true };
+}
+
+export async function maybeTriggerDailySummary(
+  characterId: string,
+  characterName: string,
+): Promise<void> {
+  // 触发式：一天结束（进入新的一天）后，为这个角色生成「昨天」的日记。
+  // 不轮询、不补历史；当天失败则标注失败，供用户手动重生成。
+  const today = dateString(0);
+  const state = loadCharacterState(characterId);
+  if (state.lastDailyCheckDate === today) return;
+  setLastDailyCheckDate(characterId, today);
+
+  const yesterday = dateString(-1);
+  if ((state.failedDailyDates ?? []).some((f) => f.date === yesterday)) return;
+
+  const r = await maybeGenerateDaily(characterId, characterName);
+  if (r.generated === false && r.error) {
+    console.warn("[ComplexMemory] 昨日日记生成失败:", r.error);
+    markFailedDaily(characterId, yesterday, r.error);
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("global-notice", { detail: `复杂记忆·日记生成失败(${yesterday})：${r.error}。请在记忆页手动重新生成。` }));
+    }
+  }
 }
 
 export async function generateDaily(

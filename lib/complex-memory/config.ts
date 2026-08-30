@@ -266,6 +266,8 @@ export function loadCharacterState(characterId: string): CharacterRuntimeState {
     lastDailyDate: null,
     dailyCountSinceCoreUpdate: 0,
     lastVoltageRunAt: null,
+    lastDailyCheckDate: null,
+    failedDailyDates: [],
   };
   if (typeof window === "undefined") return fallback;
   try {
@@ -288,6 +290,29 @@ export function loadCharacterState(characterId: string): CharacterRuntimeState {
 export function saveCharacterState(state: CharacterRuntimeState): void {
   if (typeof window === "undefined") return;
   kvSet(COMPLEX_MEMORY_STATE_PREFIX + state.characterId, JSON.stringify(state));
+}
+
+/** 记录跨天触发检查日，避免当日重复触发日记生成。 */
+export function setLastDailyCheckDate(characterId: string, date: string): void {
+  const state = loadCharacterState(characterId);
+  state.lastDailyCheckDate = date;
+  saveCharacterState(state);
+}
+
+/** 标注某日日记生成失败（供用户手动重新生成）。 */
+export function markFailedDaily(characterId: string, date: string, reason: string): void {
+  const state = loadCharacterState(characterId);
+  const list = (state.failedDailyDates ?? []).filter((f) => f.date !== date);
+  list.push({ date, reason, at: new Date().toISOString() });
+  state.failedDailyDates = list;
+  saveCharacterState(state);
+}
+
+/** 清除某日日记的失败标记（手动重生成成功后调用）。 */
+export function clearFailedDaily(characterId: string, date: string): void {
+  const state = loadCharacterState(characterId);
+  state.failedDailyDates = (state.failedDailyDates ?? []).filter((f) => f.date !== date);
+  saveCharacterState(state);
 }
 
 export function updateRingBuffer(characterId: string, patch: Partial<RingBufferState>): void {

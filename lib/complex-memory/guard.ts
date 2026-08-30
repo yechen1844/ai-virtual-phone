@@ -9,6 +9,7 @@ import { incrementEventCounter } from "../memory-storage";
 import { maybeRunSummarization } from "../memory-summarizer";
 import { isComplexMemoryEnabled, loadComplexMemoryConfig } from "./config";
 import { recordEvents } from "./ring-buffer";
+import { maybeTriggerDailySummary } from "./daily-generator";
 
 export function recordCharacterActivity(
   characterId: string,
@@ -19,6 +20,8 @@ export function recordCharacterActivity(
     // 自动总结开关：开启才把对话沉淀为事件记忆；关闭则复杂记忆不再自动生成事件。
     if (loadComplexMemoryConfig().autoSummarizeEnabled) {
       recordEvents(characterId, characterName, count);
+      // 触发式日记：跨天（一天结束）时为该角色补生成「昨天」日记，不轮询；失败会标注供手动重生成。
+      void maybeTriggerDailySummary(characterId, characterName).catch(() => {});
     }
     return;
   }
