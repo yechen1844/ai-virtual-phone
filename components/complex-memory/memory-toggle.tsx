@@ -6,6 +6,8 @@ import { Toggle } from "@/components/ui/form";
 import {
   isComplexMemoryEnabled,
   setComplexMemoryEnabled,
+  loadComplexMemoryConfig,
+  getRingBuffer,
 } from "@/lib/complex-memory/config";
 import {
   countByCharacter,
@@ -22,6 +24,10 @@ type StatusSummary = {
   coreVersion: number | null;
   lastDailyDate: string | null;
   eventCount: number;
+  pendingCount: number;
+  threshold: number;
+  autoSummarize: boolean;
+  watermark: string | null;
 };
 
 export function ComplexMemoryToggle({ characterId, characterName }: ComplexMemoryToggleProps) {
@@ -31,16 +37,22 @@ export function ComplexMemoryToggle({ characterId, characterName }: ComplexMemor
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [counts, core, yesterday] = await Promise.all([
+      const [counts, core, yesterday, ring, config] = await Promise.all([
         countByCharacter(characterId),
         getCurrentCoreView(characterId),
         getDaily(characterId, todayDateString()),
+        Promise.resolve(getRingBuffer(characterId)),
+        Promise.resolve(loadComplexMemoryConfig()),
       ]);
       if (cancelled) return;
       setStatus({
         coreVersion: core.snapshot?.version ?? null,
         lastDailyDate: yesterday?.date ?? null,
         eventCount: counts.events,
+        pendingCount: ring.pendingCount,
+        threshold: config.eventTriggerCount,
+        autoSummarize: config.autoSummarizeEnabled,
+        watermark: ring.watermarkTimestamp,
       });
     })();
     return () => {
@@ -67,6 +79,11 @@ export function ComplexMemoryToggle({ characterId, characterName }: ComplexMemor
               : "已启用"
             : "未启用时使用 float 原生记忆"}
         </span>
+        {enabled && status && (
+          <span className="menu-desc" style={{ color: "var(--c-text-dim, rgba(255,255,255,0.55))" }}>
+            自动总结 {status.autoSummarize ? "开" : "关"} · 事件计数 {status.pendingCount}/{status.threshold} · 上次总结到 {status.watermark ? new Date(status.watermark).toLocaleString() : "未开始"}
+          </span>
+        )}
         {enabled && !status?.coreVersion && (
           <span className="menu-desc" style={{ color: "var(--c-warning, #d08770)" }}>
             尚无核心记忆：将从未有过的记忆开始，或使用一键迁移
