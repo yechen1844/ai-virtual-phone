@@ -51,8 +51,6 @@ export async function maybeGenerateDaily(
   characterId: string,
   characterName: string,
 ): Promise<{ generated: boolean; error?: string }> {
-  const config = loadComplexMemoryConfig();
-  const today = dateString(0);
   const timeline = loadSourceTimeline(characterId);
 
   const byDate = new Map<string, { lastTs: number }>();
@@ -67,19 +65,16 @@ export async function maybeGenerateDaily(
   }
   if (byDate.size === 0) return { generated: false };
 
-  // 官方语义：遍历所有「有活动、但日记未生成」的日期并补生成；跨天视为已结束可直接补，静默条件只约束当天。
-  const dates = [...byDate.keys()].sort().reverse();
-  const quietMs = config.dailyQuietMinutes * 60_000;
-  for (const d of dates) {
-    const existing = await getDaily(characterId, d);
-    if (existing) continue;
-    const rec = byDate.get(d)!;
-    if (d === today && Date.now() - rec.lastTs < quietMs) continue;
-    const result = await generateDaily(characterId, characterName, d);
-    if (!result.success) return { generated: false, error: result.error };
-    return { generated: true };
-  }
-  return { generated: false };
+  // 只补「昨天」一个日期；且只在「昨天确实有新活动」时才补。
+  // 绝不补很久以前的历史缺失（避免与迁移/手动冲突 + 疯狂生成无用记忆），也绝不碰最近没有任何新记录的角色。
+  const yesterday = dateString(-1);
+  const existing = await getDaily(characterId, yesterday);
+  if (existing) return { generated: false };
+  const rec = byDate.get(yesterday);
+  if (!rec) return { generated: false };
+  const result = await generateDaily(characterId, characterName, yesterday);
+  if (!result.success) return { generated: false, error: result.error };
+  return { generated: true };
 }
 
 export async function generateDaily(
@@ -164,7 +159,7 @@ export async function generateDaily(
 
     const now = new Date().toISOString();
     const daily: ComplexDaily = {
-      id: `day_${date.replace(/-/g, "")}`,
+      id: `day_${characterId}_${date.replace(/-/g, "")}`,
       characterId,
       date,
       content: parsed.diary,

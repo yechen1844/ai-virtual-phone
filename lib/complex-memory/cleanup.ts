@@ -287,7 +287,7 @@ export async function mergeCluster(
 
   let replacedWithId: string;
   if (allDaily) {
-    replacedWithId = `day_${earliest.replace(/-/g, "")}`;
+    replacedWithId = `day_${characterId}_${earliest.replace(/-/g, "")}`;
     const daily: ComplexDaily = {
       id: replacedWithId,
       characterId,

@@ -27,7 +27,7 @@ export type ComplexEvent = {
 
 // ── L3 每日日记 ──
 export type ComplexDaily = {
-  id: string;                    // day_YYYYMMDD
+  id: string;                    // day_<characterId>_YYYYMMDD（含角色前缀，避免不同角色同日互相覆盖）
   characterId: string;
   date: string;                  // 2026-08-15
   content: string;               // 800 字日记全文
