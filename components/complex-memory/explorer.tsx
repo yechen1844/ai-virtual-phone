@@ -2381,8 +2381,7 @@ function ConfigTab({ characterId, notify }: { characterId: string; notify: (n: N
         {boolField("rerankEnabled", "重排序")}
         {boolField("silkAssociationEnabled", "丝线联想")}
         {boolField("mirrorToFloatEnabled", "镜像到 float")}
-        {boolField("autoGenerationEnabled", "自动补生成", "后台按需生成日记/周期/核心；关闭后仅一键迁移可生成（迁移进行中自动暂停）")}
-        {boolField("autoSummarizeEnabled", "自动总结", "聊天对话自动沉淀为事件记忆（聊够 eventTriggerCount 条自动总结）；关闭后复杂记忆不再自动生成事件")}
+        {boolField("autoSummarizeEnabled", "自动总结", "后台自动生成 事件/日记/周期/核心 记忆；关闭后仅一键迁移/手动可生成（迁移进行中自动暂停）")}
       </div>
 
       <div className="cm-section-head" style={{ marginTop: 18 }}>

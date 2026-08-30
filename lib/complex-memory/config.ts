@@ -222,8 +222,8 @@ export function setComplexMemoryEnabled(characterId: string, enabled: boolean): 
     config.enabledCharacters[characterId] = true;
     // 水位线安全锚定：有历史时间线时锚定到当前时刻，杜绝首次回读吞历史
     ensureWatermarkAnchored(characterId);
-    // 首次启用自动 bootstrap 核心记忆：仅在「自动补生成」开启时进行；关闭时交给一键迁移手动生成
-    if (!config.autoGenerationEnabled) {
+    // 首次启用自动 bootstrap 核心记忆：仅在「自动总结」开启时进行；关闭时交给一键迁移手动生成
+    if (!config.autoSummarizeEnabled) {
       saveComplexMemoryConfig(config);
       return;
     }

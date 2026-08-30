@@ -69,8 +69,9 @@ async function runCharacterTasks(characterId: string, characterName: string): Pr
   // 自动补生成开关：被关闭，或正有一键迁移执行中 → 跳过「生成/总结类」后台任务（日记/周期/核心），
   // 避免自动补生成与手动迁移互相污染时间线与生成逻辑（两者同时跑是时间混乱的根因）。
   // 电压维护（记忆衰减，非生成）与生成无关，始终运行。
+  // 自动总结统管后台生成（事件/日记/周期/核心）；迁移进行中强制暂停，避免相互污染
   const autoPaused =
-    !loadComplexMemoryConfig().autoGenerationEnabled ||
+    !loadComplexMemoryConfig().autoSummarizeEnabled ||
     loadCharacterState(characterId).migration?.status === "running";
 
   if (!autoPaused) {
