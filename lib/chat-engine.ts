@@ -1459,44 +1459,58 @@ export type ChatCompletionResult = {
 //   · assistant 新增条数 = 本轮 parts 里实际回复的文本段数；
 // 若已统计 id 找不到（说明发生过删除/重roll），回退到「最后一个 assistant 之后」再数，
 // 只统计真正新增的 user 消息，避免重roll后把历史 user 重复计数。
+// 未启用复杂记忆的角色也照常调用 recordCharacterActivity（其内部会自行走 float 旧计数），
+// 绝不能在主聊天入口提前 return，否则会彻底不计数。
 function countChatActivity(characterId: string, characterName: string, history: ChatMessage[], parts: ChatCompletionPart[]): void {
     try {
         if (!characterId) return;
-        // 只对启用复杂记忆的角色做精确按 id 计数；否则走 float 旧逻辑
-        const enabled = isComplexMemoryEnabled(characterId);
-        if (!enabled) {
-            const legacyCount = Math.max(2, parts.filter((p) => p.text && p.text.trim()).length);
-            return;
-        }
-        const ring = getRingBuffer(characterId);
-        const lastId = ring.lastCountedChatMessageId ?? null;
+        let activityCount: number;
+        if (isComplexMemoryEnabled(characterId)) {
+            const ring = getRingBuffer(characterId);
+            const lastId = ring.lastCountedChatMessageId ?? null;
 
-        // 默认：从已统计 id 之后开始数；若 lastId 为空（首次），从 0 开始
-        let startIdx = lastId ? -1 : 0;
-        if (lastId) {
-            for (let i = history.length - 1; i >= 0; i--) {
-                if (history[i].id === lastId) { startIdx = i + 1; break; }
-            }
-            // 找不到 lastId → 说明发生删除/重roll：回退到「最后一个 assistant 之后」，只数真正新增的 user
-            if (startIdx === -1) {
-                let lastAssistantIdx = -1;
+            // 默认：从已统计 id 之后开始数；若 lastId 为空（首次），从 0 开始
+            let startIdx = lastId ? -1 : 0;
+            if (lastId) {
                 for (let i = history.length - 1; i >= 0; i--) {
-                    if (history[i].role === "assistant") { lastAssistantIdx = i; break; }
+                    if (history[i].id === lastId) { startIdx = i + 1; break; }
                 }
-                startIdx = lastAssistantIdx + 1;
+                // 找不到 lastId → 说明发生删除/重roll：回退到「最后一个 assistant 之后」，只数真正新增的 user
+                if (startIdx === -1) {
+                    let lastAssistantIdx = -1;
+                    for (let i = history.length - 1; i >= 0; i--) {
+                        if (history[i].role === "assistant") { lastAssistantIdx = i; break; }
+                    }
+                    startIdx = lastAssistantIdx + 1;
+                }
             }
-        }
 
-        let userMsgs = 0;
-        for (let i = startIdx; i < history.length; i++) {
-            if (history[i].role === "user") userMsgs++;
-        }
-        const replyMsgs = parts.filter((p) => p.text && p.text.trim()).length;
-        const activityCount = Math.max(1, userMsgs + replyMsgs);
-        const newLastId = history.length > 0 ? history[history.length - 1].id : lastId;
-        console.log(`[ComplexMemory:DIAG] 主聊天按id计数 lastId=${lastId ?? "null"} startIdx=${startIdx} 新增user=${userMsgs} 回复${replyMsgs}段 = ${activityCount} 分 新lastId=${newLastId ?? "null"}`);
-        if (newLastId) {
-            updateRingBuffer(characterId, { lastCountedChatMessageId: newLastId });
+            let userMsgs = 0;
+            for (let i = startIdx; i < history.length; i++) {
+                if (history[i].role === "user") userMsgs++;
+            }
+            const replyMsgs = parts.filter((p) => p.text && p.text.trim()).length;
+            activityCount = Math.max(1, userMsgs + replyMsgs);
+            const newLastId = history.length > 0 ? history[history.length - 1].id : lastId;
+            console.log(`[ComplexMemory:DIAG] 主聊天按id计数 lastId=${lastId ?? "null"} startIdx=${startIdx} 新增user=${userMsgs} 回复${replyMsgs}段 = ${activityCount} 分 新lastId=${newLastId ?? "null"}`);
+            if (newLastId) {
+                updateRingBuffer(characterId, { lastCountedChatMessageId: newLastId });
+            }
+            // 持久化诊断（无控制台也可见）：记录主聊天每轮计数
+            try {
+                if (typeof window !== "undefined") {
+                    const K = "ai_phone_cm_chat_count_log_v1";
+                    let ll: unknown[] = [];
+                    try { ll = JSON.parse(localStorage.getItem(K) ?? "[]") as unknown[]; } catch { ll = []; }
+                    ll.push({ at: new Date().toISOString(), user: userMsgs, reply: replyMsgs, count: activityCount, lastId: newLastId ?? null });
+                    if (ll.length > 20) ll = ll.slice(-20);
+                    localStorage.setItem(K, JSON.stringify(ll));
+                }
+            } catch { /* 诊断不阻断 */ }
+        } else {
+            const replyMsgs = parts.filter((p) => p.text && p.text.trim()).length;
+            activityCount = Math.max(2, replyMsgs);
+            console.log(`[ComplexMemory:DIAG] 主聊天float计数 回复${replyMsgs}段 = ${activityCount} 分`);
         }
         // 主聊天是唯一会「检查阈值并触发总结」的入口：副 app 只累加不触发。
         recordCharacterActivity(characterId, characterName, activityCount, { trigger: true });
