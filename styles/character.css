@@ -83,7 +83,7 @@
   padding: 2px 6px;
   font-family: inherit;
   font-size: calc(8.1px*var(--app-text-scale,1));
-  font-weight: 800;
+font-weight: 800;
   z-index: 20;
   box-shadow: 1px 2px 4px rgba(0, 0, 0, 0.25);
   letter-spacing: 0.05em;
@@ -105,6 +105,7 @@
 }
 
 .char-polaroid-board-item {
+  transform-style: flat;
   position: absolute;
   width: 130px;
   /* 固定尺寸，适合散落布局 */
