@@ -1453,6 +1453,20 @@ export type ChatCompletionResult = {
     parts: ChatCompletionPart[];
 };
 
+// 统计 char 本轮实际发了多少条消息（微信体：多条消息用空行分隔）。
+// 不能直接数 parts 的元素数——一整轮回复可能合并在一个 part 的 text 里（用空行分隔多条），
+// 那样会把「char 发了几条」误判为 1。
+function countReplyMessages(parts: ChatCompletionPart[]): number {
+    let count = 0;
+    for (const p of parts) {
+        if (!p.text || !p.text.trim()) continue;
+        // 按空行拆分多条消息，再过滤掉空块（富媒体指令如 [表情包:..] 也各自算一条）
+        const blocks = p.text.split(/\n\s*\n/).map((s) => s.trim()).filter(Boolean);
+        count += blocks.length;
+    }
+    return count;
+}
+
 // 主聊天（含原生工具协议路径）统一的活动计分入口。
 // 按「已统计消息 id 水位」精确计数，解决「少加 1~2 条 + 重roll重复计数」：
 //   · user 新增条数 = 已统计 id 之后新出现的 user 消息数；
@@ -1489,7 +1503,7 @@ function countChatActivity(characterId: string, characterName: string, history: 
             for (let i = startIdx; i < history.length; i++) {
                 if (history[i].role === "user") userMsgs++;
             }
-            const replyMsgs = parts.filter((p) => p.text && p.text.trim()).length;
+            const replyMsgs = countReplyMessages(parts);
             activityCount = Math.max(1, userMsgs + replyMsgs);
             const newLastId = history.length > 0 ? history[history.length - 1].id : lastId;
             console.log(`[ComplexMemory:DIAG] 主聊天按id计数 lastId=${lastId ?? "null"} startIdx=${startIdx} 新增user=${userMsgs} 回复${replyMsgs}段 = ${activityCount} 分 新lastId=${newLastId ?? "null"}`);
@@ -1508,7 +1522,7 @@ function countChatActivity(characterId: string, characterName: string, history: 
                 }
             } catch { /* 诊断不阻断 */ }
         } else {
-            const replyMsgs = parts.filter((p) => p.text && p.text.trim()).length;
+            const replyMsgs = countReplyMessages(parts);
             activityCount = Math.max(2, replyMsgs);
             console.log(`[ComplexMemory:DIAG] 主聊天float计数 回复${replyMsgs}段 = ${activityCount} 分`);
         }
@@ -2171,6 +2185,14 @@ export async function generateOfflineChatCompletion(
             parsed = { ...parsed, summary: retried.summary.trim() };
             break;
         }
+    }
+
+    // Memory: record activity（线下/离线生成路径也要计数，否则主聊天走线下模式时不计数）
+    if ((parsed.content && parsed.content.trim()) || (parsed.summary && parsed.summary.trim())) {
+        const offParts: ChatCompletionPart[] = parsed.content && parsed.content.trim()
+            ? [{ text: parsed.content }]
+            : [];
+        countChatActivity(character.id, character.name, history, offParts);
     }
 
     return {
