@@ -186,6 +186,8 @@ export function loadNativeTimeline(
         excludeOfflineSessionId?: string;
         timeAware?: boolean;
         promptTimestampOptions?: PromptTimestampOptions;
+        /** 完整模式：忽略 NATIVE_TIMELINE_TAIL_LIMIT，读取该会话全部消息（用于复杂记忆迁移/日记/事件/日期统计）。 */
+        full?: boolean;
     }
 ): NativeTimelineEntry[] {
     const entries: NativeTimelineEntry[] = [];
@@ -205,7 +207,7 @@ export function loadNativeTimeline(
 
     // Process group sessions
     for (const gs of groupSessions) {
-        const messages = loadChatMessages(gs.id, NATIVE_TIMELINE_TAIL_LIMIT);
+        const messages = options?.full ? loadChatMessages(gs.id) : loadChatMessages(gs.id, NATIVE_TIMELINE_TAIL_LIMIT);
         for (const msg of messages) {
             if (msg.isRetracted) continue;
             if (isPromptHiddenChatMessage(msg)) continue;
@@ -295,7 +297,7 @@ export function loadNativeTimeline(
     }
 
     if (session) {
-        const messages = loadChatMessages(session.id, NATIVE_TIMELINE_TAIL_LIMIT);
+        const messages = options?.full ? loadChatMessages(session.id) : loadChatMessages(session.id, NATIVE_TIMELINE_TAIL_LIMIT);
         for (const msg of messages) {
             if (msg.isRetracted) continue;
             if (isPromptHiddenChatMessage(msg)) continue;

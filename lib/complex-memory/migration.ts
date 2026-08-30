@@ -84,7 +84,7 @@ export function getMigrationState(characterId: string): MigrationState | null {
 /** 动态 token 估算：基于真实时间线条数，替换固定 1400/天。 */
 export function estimateMigration(characterId: string, days: number, range?: { start?: string; end?: string }): number {
   const dates = computeDates(characterId, days, range);
-  const timeline = loadSourceTimeline(characterId);
+  const timeline = loadSourceTimeline(characterId, { full: true });
   const config = loadComplexMemoryConfig();
   const windowSize = config.eventWindowMaxEntries;
 
@@ -531,7 +531,7 @@ function computeDates(characterId: string, days: number, range?: { start?: strin
   const today = dateString(0);
   // 与事件生成口径一致：统一走来源过滤后的时间线，避免把"被关来源主导/素材过少"的低活动日纳入 dates，
   // 这类日期事件被跳过、日记又因素材过少必然失败，最终静默缺失。
-  const timeline = loadSourceTimeline(characterId);
+  const timeline = loadSourceTimeline(characterId, { full: true });
   const byDate = new Map<string, number>();
   for (const e of timeline) {
     const d = dateFromTimestamp(e.timestamp);

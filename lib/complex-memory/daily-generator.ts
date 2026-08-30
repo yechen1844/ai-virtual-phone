@@ -4,7 +4,6 @@
 
 import { simpleLLMCall } from "../api-helpers";
 import { resolveAuxiliaryApiConfig } from "../settings-storage";
-import { loadNativeTimeline } from "../short-term-assembler";
 import { generateEmbedding, resolveEmbeddingModel } from "../memory-embedding";
 import {
   acquireGenerationLock,
@@ -54,7 +53,7 @@ export async function maybeGenerateDaily(
 ): Promise<{ generated: boolean; error?: string }> {
   const config = loadComplexMemoryConfig();
   const today = dateString(0);
-  const timeline = loadNativeTimeline(characterId);
+  const timeline = loadSourceTimeline(characterId, { full: true });
 
   const byDate = new Map<string, { lastTs: number }>();
   for (const e of timeline) {
@@ -106,7 +105,7 @@ export async function generateDaily(
     const apiConfig = resolveAuxiliaryApiConfig("complexMemoryApiConfigId");
     if (!apiConfig) return { success: false, error: "未配置复杂记忆生成 API" };
 
-    const dayTimeline = loadNativeTimeline(characterId).filter((e) => dateFromTimestamp(e.timestamp) === date);
+    const dayTimeline = loadSourceTimeline(characterId, { full: true, date });
     const dayEvents = (await loadEvents(characterId)).filter((e) => dateFromTimestamp(e.timestamp) === date);
     const [core, activePeriods] = await Promise.all([getCurrentCoreView(characterId), loadActivePeriods(characterId)]);
 
@@ -304,7 +303,7 @@ export async function summarizeDailyRange(
   start?: string,
   end?: string,
 ): Promise<{ success: boolean; error?: string; generated: number; failedDates: string[] }> {
-  const timeline = loadSourceTimeline(characterId);
+  const timeline = loadSourceTimeline(characterId, { full: true });
   const byDate = new Set<string>();
   for (const e of timeline) {
     const d = dateFromTimestamp(e.timestamp);

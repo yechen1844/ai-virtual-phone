@@ -16,6 +16,8 @@ export type SourceTimelineOptions = {
   afterTimestamp?: string;
   /** 只取某一天（YYYY-MM-DD）的时间线，用于日记/迁移 */
   date?: string;
+  /** 完整模式：忽略 1500 条截断，读取全部消息（用于迁移/日记/事件/日期统计）。 */
+  full?: boolean;
 };
 
 /**
@@ -29,7 +31,7 @@ export function loadSourceTimeline(
 ): NativeTimelineEntry[] {
   const raw = loadNativeTimeline(
     characterId,
-    options?.afterTimestamp ? { afterTimestamp: options.afterTimestamp } : undefined,
+    { afterTimestamp: options?.afterTimestamp, full: options?.full },
   );
   const timeline = filterTimelineByAllowedSources(raw);
   if (!options?.date) return timeline;
