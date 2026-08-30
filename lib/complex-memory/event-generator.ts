@@ -267,7 +267,8 @@ async function generateEventForWindow(
     characterId,
     characterName,
     kind: "event",
-    date: opts?.contextDate ? dateFromTimestamp(opts.contextDate) : undefined,
+    // 归属日期：正常路径取窗口最早素材日期（之前为 undefined，审计页左侧时间戳显示为空）
+    date: dateFromTimestamp(opts?.contextDate ?? earliest),
     prompt,
     response: result.content ?? (result.error ?? ""),
     model: apiConfig.defaultModel,

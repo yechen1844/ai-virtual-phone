@@ -1612,30 +1612,30 @@ function EventTab({ characterId, characterName, notify, refresh }: {
           </button>
         </div>
       </div>
-      {windowLog && windowLog.length > 0 && (
-        <div className="cm-card" style={{ marginBottom: 10, padding: 8 }}>
-          <div className="cm-meta-text" style={{ fontWeight: 600 }}>最近分窗生成日志（定位「多条只收录一条」问题）</div>
-          <div style={{ maxHeight: 120, overflow: "auto", fontSize: 11 }}>
-            {windowLog.slice(-12).map((w, i) => (
-              <div key={i} style={{ color: "var(--c-text-dim, rgba(255,255,255,0.55))", marginTop: 2 }}>
-                [{new Date(w.at).toLocaleTimeString()}] 第{w.win}/{w.total}窗 · {w.earliest?.slice(0, 16) ?? "?"} ~ {w.latest?.slice(0, 16) ?? "?"} · {w.saved ? `入库 id=${w.id}` : (`${w.error ?? "（处理中）"}`)}
-              </div>
-            ))}
-          </div>
+      <div className="cm-card" style={{ marginBottom: 10, padding: 8 }}>
+        <div className="cm-meta-text" style={{ fontWeight: 600 }}>分窗生成日志 · 诊断v3（本区块存在=最新代码已部署；空=runEventGeneration 从未执行）</div>
+        <div style={{ maxHeight: 120, overflow: "auto", fontSize: 11 }}>
+          {windowLog.length === 0 ? (
+            <div style={{ color: "var(--c-warning, #d08770)", marginTop: 2 }}>（空：自动总结的 runEventGeneration 一次都没有执行过。若投喂审计里有事件生成，说明生成走的是别的路径或线上不是最新构建）</div>
+          ) : windowLog.slice(-12).map((w, i) => (
+            <div key={i} style={{ color: "var(--c-text-dim, rgba(255,255,255,0.55))", marginTop: 2 }}>
+              [{new Date(w.at).toLocaleTimeString()}] 第{w.win}/{w.total}窗 · {w.earliest?.slice(0, 16) ?? "?"} ~ {w.latest?.slice(0, 16) ?? "?"} · {w.saved ? `入库 id=${w.id}` : (`${w.error ?? "（处理中）"}`)}
+            </div>
+          ))}
         </div>
-      )}
-      {saveLog && saveLog.length > 0 && (
-        <div className="cm-card" style={{ marginBottom: 10, padding: 8 }}>
-          <div className="cm-meta-text" style={{ fontWeight: 600 }}>最近事件保存日志（排查覆盖问题）</div>
-          <div style={{ maxHeight: 120, overflow: "auto", fontSize: 11 }}>
-            {saveLog.slice(-10).map((s, i) => (
-              <div key={i} style={{ color: "var(--c-text-dim, rgba(255,255,255,0.55))", marginTop: 2 }}>
-                [{new Date(s.at).toLocaleTimeString()}] id={s.id} · 时={s.timestamp || "（空）"} · {s.content}
-              </div>
-            ))}
-          </div>
+      </div>
+      <div className="cm-card" style={{ marginBottom: 10, padding: 8 }}>
+        <div className="cm-meta-text" style={{ fontWeight: 600 }}>事件保存日志（空=saveEvent 从未被调用）</div>
+        <div style={{ maxHeight: 120, overflow: "auto", fontSize: 11 }}>
+          {saveLog.length === 0 ? (
+            <div style={{ color: "var(--c-warning, #d08770)", marginTop: 2 }}>（空：saveEvent 一次都没有执行过。若事件记忆页却有新事件，说明写入走的是别的路径）</div>
+          ) : saveLog.slice(-10).map((s, i) => (
+            <div key={i} style={{ color: "var(--c-text-dim, rgba(255,255,255,0.55))", marginTop: 2 }}>
+              [{new Date(s.at).toLocaleTimeString()}] id={s.id} · 时={s.timestamp || "（空）"} · {s.content}
+            </div>
+          ))}
         </div>
-      )}
+      </div>
       {sorted.length === 0 ? (
         <div className="cm-empty-inline cm-card"><p className="cm-muted">暂无事件记忆</p></div>
       ) : (
