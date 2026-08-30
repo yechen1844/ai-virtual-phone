@@ -21,13 +21,12 @@ export function recordCharacterActivity(
     // 自动总结开关：开启才把对话沉淀为事件记忆；关闭则复杂记忆不再自动生成事件。
     if (loadComplexMemoryConfig().autoSummarizeEnabled) {
       // 所有 app 都累加进同一个 count；
-      // 但只有「主聊天」（trigger=true）才检查阈值触发事件总结 + 触发日记。
-      // 副 app（阅读/朋友圈/游戏等）只累加、不触发——符合「阅读聊到200条不总结，主聊天+1才总结」的理想机制。
+      // 事件记忆（L2）只有「主聊天」（trigger=true）才检查阈值触发；副 app 只累加不触发。
+      // 每日日记（L3）则是「跨天即总结、不看主聊天」：只要有任意 app 活动发生并进入新的一天，
+      // 就为该角色补「昨天」日记。因此日记检查在 trigger 之外无条件执行。
       recordEvents(characterId, characterName, count, opts?.trigger === true);
-      if (opts?.trigger === true) {
-        // 触发式日记：跨天（一天结束）时为该角色补生成「昨天」日记，不轮询；失败会标注供手动重生成。
-        void maybeTriggerDailySummary(characterId, characterName).catch(() => {});
-      }
+      // 触发式日记：跨天（进入新的一天）即为该角色补生成「昨天」日记，不轮询、不依赖主聊天；失败会标注供手动重生成。
+      void maybeTriggerDailySummary(characterId, characterName).catch(() => {});
     }
     return;
   }

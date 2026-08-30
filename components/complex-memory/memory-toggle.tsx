@@ -36,7 +36,7 @@ export function ComplexMemoryToggle({ characterId, characterName }: ComplexMemor
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    const refresh = async () => {
       const [counts, core, yesterday, ring, config] = await Promise.all([
         countByCharacter(characterId),
         getCurrentCoreView(characterId),
@@ -54,9 +54,13 @@ export function ComplexMemoryToggle({ characterId, characterName }: ComplexMemor
         autoSummarize: config.autoSummarizeEnabled,
         watermark: ring.watermarkTimestamp,
       });
-    })();
+    };
+    void refresh();
+    // 无控制台也能看到实时变化：每 2 秒刷新一次
+    const timer = setInterval(() => { void refresh(); }, 2000);
     return () => {
       cancelled = true;
+      clearInterval(timer);
     };
   }, [characterId, enabled]);
 
@@ -80,7 +84,7 @@ export function ComplexMemoryToggle({ characterId, characterName }: ComplexMemor
             : "未启用时使用 float 原生记忆"}
         </span>
         <span className="menu-desc" style={{ color: "var(--c-info, #6ab0ff)" }}>
-          [诊断] enabled={String(enabled)} · autoSummary={String(status?.autoSummarize)} · count={String(status?.pendingCount)}/{String(status?.threshold)} · wm={status?.watermark ?? "null"} · ev={String(status?.eventCount)}
+          [诊断] enabled={String(enabled)} · autoSummary={String(status?.autoSummarize)} · count={String(status?.pendingCount)}/{String(status?.threshold)} · wm={status?.watermark ?? "null"} · ev={String(status?.eventCount)} · 今日日记={status?.lastDailyDate ?? "无"}
         </span>
         {enabled && status && (
           <span className="menu-desc" style={{ color: "var(--c-text-dim, rgba(255,255,255,0.55))" }}>
