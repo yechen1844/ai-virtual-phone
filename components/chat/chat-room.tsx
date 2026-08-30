@@ -4787,6 +4787,13 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
             }
             applyLocalDelete();
             if (successText) showChatToast(successText);
+            // 删消息对象只解决"消息目录"这一半：删掉的历史早就烘焙进云端运行包的
+            // bakedHistory 里，不重烘焙的话云端助手（微信）照样记得刚删的内容。
+            // 事件监听那条重同步是 3 秒防抖，这里显式先跑；成功无感，失败必须报。
+            void syncAllWeixinBotRuntimesToCloud()
+                .catch(() => {
+                    emitWeixinSyncToast("微信运行包同步失败：角色可能还记得刚删的内容，请到「设置 → 微信」手动同步运行包。", { id: "weixin-runtime", duration: 4500 });
+                });
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             showChatToast(`云端删除失败：${message}`, 3500);
