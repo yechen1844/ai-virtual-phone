@@ -13,14 +13,14 @@ const generatingSet = new Set<string>();
  * @param count 本轮新增事件数（单聊每轮 user+AI 各一条 = 2；群聊/其他 app 每轮 = 1）
  * 非阻塞：内部 fire-and-forget 触发生成，不等待 LLM。
  */
-export function recordEvents(characterId: string, characterName: string, count: number): void {
+export function recordEvents(characterId: string, characterName: string, count: number, checkTrigger = true): void {
   const config = loadComplexMemoryConfig();
   const ring = getRingBuffer(characterId);
   const pendingCount = ring.pendingCount + count;
   updateRingBuffer(characterId, { pendingCount });
-  console.log(`[ComplexMemory:DIAG] recordEvents 角色=${characterName} 本次+${count} → pendingCount=${pendingCount} 阈值=${config.eventTriggerCount} 触发=${pendingCount >= config.eventTriggerCount && !generatingSet.has(characterId)}`);
+  console.log(`[ComplexMemory:DIAG] recordEvents 角色=${characterName} 本次+${count} → pendingCount=${pendingCount} 阈值=${config.eventTriggerCount} 检查=${checkTrigger} 触发=${checkTrigger && pendingCount >= config.eventTriggerCount && !generatingSet.has(characterId)}`);
 
-  if (pendingCount >= config.eventTriggerCount && !generatingSet.has(characterId)) {
+  if (checkTrigger && pendingCount >= config.eventTriggerCount && !generatingSet.has(characterId)) {
     generatingSet.add(characterId);
     runEventGeneration(characterId, characterName)
       .then((r) => {

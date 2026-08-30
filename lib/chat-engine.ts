@@ -1467,7 +1467,8 @@ function countChatActivity(characterId: string, characterName: string, history: 
         const activityCount = Math.max(2, userMsgs + replyMsgs);
         const tailRoles = history.slice(-5).map((m) => m.role).join(",");
         console.log(`[ComplexMemory:DIAG] 主聊天计分 historyLen=${history.length} 尾部角色=[${tailRoles}] 未回复user=${userMsgs} 回复${replyMsgs}段 = ${activityCount} 分`);
-        recordCharacterActivity(characterId, characterName, activityCount);
+        // 主聊天是唯一会「检查阈值并触发总结」的入口：副 app 只累加不触发。
+        recordCharacterActivity(characterId, characterName, activityCount, { trigger: true });
     } catch (err) {
         console.warn("[ChatEngine] Memory counter/summarization failed:", err);
     }
