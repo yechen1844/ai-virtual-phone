@@ -176,7 +176,7 @@ function voltagePct(v: number): string {
 
 // ── 主组件 ──
 export function ComplexMemoryExplorer() {
-  const [characters, setCharacters] = useState<Array<{ id: string; name: string }>>([]);
+  const [characters, setCharacters] = useState<Array<{ id: string; name: string; avatar: string | null }>>([]);
   const [selectedId, setSelectedId] = useState<string>("");
   const [tab, setTab] = useState<TabId>("core");
   const [refreshKey, setRefreshKey] = useState(0);
@@ -191,7 +191,7 @@ export function ComplexMemoryExplorer() {
       const withData = new Set(await getAllCharacterIds());
       const candidates = all
         .filter((c) => enabled.has(c.id) || withData.has(c.id))
-        .map((c) => ({ id: c.id, name: c.name }));
+        .map((c) => ({ id: c.id, name: c.name, avatar: c.avatar ?? null }));
       if (cancelled) return;
       setCharacters(candidates);
       setSelectedId((prev) => {
@@ -242,12 +242,32 @@ export function ComplexMemoryExplorer() {
       <div className="cm-toolbar">
         <div className="cm-character-select">
           <span className="cm-toolbar-label">角色</span>
-          <Select value={selectedId} onChange={(e) => setSelectedId(e.target.value)} aria-label="选择角色">
-            {characters.length === 0 && <option value="">暂无已启用/有数据的角色</option>}
-            {characters.map((c) => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
-          </Select>
+          <div className="cm-character-chips" role="listbox" aria-label="选择角色">
+            {characters.length === 0 && <span className="cm-meta-text">暂无已启用/有数据的角色</span>}
+            {characters.map((c) => {
+              const active = c.id === selectedId;
+              return (
+                <button
+                  key={c.id}
+                  type="button"
+                  role="option"
+                  aria-selected={active}
+                  className={`cm-char-chip${active ? " is-active" : ""}`}
+                  onClick={() => setSelectedId(c.id)}
+                  title={c.name}
+                >
+                  <span className="cm-char-avatar">
+                    {c.avatar ? (
+                      <img src={c.avatar} alt={c.name} loading="lazy" />
+                    ) : (
+                      <span className="cm-char-fallback">{c.name.slice(0, 1).toUpperCase()}</span>
+                    )}
+                  </span>
+                  <span className="cm-char-name">{c.name}</span>
+                </button>
+              );
+            })}
+          </div>
         </div>
         {selected && (
           <button
