@@ -82,7 +82,7 @@ import {
   deleteCoreEntry,
   sanitizeCoreEntryText,
 } from "@/lib/complex-memory/core-builder";
-import { generateDaily, regenerateDaily } from "@/lib/complex-memory/daily-generator";
+import { generateDaily, regenerateDaily, summarizeDailyRange } from "@/lib/complex-memory/daily-generator";
 import { distillPeriod, createPeriodManual } from "@/lib/complex-memory/period-distiller";
 import { runEventGeneration, regenerateEvent } from "@/lib/complex-memory/event-generator";
 import {
@@ -666,6 +666,11 @@ function DailyTab({ characterId, characterName, notify, refresh }: {
   const [busy, setBusy] = useState(false);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedDailies, setSelectedDailies] = useState<Set<string>>(new Set());
+  // 按日期范围总结（对范围内有聊天的每一天生成/补生成）
+  const [rangeOpen, setRangeOpen] = useState(false);
+  const [dailyStart, setDailyStart] = useState("");
+  const [dailyEnd, setDailyEnd] = useState("");
+  const [rangeBusy, setRangeBusy] = useState(false);
   // 日历视图（M6）
   const [viewMode, setViewMode] = useState<"list" | "calendar">("list");
   const nowRef = new Date();
@@ -755,6 +760,17 @@ function DailyTab({ characterId, characterName, notify, refresh }: {
     notify({ kind: ok > 0 ? "ok" : "err", text: `批量重新总结：成功 ${ok}，失败 ${fail}` });
   };
 
+  const handleRangeSummarize = async () => {
+    if (!dailyStart && !dailyEnd) { notify({ kind: "err", text: "请先选择起止日期" }); return; }
+    setRangeBusy(true);
+    const res = await summarizeDailyRange(characterId, characterName, dailyStart || undefined, dailyEnd || undefined);
+    setRangeBusy(false);
+    setRangeOpen(false);
+    notify({ kind: "ok", text: `按日期总结完成：生成 ${res.generated} 篇${res.failedDates.length ? `，失败 ${res.failedDates.join("、")}` : ""}` });
+    await load();
+    refresh();
+  };
+
   const handleToggleSpecial = async (d: ComplexDaily) => {
     await saveDaily({ ...d, special: d.special === true ? false : true });
     notify({ kind: "ok", text: d.special === true ? "已取消特殊日期标记" : "已标记为特殊一天" });
@@ -802,9 +818,14 @@ function DailyTab({ characterId, characterName, notify, refresh }: {
               <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => { setSelectMode(false); setSelectedDailies(new Set()); }}>退出</button>
             </>
           ) : (
-            <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => setSelectMode(true)}>
-              <RefreshCw size={14} /> 多选重总结
-            </button>
+            <>
+              <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => setSelectMode(true)}>
+                <RefreshCw size={14} /> 多选重总结
+              </button>
+              <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => setRangeOpen((v) => !v)}>
+                <CalendarRange size={14} /> 按日期总结
+              </button>
+            </>
           )}
           <div className="cm-view-toggle" role="group" aria-label="视图切换">
             <button
@@ -831,6 +852,20 @@ function DailyTab({ characterId, characterName, notify, refresh }: {
           )}
         </div>
       </div>
+
+      {rangeOpen && (
+        <div className="cm-card cm-mig-range">
+          <span className="cm-config-label">按日期总结日记（对范围内有聊天的每一天生成/补生成，无日记也会生成）</span>
+          <div className="cm-mig-range">
+            <Input type="date" value={dailyStart} onChange={(e) => setDailyStart(e.target.value)} aria-label="起始" className="cm-config-input" />
+            <span className="cm-meta-text">至</span>
+            <Input type="date" value={dailyEnd} onChange={(e) => setDailyEnd(e.target.value)} aria-label="结束" className="cm-config-input" />
+            <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={() => void handleRangeSummarize()} disabled={rangeBusy}>
+              {rangeBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} 开始总结
+            </button>
+          </div>
+        </div>
+      )}
 
       {viewMode === "calendar" && (
         <div className="cm-card cm-calendar">

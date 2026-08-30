@@ -24,6 +24,7 @@ import {
   deleteDaily,
 } from "./storage";
 import { getUserName, dateString, dateFromTimestamp, extractJsonObject, clampNum, capSourceMaterials } from "./utils";
+import { loadSourceTimeline } from "./source";
 import { pushFeedAudit } from "./feed-audit";
 import { buildGenerationContext } from "./context-builder";
 import { distillPeriod } from "./period-distiller";
@@ -294,6 +295,36 @@ export async function regenerateDaily(
   const existing = await getDaily(characterId, date);
   if (existing) await deleteDaily(existing.id);
   return generateDaily(characterId, characterName, date, { suppressChain: true });
+}
+
+/** 按日期范围总结：对范围内「有聊天记录」的每一天生成/重生成日记（用于按日期补生成缺失日记）。 */
+export async function summarizeDailyRange(
+  characterId: string,
+  characterName: string,
+  start?: string,
+  end?: string,
+): Promise<{ success: boolean; error?: string; generated: number; failedDates: string[] }> {
+  const timeline = loadSourceTimeline(characterId);
+  const byDate = new Set<string>();
+  for (const e of timeline) {
+    const d = dateFromTimestamp(e.timestamp);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
+    if (start && d < start) continue;
+    if (end && d > end) continue;
+    byDate.add(d);
+  }
+  const dates = [...byDate].sort();
+  let generated = 0;
+  const failedDates: string[] = [];
+  for (const d of dates) {
+    const existing = await getDaily(characterId, d);
+    const res = existing
+      ? await regenerateDaily(characterId, characterName, d)
+      : await generateDaily(characterId, characterName, d, { suppressChain: true });
+    if (res.success || res.error === "当日日记已存在（幂等）") generated++;
+    else failedDates.push(d);
+  }
+  return { success: true, generated, failedDates };
 }
 
 async function applyPeriodCheck(
