@@ -262,6 +262,7 @@ export function loadCharacterState(characterId: string): CharacterRuntimeState {
       watermarkEventId: null,
       watermarkTimestamp: null,
       pendingCount: 0,
+      lastCountedChatMessageId: null,
     },
     lastDailyDate: null,
     dailyCountSinceCoreUpdate: 0,

@@ -113,6 +113,7 @@ export type RingBufferState = {
   watermarkEventId: string | null;   // 已压缩至哪条时间线事件
   watermarkTimestamp: string | null;
   pendingCount: number;              // 水位线之后的累计事件数
+  lastCountedChatMessageId: string | null; // 主聊天已按 id 统计到哪条消息（精确计数，防重roll/漏加）
 };
 
 // ── 角色调度状态（KV 持久化） ──
