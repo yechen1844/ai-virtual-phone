@@ -45,6 +45,8 @@ import {
   resetMemoryPrompt,
   isComplexMemoryEnabled,
   setComplexMemoryEnabled,
+  loadCharacterState,
+  clearFailedDaily,
   getEnabledCharacterIds,
   loadCharacterRules,
   saveCharacterRules,
@@ -688,6 +690,19 @@ function DailyTab({ characterId, characterName, notify, refresh }: {
     void load();
   }, [load]);
 
+  const [failedDailies, setFailedDailies] = useState<{ date: string; reason: string; at: string }[]>(() => loadCharacterState(characterId).failedDailyDates ?? []);
+  const handleRetryFailedDaily = async (date: string) => {
+    const res = await generateDaily(characterId, characterName, date);
+    if (res.success) {
+      clearFailedDaily(characterId, date);
+      setFailedDailies(loadCharacterState(characterId).failedDailyDates ?? []);
+      void load();
+      notify({ kind: "ok", text: `已重新生成 ${date} 日记` });
+    } else {
+      notify({ kind: "err", text: `重生成失败：${res.error ?? "未知原因"}` });
+    }
+  };
+
   const filtered = useMemo(() => {
     const sorted = [...dailies].sort((a, b) => b.date.localeCompare(a.date));
     if (periodFilter === "all") return sorted;
@@ -852,6 +867,21 @@ function DailyTab({ characterId, characterName, notify, refresh }: {
           )}
         </div>
       </div>
+
+      {failedDailies.length > 0 && (
+        <div className="cm-card" style={{ borderColor: "var(--c-warning, #d08770)" }}>
+          <div className="cm-config-label" style={{ color: "var(--c-warning, #d08770)" }}>
+            日记生成失败 · 点击「重新生成」补写
+          </div>
+          {failedDailies.map((f) => (
+            <div key={f.date} className="cm-progress-row" style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6 }}>
+              <span className="cm-tl-day">{f.date}</span>
+              <span style={{ flex: 1 }}>{f.reason}</span>
+              <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => void handleRetryFailedDaily(f.date)}>重新生成</button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {rangeOpen && (
         <div className="cm-card cm-mig-range">
