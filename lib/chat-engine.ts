@@ -2690,7 +2690,18 @@ export async function generateChatCompletion(
 
     // Memory: record activity (complex memory ring buffer or float counter + summarization)
     try {
-        recordCharacterActivity(character.id, character.name, 2); // user message + AI reply
+        // 按本轮实际消息条数计分，不再写死固定 2 条：
+        //   userMsgs = 本轮连发、尚未被回复的 user 消息数（history 尾部连续 user）；
+        //   replyMsgs = 本轮模型实际回复的文本段数。
+        let userMsgs = 0;
+        for (let i = history.length - 1; i >= 0; i--) {
+            if (history[i].role === "user") userMsgs++;
+            else break;
+        }
+        const replyMsgs = parts.filter((p) => p.text && p.text.trim()).length;
+        const activityCount = Math.max(2, userMsgs + replyMsgs);
+        console.log(`[ComplexMemory] 事件计分：未回复用户 ${userMsgs} 条 + 回复 ${replyMsgs} 段 = ${activityCount}`);
+        recordCharacterActivity(character.id, character.name, activityCount);
     } catch (err) {
         console.warn("[ChatEngine] Memory counter/summarization failed:", err);
     }
