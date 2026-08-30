@@ -23,6 +23,18 @@ import { pushFeedAudit } from "./feed-audit";
 import { getUserName, capSourceMaterials, dateString, dateFromTimestamp, formatLocalDateTime } from "./utils";
 import type { ComplexEvent, EmotionVector } from "./types";
 
+// 事件 id 自增计数器：保证同一毫秒内分窗生成多个事件时 id 也绝不相同。
+// 之前依赖 Date.now() + 随机串，在同毫秒并发生成时会因 id 相同互相覆盖，导致「生成了多条却只剩最后一条」。
+let eventIdSeq = 0;
+function nextEventId(characterId: string): string {
+  eventIdSeq += 1;
+  const seq = eventIdSeq.toString(36);
+  const rand = (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function")
+    ? crypto.randomUUID().replace(/-/g, "").slice(0, 8)
+    : Math.random().toString(36).slice(2, 10);
+  return `evt_${characterId}_${Date.now()}_${seq}_${rand}`;
+}
+
 function clampNum(v: unknown, min: number, max: number, fallback: number): number {
   return typeof v === "number" && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback;
 }
@@ -239,8 +251,8 @@ async function generateEventForWindow(
     : dateFromTimestamp(earliest);
   const event: ComplexEvent = {
     // 事件 id 必须绝对唯一，否则同一毫秒内分窗生成的多个事件会因 id 相同互相覆盖，只剩最后一条。
-    // 用「字符 id + 时间戳 + crypto 随机串」保证在同一毫秒多窗并发生成时也绝不撞。
-    id: `evt_${characterId}_${Date.now()}_${(globalThis?.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2, 10)).replace(/-/g, "").slice(0, 12)}`,
+    // 事件 id 必须绝对唯一，否则同一毫秒内分窗生成的多个事件会因 id 相同互相覆盖，只剩最后一条。
+    id: nextEventId(characterId),
     characterId,
     timestamp: eventTimestamp,
     content: parsed.content,
