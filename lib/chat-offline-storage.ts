@@ -222,7 +222,25 @@ function stripXmlField(rawText: string, tag: string): string {
 export function extractThinkingTag(rawText: string, tag?: string): string {
     const effective = (tag || "thinking").trim() || "thinking";
     const tags = effective === "thinking" ? ["thinking", "thought"] : [effective];
-    return extractXmlField(rawText.trim(), tags).trim();
+    const trimmed = rawText.trim();
+    // 成对标签：<tag>...</tag>（支持换行、大小写）
+    const paired = extractXmlField(trimmed, tags);
+    if (paired.trim()) return paired.trim();
+    // 预填开始标签场景：模型只输出闭合标签 </tag>，思考内容在闭合标签之前（紧跟预填的开始标签）。
+    // 取第一个闭合标签之前的全部内容（去掉可能残留的开头 <tag>）作为思维链。
+    for (const t of tags) {
+        const escape = t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const closeRe = new RegExp(`</${escape}\\s*>`, "i");
+        const m = closeRe.exec(trimmed);
+        if (m && m.index > 0) {
+            const prefix = trimmed
+                .slice(0, m.index)
+                .replace(new RegExp(`^\\s*<${escape}\\s*>`, "i"), "")
+                .trim();
+            if (prefix) return prefix;
+        }
+    }
+    return "";
 }
 
 export function parseOfflineResponse(rawText: string, summaryTag: string): ParsedOfflineResponse {

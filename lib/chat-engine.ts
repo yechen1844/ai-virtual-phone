@@ -405,9 +405,19 @@ function mergeAppTags(base: string[] | undefined, extra: string[] | undefined, f
 /** 从输出正文中剥离思维链标签块（仅标签解析开启时用于清洗展示文本）。 */
 export function stripOnlineThinkingTag(rawOutput: string, tag: string): string {
     if (!tag.trim()) return rawOutput;
-    return rawOutput
-        .replace(new RegExp(`<${tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}>[\\s\\S]*?</${tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}>`, "gi"), "")
-        .trim();
+    const escape = tag.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    let result = rawOutput;
+    // 1) 成对标签：剥掉整个 <tag>...</tag> 块
+    result = result.replace(new RegExp(`<${escape}>[\\s\\S]*?</${escape}>`, "gi"), "");
+    // 2) 单边闭合（预填开始标签）：剥掉「开头至闭合标签」的整段（含闭合标签），保留其后的正文
+    const closeRe = new RegExp(`</${escape}\\s*>`, "i");
+    const cm = closeRe.exec(result);
+    if (cm) {
+        result = result.slice(cm.index + cm[0].length);
+    }
+    // 3) 残留孤立开始标签 <tag>
+    result = result.replace(new RegExp(`<${escape}\\s*>`, "gi"), "");
+    return result.trim();
 }
 
 /** 剔除预设配置的文本片段（如 <思考结束> 残留标签）。字面量删除，不走正则，避免编译/回溯开销。 */
