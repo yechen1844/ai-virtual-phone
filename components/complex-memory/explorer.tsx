@@ -88,7 +88,7 @@ import {
 } from "@/lib/complex-memory/core-builder";
 import { generateDaily, regenerateDaily, summarizeDailyRange } from "@/lib/complex-memory/daily-generator";
 import { distillPeriod, createPeriodManual } from "@/lib/complex-memory/period-distiller";
-import { runEventGeneration, regenerateEvent, uncoverEvent } from "@/lib/complex-memory/event-generator";
+import { runEventGeneration, regenerateEvent, uncoverEvent, loadWindowLog } from "@/lib/complex-memory/event-generator";
 import {
   getMigrationState,
   startMigration,
@@ -1483,6 +1483,7 @@ function EventTab({ characterId, characterName, notify, refresh }: {
 }) {
   const [events, setEvents] = useState<ComplexEvent[]>([]);
   const [saveLog, setSaveLog] = useState<Array<{ id: string; timestamp: string; content: string; at: string }>>([]);
+  const [windowLog, setWindowLog] = useState<Array<{ win: number; total: number; earliest?: string; latest?: string; id?: string; saved?: boolean; error?: string; at: string }>>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -1493,10 +1494,14 @@ function EventTab({ characterId, characterName, notify, refresh }: {
   const load = useCallback(async () => {
     setEvents(await loadEvents(characterId));
     setSaveLog(loadEventSaveLog());
+    setWindowLog(loadWindowLog());
   }, [characterId]);
 
   useEffect(() => {
     void load();
+    // 自动总结在后台生成时无需手动刷新：每 2 秒自动拉取事件与诊断日志
+    const timer = setInterval(() => { void load(); }, 2000);
+    return () => clearInterval(timer);
   }, [load]);
 
   const sorted = useMemo(() => [...events].sort((a, b) => b.timestamp.localeCompare(a.timestamp)), [events]);
@@ -1607,6 +1612,18 @@ function EventTab({ characterId, characterName, notify, refresh }: {
           </button>
         </div>
       </div>
+      {windowLog && windowLog.length > 0 && (
+        <div className="cm-card" style={{ marginBottom: 10, padding: 8 }}>
+          <div className="cm-meta-text" style={{ fontWeight: 600 }}>最近分窗生成日志（定位「多条只收录一条」问题）</div>
+          <div style={{ maxHeight: 120, overflow: "auto", fontSize: 11 }}>
+            {windowLog.slice(-12).map((w, i) => (
+              <div key={i} style={{ color: "var(--c-text-dim, rgba(255,255,255,0.55))", marginTop: 2 }}>
+                [{new Date(w.at).toLocaleTimeString()}] 第{w.win}/{w.total}窗 · {w.earliest?.slice(0, 16) ?? "?"} ~ {w.latest?.slice(0, 16) ?? "?"} · {w.saved ? `入库 id=${w.id}` : (`${w.error ?? "（处理中）"}`)}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {saveLog && saveLog.length > 0 && (
         <div className="cm-card" style={{ marginBottom: 10, padding: 8 }}>
           <div className="cm-meta-text" style={{ fontWeight: 600 }}>最近事件保存日志（排查覆盖问题）</div>
