@@ -58,6 +58,7 @@ import {
 } from "@/lib/complex-memory/prompts";
 import {
   loadEvents,
+  loadEventSaveLog,
   loadDailies,
   loadPeriods,
   getCurrentCoreView,
@@ -1460,6 +1461,7 @@ function EventTab({ characterId, characterName, notify, refresh }: {
   refresh: () => void;
 }) {
   const [events, setEvents] = useState<ComplexEvent[]>([]);
+  const [saveLog, setSaveLog] = useState<Array<{ id: string; timestamp: string; content: string; at: string }>>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -1469,6 +1471,7 @@ function EventTab({ characterId, characterName, notify, refresh }: {
 
   const load = useCallback(async () => {
     setEvents(await loadEvents(characterId));
+    setSaveLog(loadEventSaveLog());
   }, [characterId]);
 
   useEffect(() => {
@@ -1570,6 +1573,18 @@ function EventTab({ characterId, characterName, notify, refresh }: {
           </button>
         </div>
       </div>
+      {saveLog && saveLog.length > 0 && (
+        <div className="cm-card" style={{ marginBottom: 10, padding: 8 }}>
+          <div className="cm-meta-text" style={{ fontWeight: 600 }}>最近事件保存日志（排查覆盖问题）</div>
+          <div style={{ maxHeight: 120, overflow: "auto", fontSize: 11 }}>
+            {saveLog.slice(-10).map((s, i) => (
+              <div key={i} style={{ color: "var(--c-text-dim, rgba(255,255,255,0.55))", marginTop: 2 }}>
+                [{new Date(s.at).toLocaleTimeString()}] id={s.id} · 时={s.timestamp || "（空）"} · {s.content}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {sorted.length === 0 ? (
         <div className="cm-empty-inline cm-card"><p className="cm-muted">暂无事件记忆</p></div>
       ) : (

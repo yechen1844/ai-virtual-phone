@@ -176,8 +176,53 @@ async function clearStore(storeName: string): Promise<void> {
 }
 
 // ── Events ──
+function recordEventSaveLog(event: ComplexEvent): void {
+  // 持久化记录最近一次事件保存（含 id / 时段 / 内容前40字），供「事件记忆」页顶部排查
+  // 「生成了多个事件却只剩最后一条」的覆盖问题（浏览器无控制台时的可见证据）。
+  try {
+    if (typeof window === "undefined") return;
+    const KEY = "ai_phone_cm_event_save_log_v1";
+    let list: unknown[] = [];
+    try { list = JSON.parse(localStorage.getItem(KEY) ?? "[]") as unknown[]; } catch { list = []; }
+    list.push({
+      id: event.id,
+      timestamp: event.timestamp,
+      content: String(event.content).slice(0, 40),
+      at: new Date().toISOString(),
+    });
+    if (list.length > 20) list = list.slice(-20);
+    localStorage.setItem(KEY, JSON.stringify(list));
+  } catch { /* 诊断不阻断保存 */ }
+}
+
 export async function saveEvent(event: ComplexEvent): Promise<void> {
+  // 事件 id 覆盖检测 + 持久化生成日志（用于排查「生成了多个事件却只剩最后一条」）
+  try {
+    const db = await openDb();
+    if (db) {
+      const tx = db.transaction(STORE_EVENTS, "readonly");
+      const existing = await runRequest(tx.objectStore(STORE_EVENTS).get(event.id));
+      db.close();
+      if (existing) {
+        console.warn(`[ComplexMemory:DIAG] 事件 id 覆盖 id=${event.id} 时段=${event.timestamp} 旧=${String(existing.content).slice(0, 40)} 新=${String(event.content).slice(0, 40)}`);
+      }
+    }
+  } catch {
+    /* 诊断失败不阻断保存 */
+  }
+  recordEventSaveLog(event);
   await put(STORE_EVENTS, event);
+}
+
+/** 读取最近事件保存日志（供 UI 排查生成/覆盖问题）。 */
+export function loadEventSaveLog(): Array<{ id: string; timestamp: string; content: string; at: string }> {
+  try {
+    if (typeof window === "undefined") return [];
+    const raw = localStorage.getItem("ai_phone_cm_event_save_log_v1");
+    return raw ? (JSON.parse(raw) as Array<{ id: string; timestamp: string; content: string; at: string }>) : [];
+  } catch {
+    return [];
+  }
 }
 export async function saveEvents(events: ComplexEvent[]): Promise<void> {
   await bulkPut(STORE_EVENTS, events);

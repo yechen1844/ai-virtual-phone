@@ -114,7 +114,8 @@ export async function runEventGeneration(
     }
 
     if (generated === 0) {
-      updateRingBuffer(characterId, { pendingCount: 0 });
+      // 生成失败但素材充足：不再重置 pendingCount。
+      // 否则失败一次就把计数清零，用户聊得再多也只显示很小的值，且 wm 不推进、今天永远无法被总结。
       return { success: false, error: "事件生成失败（无任何窗口产出）" };
     }
 
@@ -237,7 +238,9 @@ async function generateEventForWindow(
     ? dateFromTimestamp(opts.contextDate)
     : dateFromTimestamp(earliest);
   const event: ComplexEvent = {
-    id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    // 事件 id 必须绝对唯一，否则同一毫秒内分窗生成的多个事件会因 id 相同互相覆盖，只剩最后一条。
+    // 用「字符 id + 时间戳 + crypto 随机串」保证在同一毫秒多窗并发生成时也绝不撞。
+    id: `evt_${characterId}_${Date.now()}_${(globalThis?.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2, 10)).replace(/-/g, "").slice(0, 12)}`,
     characterId,
     timestamp: eventTimestamp,
     content: parsed.content,
