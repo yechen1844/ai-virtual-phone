@@ -1339,6 +1339,17 @@ function PeriodTab({ characterId, characterName, notify, refresh }: {
                       </button>
                     </p>
                   )}
+                  {p.rollingSummary && p.rollingSummary.trim() && (
+                    <div className="cm-progress-list">
+                      <div className="cm-meta-text cm-progress-title">周期进展（每日日记填充）</div>
+                      {p.rollingSummary.split("\n").filter((l) => l.trim()).map((line, i) => {
+                        const m = line.match(/^\[(\d{4}-\d{2}-\d{2})\]\s*(.*)$/);
+                        return m
+                          ? <div key={i} className="cm-tl-row"><span className="cm-tl-day">{m[1]}</span><span>{m[2]}</span></div>
+                          : <div key={i} className="cm-tl-row"><span className="cm-tl-day">·</span><span>{line}</span></div>;
+                      })}
+                    </div>
+                  )}
                   {Object.keys(p.timelineIndex).length > 0 && (
                     <div className="cm-timeline-index">
                       {Object.entries(p.timelineIndex).map(([day, line]) => (

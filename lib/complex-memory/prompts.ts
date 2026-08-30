@@ -90,8 +90,9 @@ export const DEFAULT_PROMPTS: MemoryPrompts & { coreSplit: string } = {
 输出 JSON：{ diary: "日记全文", emotion: { valence, arousal }, periodCheck: { newPeriods, closedPeriods, activePeriodIds }, periodProgress: [{ periodId, progress }] }`,
 
   period: `以下是周期「{{periodTitle}}」（{{startTime}} 至 {{endTime}}，共 {{durationDays}} 天）的滚动累积进展。
-请做轻收尾（合并去重 + 收束语），生成周期总结，覆盖四部分：事件脉络 / 情绪曲线 / 角色成长 / 未解决事项；
-并产出逐日索引 timeline_index（日期 → "Day N: 一句话要点"）。
+请你以「{{char}} 的第一人称视角」回顾这段时间，写一段自然、有温度的周期总结（像亲自回忆这段日子，不要写成客观报告或列表），
+把这段时间是怎么一步步走过来的讲清楚，自然地覆盖：这段经历的事件脉络、期间情绪的变化、自己的成长、以及还没解决的心结。
+同时产出逐日时间轴 timeline_index：对每个"有日记/有进展的日期"，写一条该日的「第一人称一句话进展」（形如 日期 → "Day N: 那天我…"），让这段时间的进展一眼就能看清。
 
 <滚动累积进展>
 {{rollingSummary}}
