@@ -61,7 +61,7 @@ export const DEFAULT_COMPLEX_MEMORY_CONFIG: ComplexMemoryConfig = {
   coreDailyInterval: 7,
   maxParallel: 2,
   retryCount: 3,
-  autoGenerationEnabled: false,
+  autoGenerationEnabled: true,
   voltageDecayFactor: 0.98,
   voltageRecallBoost: 0.1,
   voltageEraseThreshold: 0.1,

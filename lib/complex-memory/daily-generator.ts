@@ -51,7 +51,9 @@ export async function maybeGenerateDaily(
   characterId: string,
   characterName: string,
 ): Promise<{ generated: boolean; error?: string }> {
-  const timeline = loadSourceTimeline(characterId, { full: true });
+  const config = loadComplexMemoryConfig();
+  const today = dateString(0);
+  const timeline = loadSourceTimeline(characterId);
 
   const byDate = new Map<string, { lastTs: number }>();
   for (const e of timeline) {
@@ -65,16 +67,19 @@ export async function maybeGenerateDaily(
   }
   if (byDate.size === 0) return { generated: false };
 
-  // 只补「昨天」一个日期：后台补生成保持可预测、一眼可知，不再往前翻历史空缺，避免"不知补到哪天"的混乱。
-  // 更早的日期请用「按日期总结 / 一键迁移」手动补。
-  const yesterday = dateString(-1);
-  const existing = await getDaily(characterId, yesterday);
-  if (existing) return { generated: false };
-  const rec = byDate.get(yesterday);
-  if (!rec) return { generated: false };
-  const result = await generateDaily(characterId, characterName, yesterday);
-  if (!result.success) return { generated: false, error: result.error };
-  return { generated: true };
+  // 官方语义：遍历所有「有活动、但日记未生成」的日期并补生成；跨天视为已结束可直接补，静默条件只约束当天。
+  const dates = [...byDate.keys()].sort().reverse();
+  const quietMs = config.dailyQuietMinutes * 60_000;
+  for (const d of dates) {
+    const existing = await getDaily(characterId, d);
+    if (existing) continue;
+    const rec = byDate.get(d)!;
+    if (d === today && Date.now() - rec.lastTs < quietMs) continue;
+    const result = await generateDaily(characterId, characterName, d);
+    if (!result.success) return { generated: false, error: result.error };
+    return { generated: true };
+  }
+  return { generated: false };
 }
 
 export async function generateDaily(
