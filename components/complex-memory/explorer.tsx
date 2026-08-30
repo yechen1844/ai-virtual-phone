@@ -664,6 +664,8 @@ function DailyTab({ characterId, characterName, notify, refresh }: {
   const [editing, setEditing] = useState<ComplexDaily | null>(null);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedDailies, setSelectedDailies] = useState<Set<string>>(new Set());
   // 日历视图（M6）
   const [viewMode, setViewMode] = useState<"list" | "calendar">("list");
   const nowRef = new Date();
@@ -733,6 +735,26 @@ function DailyTab({ characterId, characterName, notify, refresh }: {
     }
   };
 
+  const toggleSelectDaily = (id: string) =>
+    setSelectedDailies((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+
+  const handleBulkRegenerateDailies = async () => {
+    if (selectedDailies.size === 0) { notify({ kind: "err", text: "请先选择要重新总结的日记" }); return; }
+    setBusy(true);
+    const targets = filtered.filter((d) => selectedDailies.has(d.id));
+    let ok = 0, fail = 0;
+    for (const d of targets) {
+      const res = await regenerateDaily(characterId, characterName, d.date);
+      if (res.success) ok++; else fail++;
+    }
+    setBusy(false);
+    setSelectedDailies(new Set());
+    setSelectMode(false);
+    await load();
+    refresh();
+    notify({ kind: ok > 0 ? "ok" : "err", text: `批量重新总结：成功 ${ok}，失败 ${fail}` });
+  };
+
   const handleToggleSpecial = async (d: ComplexDaily) => {
     await saveDaily({ ...d, special: d.special === true ? false : true });
     notify({ kind: "ok", text: d.special === true ? "已取消特殊日期标记" : "已标记为特殊一天" });
@@ -770,6 +792,20 @@ function DailyTab({ characterId, characterName, notify, refresh }: {
       <div className="cm-section-head">
         <span className="cm-section-title">日记 · 共 {dailies.length} 篇</span>
         <div className="cm-actions">
+          {selectMode ? (
+            <>
+              <span className="cm-meta-text">已选 {selectedDailies.size} 篇</span>
+              <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => setSelectedDailies(new Set(filtered.map((d) => d.id)))}>全选</button>
+              <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={() => void handleBulkRegenerateDailies()} disabled={busy || selectedDailies.size === 0}>
+                {busy ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} 批量重新总结
+              </button>
+              <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => { setSelectMode(false); setSelectedDailies(new Set()); }}>退出</button>
+            </>
+          ) : (
+            <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => setSelectMode(true)}>
+              <RefreshCw size={14} /> 多选重总结
+            </button>
+          )}
           <div className="cm-view-toggle" role="group" aria-label="视图切换">
             <button
               type="button"
@@ -850,8 +886,8 @@ function DailyTab({ characterId, characterName, notify, refresh }: {
       ) : (
         <div className="cm-daily-list">
           {filtered.map((d) => (
-            <div key={d.id} className="cm-card cm-daily-item">
-              <button type="button" className="cm-daily-head" onClick={() => setExpandedId(expandedId === d.id ? null : d.id)}>
+            <div key={d.id} className={`cm-card cm-daily-item${selectMode && selectedDailies.has(d.id) ? " is-selected" : ""}`}>
+              <button type="button" className="cm-daily-head" onClick={() => { if (selectMode) { toggleSelectDaily(d.id); return; } setExpandedId(expandedId === d.id ? null : d.id); }}>
                 <span className="cm-daily-date">
                   {d.date}
                   {d.special === true && <span className="cm-special-badge" title="特殊一天">★</span>}
@@ -1352,6 +1388,8 @@ function EventTab({ characterId, characterName, notify, refresh }: {
   const [busy, setBusy] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedEvents, setSelectedEvents] = useState<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     setEvents(await loadEvents(characterId));
@@ -1375,6 +1413,26 @@ function EventTab({ characterId, characterName, notify, refresh }: {
     } else {
       notify({ kind: "err", text: res.error ?? "生成失败" });
     }
+  };
+
+  const toggleSelectEvent = (id: string) =>
+    setSelectedEvents((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+
+  const handleBulkRegenerateEvents = async () => {
+    if (selectedEvents.size === 0) { notify({ kind: "err", text: "请先选择要重新总结的事件" }); return; }
+    setBusy(true);
+    const targets = events.filter((e) => selectedEvents.has(e.id));
+    let ok = 0, fail = 0;
+    for (const e of targets) {
+      const res = await regenerateEvent(characterId, characterName, e);
+      if (res.success) ok++; else fail++;
+    }
+    setBusy(false);
+    setSelectedEvents(new Set());
+    setSelectMode(false);
+    await load();
+    refresh();
+    notify({ kind: ok > 0 ? "ok" : "err", text: `批量重新总结：成功 ${ok}，失败 ${fail}` });
   };
 
   const handleBoost = async (e: ComplexEvent) => {
@@ -1417,6 +1475,20 @@ function EventTab({ characterId, characterName, notify, refresh }: {
       <div className="cm-section-head">
         <span className="cm-section-title">事件记忆 · 共 {events.length} 条</span>
         <div className="cm-actions">
+          {selectMode ? (
+            <>
+              <span className="cm-meta-text">已选 {selectedEvents.size} 条</span>
+              <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => setSelectedEvents(new Set(events.map((e) => e.id)))}>全选</button>
+              <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={() => void handleBulkRegenerateEvents()} disabled={busy || selectedEvents.size === 0}>
+                {busy ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} 批量重新总结
+              </button>
+              <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => { setSelectMode(false); setSelectedEvents(new Set()); }}>退出</button>
+            </>
+          ) : (
+            <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => setSelectMode(true)}>
+              <RefreshCw size={14} /> 多选重总结
+            </button>
+          )}
           <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={handleGenerate} disabled={busy}>
             {busy ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} />} 立即压缩
           </button>
@@ -1430,8 +1502,8 @@ function EventTab({ characterId, characterName, notify, refresh }: {
             const v = effectiveVoltage(e, { kind: "event" });
             const pendingErase = e.coveredByPeriod && v < config.voltageEraseThreshold;
             return (
-              <div key={e.id} className="cm-card cm-event-item">
-                <button type="button" className="cm-event-head" onClick={() => setExpandedId(expandedId === e.id ? null : e.id)}>
+              <div key={e.id} className={`cm-card cm-event-item${selectMode && selectedEvents.has(e.id) ? " is-selected" : ""}`}>
+                <button type="button" className="cm-event-head" onClick={() => { if (selectMode) { toggleSelectEvent(e.id); return; } setExpandedId(expandedId === e.id ? null : e.id); }}>
                   <span className="cm-event-time">{e.timestamp.slice(0, 16).replace("T", " ")}</span>
                   <span className="cm-event-importance">重要 {Math.round(e.importanceScore * 100)}%</span>
                   <VecBadge embedding={e.embedding} />
