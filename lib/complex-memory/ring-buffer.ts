@@ -18,6 +18,7 @@ export function recordEvents(characterId: string, characterName: string, count: 
   const ring = getRingBuffer(characterId);
   const pendingCount = ring.pendingCount + count;
   updateRingBuffer(characterId, { pendingCount });
+  console.log(`[ComplexMemory:DIAG] recordEvents 角色=${characterName} 本次+${count} → pendingCount=${pendingCount} 阈值=${config.eventTriggerCount} 触发=${pendingCount >= config.eventTriggerCount && !generatingSet.has(characterId)}`);
 
   if (pendingCount >= config.eventTriggerCount && !generatingSet.has(characterId)) {
     generatingSet.add(characterId);

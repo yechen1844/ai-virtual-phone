@@ -1453,6 +1453,26 @@ export type ChatCompletionResult = {
     parts: ChatCompletionPart[];
 };
 
+// 主聊天（含原生工具协议路径）统一的活动计分入口。
+// 口径：本轮真实消息条数 = 未回复的 user 消息数 + 本轮模型回复的文本段数。
+function countChatActivity(characterId: string, characterName: string, history: ChatMessage[], parts: ChatCompletionPart[]): void {
+    try {
+        if (!characterId) return;
+        let userMsgs = 0;
+        for (let i = history.length - 1; i >= 0; i--) {
+            if (history[i].role === "user") userMsgs++;
+            else break;
+        }
+        const replyMsgs = parts.filter((p) => p.text && p.text.trim()).length;
+        const activityCount = Math.max(2, userMsgs + replyMsgs);
+        const tailRoles = history.slice(-5).map((m) => m.role).join(",");
+        console.log(`[ComplexMemory:DIAG] 主聊天计分 historyLen=${history.length} 尾部角色=[${tailRoles}] 未回复user=${userMsgs} 回复${replyMsgs}段 = ${activityCount} 分`);
+        recordCharacterActivity(characterId, characterName, activityCount);
+    } catch (err) {
+        console.warn("[ChatEngine] Memory counter/summarization failed:", err);
+    }
+}
+
 /** Extract combined clean text from a ChatCompletionResult (for callers that need a plain string) */
 export function flattenCompletionResult(result: ChatCompletionResult): string {
     return result.parts.map(p => stripTextToolDirectives(p.text)).filter(Boolean).join("\n\n");
@@ -2129,11 +2149,12 @@ async function generateNativeChatCompletion(
         preset: PresetConfig | null;
         regexes: RegexConfig[];
         userIdentity: ReturnType<typeof resolveUserIdentity>;
+        history?: ChatMessage[];
         options?: ChatPromptBuildOptions & { signal?: AbortSignal };
         callbacks?: ChatCompletionCallbacks;
     },
 ): Promise<ChatCompletionResult> {
-    const { session, llmMessages, character, config, preset, regexes, userIdentity, options, callbacks } = params;
+    const { session, llmMessages, character, config, preset, regexes, userIdentity, history, options, callbacks } = params;
     const enabledTools = getEnabledTools(options?.appId ?? "chat");
     const requestAppTags = mergeAppTags(options?.appTags, options?.promptProfile?.appTags, options?.appId ?? "chat");
     const persistedSession = loadChatSessions().find(item => item.id === session.id);
@@ -2404,6 +2425,11 @@ async function generateNativeChatCompletion(
         }
     }
 
+    // Memory: record activity（原生工具协议路径也要计数，否则主聊天被漏掉）
+    if (history) {
+        countChatActivity(character.id, character.name, history, parts);
+    }
+
     return { parts };
 }
 
@@ -2416,7 +2442,9 @@ export async function generateChatCompletion(
     const { llmMessages, character, config, preset, regexes, userIdentity, toolsEnabled } = await buildChatPromptMessages(session, history, options);
     const requestAppTags = mergeAppTags(options?.appTags, options?.promptProfile?.appTags, options?.appId ?? "chat");
 
+    console.log(`[ComplexMemory:DIAG] 路径判断 toolsEnabled=${String(toolsEnabled)} nativeProtocol=${String(nativeToolProtocolForConfig(config))} enabledTools=${String(getEnabledTools(options?.appId ?? "chat").length)}`);
     if (toolsEnabled && nativeToolProtocolForConfig(config) && getEnabledTools(options?.appId ?? "chat").length > 0) {
+        console.log("[ComplexMemory:DIAG] 走原生工具协议路径 generateNativeChatCompletion（已接入计数）");
         return generateNativeChatCompletion({
             session,
             llmMessages,
@@ -2425,6 +2453,7 @@ export async function generateChatCompletion(
             preset,
             regexes,
             userIdentity,
+            history,
             options,
             callbacks,
         });
@@ -2689,22 +2718,7 @@ export async function generateChatCompletion(
     }
 
     // Memory: record activity (complex memory ring buffer or float counter + summarization)
-    try {
-        // 按本轮实际消息条数计分，不再写死固定 2 条：
-        //   userMsgs = 本轮连发、尚未被回复的 user 消息数（history 尾部连续 user）；
-        //   replyMsgs = 本轮模型实际回复的文本段数。
-        let userMsgs = 0;
-        for (let i = history.length - 1; i >= 0; i--) {
-            if (history[i].role === "user") userMsgs++;
-            else break;
-        }
-        const replyMsgs = parts.filter((p) => p.text && p.text.trim()).length;
-        const activityCount = Math.max(2, userMsgs + replyMsgs);
-        console.log(`[ComplexMemory] 事件计分：未回复用户 ${userMsgs} 条 + 回复 ${replyMsgs} 段 = ${activityCount}`);
-        recordCharacterActivity(character.id, character.name, activityCount);
-    } catch (err) {
-        console.warn("[ChatEngine] Memory counter/summarization failed:", err);
-    }
+    countChatActivity(character.id, character.name, history, parts);
 
     return { parts };
 }
