@@ -79,6 +79,9 @@ export function ComplexMemoryToggle({ characterId, characterName }: ComplexMemor
               : "已启用"
             : "未启用时使用 float 原生记忆"}
         </span>
+        <span className="menu-desc" style={{ color: "var(--c-info, #6ab0ff)" }}>
+          [诊断] enabled={String(enabled)} · autoSummary={String(status?.autoSummarize)} · count={String(status?.pendingCount)}/{String(status?.threshold)} · wm={status?.watermark ?? "null"} · ev={String(status?.eventCount)}
+        </span>
         {enabled && status && (
           <span className="menu-desc" style={{ color: "var(--c-text-dim, rgba(255,255,255,0.55))" }}>
             自动总结 {status.autoSummarize ? "开" : "关"} · 事件计数 {status.pendingCount}/{status.threshold} · 上次总结到 {status.watermark ? new Date(status.watermark).toLocaleString() : "未开始"}
