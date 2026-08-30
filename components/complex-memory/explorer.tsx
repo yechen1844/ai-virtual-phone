@@ -27,6 +27,7 @@ import {
   Settings2,
   Sparkles,
   Trash2,
+  Undo2,
   Upload,
   Zap,
   Link,
@@ -87,7 +88,7 @@ import {
 } from "@/lib/complex-memory/core-builder";
 import { generateDaily, regenerateDaily, summarizeDailyRange } from "@/lib/complex-memory/daily-generator";
 import { distillPeriod, createPeriodManual } from "@/lib/complex-memory/period-distiller";
-import { runEventGeneration, regenerateEvent } from "@/lib/complex-memory/event-generator";
+import { runEventGeneration, regenerateEvent, uncoverEvent } from "@/lib/complex-memory/event-generator";
 import {
   getMigrationState,
   startMigration,
@@ -1549,6 +1550,19 @@ function EventTab({ characterId, characterName, notify, refresh }: {
     }
   };
 
+  const handleUncoverEvent = async (e: ComplexEvent) => {
+    setBusy(true);
+    const res = await uncoverEvent(characterId, e.id);
+    setBusy(false);
+    if (res.success) {
+      notify({ kind: "ok", text: "已撤销覆盖，恢复为可召回记忆" });
+      await load();
+      refresh();
+    } else {
+      notify({ kind: "err", text: res.error ?? "撤销覆盖失败" });
+    }
+  };
+
   return (
     <div className="cm-section">
       <div className="cm-section-head">
@@ -1628,6 +1642,11 @@ function EventTab({ characterId, characterName, notify, refresh }: {
                           <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => void handleRegenerate(e)} disabled={busy}>
                             <RefreshCw size={14} /> 重新总结
                           </button>
+                          {e.coveredByPeriod && (
+                            <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => void handleUncoverEvent(e)} disabled={busy}>
+                              <Undo2 size={14} /> 撤销覆盖
+                            </button>
+                          )}
                           <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => void handleBoost(e)}>
                             <Zap size={14} /> 充能
                           </button>

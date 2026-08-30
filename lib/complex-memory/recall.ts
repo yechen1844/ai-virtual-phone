@@ -125,9 +125,13 @@ export async function buildMemoryContextBundle(
     loadPeriods(characterId),
   ]);
 
+  // 已覆盖事件不再参与召回/固定注入：其内容已归纳进周期 summary，长期保留只会永久占用电压、
+  // 导致「已覆盖却不删除」。这里统一在加载后剔除，供固定注入区与向量召回共用。
+  const recallableEvents = events.filter((e) => !e.coveredByPeriod);
+
   // ① 固定注入区（硬性保留）：核心记忆已按 category 分组渲染（identity→bond→principle→milestone）
   const coreMemory = core.text;
-  const fixedEvents = events.slice(-config.fixedRecentEventCount).map(formatEventLine).join("\n");
+  const fixedEvents = recallableEvents.slice(-config.fixedRecentEventCount).map(formatEventLine).join("\n");
   const yesterday = dailies.find((d) => d.date === dateString(-1));
   const yesterdayDaily = yesterday ? formatDailyLine(yesterday) : "";
   // 特殊日期固定注入：最近 N 篇被标记为特殊的日记优先生效
@@ -142,12 +146,12 @@ export async function buildMemoryContextBundle(
     .join("\n\n");
   const fixedShortTerm = options?.shortTermText ?? "";
 
-  // ② 向量召回（无 embedding API 时关键词退化）
-  let recalledItems = await vectorRecall(characterId, currentContext, config, { events, dailies, periods });
+  // ② 向量召回（无 embedding API 时关键词退化）——只用未覆盖且未删除的事件
+  let recalledItems = await vectorRecall(characterId, currentContext, config, { events: recallableEvents, dailies, periods });
 
   // 剔除与固定注入区重复的实体（最新事件/昨日日记/特殊日期日记/活跃周期已硬性注入）
   const fixedIds = new Set<string>([
-    ...events.slice(-config.fixedRecentEventCount).map((e) => e.id),
+    ...recallableEvents.slice(-config.fixedRecentEventCount).map((e) => e.id),
     ...(yesterday ? [yesterday.id] : []),
     ...specialDailies.map((d) => d.id),
     ...periods.filter((p) => p.status === "active").map((p) => p.id),
@@ -180,7 +184,7 @@ export async function buildMemoryContextBundle(
     fixedTokens + kept.reduce((sum, item) => sum + estimateTokens(item.content) + 8, 0);
 
   // 电压回升：所有被最终注入的实体 +0.1 并刷新 lastAccessedAt
-  await boostInjected(characterId, { events, dailies, periods, fixedEventCount: config.fixedRecentEventCount, yesterday, specialDailies, kept });
+  await boostInjected(characterId, { events: recallableEvents, dailies, periods, fixedEventCount: config.fixedRecentEventCount, yesterday, specialDailies, kept });
 
   return {
     coreMemory,

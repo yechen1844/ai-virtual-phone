@@ -17,7 +17,7 @@ import { buildGenerationContext } from "./context-builder";
 import { ensureWatermarkAnchored } from "./watermark";
 import { loadSourceTimeline } from "./source";
 import { renderMemoryPrompt, DEFAULT_PROMPTS } from "./prompts";
-import { saveEvent, getCurrentCoreView, loadActivePeriods, getDaily } from "./storage";
+import { saveEvent, savePeriod, loadPeriods, loadEvents, getCurrentCoreView, loadActivePeriods, getDaily } from "./storage";
 import { mirrorEventToFloat } from "./mirror";
 import { pushFeedAudit } from "./feed-audit";
 import { getUserName, capSourceMaterials, dateString, dateFromTimestamp, formatLocalDateTime } from "./utils";
@@ -299,6 +299,41 @@ export async function regenerateEvent(
       }
     }
   }
+  return { success: true };
+}
+
+/**
+ * 反向覆盖：撤销某条事件被周期覆盖的状态，让原文重新作为可召回记忆。
+ * 用户对周期提炼出的 summary 不满意时，用「正文覆盖回去」恢复原事件：
+ *   1. 清除事件上的 coveredByPeriod；
+ *   2. 把事件 id 从周期的 coveredEventIds 里移除；
+ *   3. 提升事件电压（回升到 1），避免它很快又进入消磨删除。
+ */
+export async function uncoverEvent(
+  characterId: string,
+  eventId: string,
+): Promise<{ success: boolean; error?: string }> {
+  const events = await loadEvents(characterId);
+  const event = events.find((e) => e.id === eventId);
+  if (!event) return { success: false, error: "事件不存在" };
+
+  const coveredByPeriod = event.coveredByPeriod;
+  // 1) 清除覆盖标记（恢复为可召回、不被消磨删除）
+  await saveEvent({ ...event, coveredByPeriod: undefined, lastAccessedAt: new Date().toISOString() });
+
+  // 2) 从对应周期的 coveredEventIds 中移除该事件 id
+  if (coveredByPeriod) {
+    const periods = await loadPeriods(characterId);
+    const period = periods.find((p) => p.id === coveredByPeriod);
+    if (period) {
+      await savePeriod({ ...period, coveredEventIds: (period.coveredEventIds ?? []).filter((id) => id !== eventId), updatedAt: new Date().toISOString() });
+    }
+  }
+
+  // 3) 电压回升：让事件重新回到正常召回权重
+  const boosted = { ...event, coveredByPeriod: undefined, voltage: 1, lastAccessedAt: new Date().toISOString() };
+  await saveEvent(boosted);
+
   return { success: true };
 }
 
