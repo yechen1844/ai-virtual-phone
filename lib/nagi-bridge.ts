@@ -25,6 +25,8 @@ const BUTLER_URL = process.env.NEXT_PUBLIC_NAGI_BUTLER_URL || "http://localhost:
 
 export const STARDEW_APP_ID = "stardew";
 const STARDEW_SESSION_PREFIX = "sess_stardew_";
+// 星露谷回复只取最近 N 条，绝不全量历史（历史可能上万条，全量会撑爆上下文/崩溃）
+const STARDEW_HISTORY_LIMIT = 150;
 const KV_CHAR_KEY = "nagi_bridge_character_id";
 const KV_ENABLED_KEY = "nagi_bridge_enabled";
 
@@ -329,7 +331,7 @@ export async function ingestNagiGameMessage(characterId: string, msg: NagiEntry)
     status: "sent",
   });
 
-  const history = loadChatMessages(session.id);
+  const history = loadChatMessages(session.id).slice(-STARDEW_HISTORY_LIMIT);
   const replyText = await generateStardewReply(session, history);
   if (!replyText) return null;
 
@@ -399,8 +401,10 @@ async function generateStardewReply(session: any, history: any[]): Promise<strin
   stardewGenerating = true;
   try {
     ensureStardewToolsRegistered();
+    // 只取最近 STARDEW_HISTORY_LIMIT 条，绝不全量历史（历史可能上万条，全量会崩溃）
+    const bounded = history.slice(-STARDEW_HISTORY_LIMIT);
     // 注入农工当前状态作为系统消息，char 开口就知道自己处境，不用先调 get_state
-    const enrichedHistory = await injectStardewState(session, history);
+    const enrichedHistory = await injectStardewState(session, bounded);
     const cr = await generateChatCompletion(session, enrichedHistory, {
       appId: STARDEW_APP_ID,
       appTags: ["stardew"],
@@ -451,7 +455,7 @@ export async function stardewFrontendSay(characterId: string, text: string): Pro
   const session = getOrCreateStardewSession(characterId);
   markStardewActivity(); // 玩家有互动，取消自主
   pushChatMessage({ sessionId: session.id, role: "user", content: text, status: "sent" });
-  const history = loadChatMessages(session.id);
+  const history = loadChatMessages(session.id).slice(-STARDEW_HISTORY_LIMIT);
   const replyText = await generateStardewReply(session, history);
   if (!replyText) return null;
   pushChatMessage({ sessionId: session.id, role: "assistant", content: replyText, status: "sent" });
