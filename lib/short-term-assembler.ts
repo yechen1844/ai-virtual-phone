@@ -1075,9 +1075,15 @@ export function prepareShortTermContext(
         raw.push({ tag: "recent_checkphone", order: FEATURE_ORDER.checkphone, entries: checkPhoneEntries });
     }
 
-    const stardewEntries = timeline.filter(e => e.sourceApp === "stardew");
-    if (stardewEntries.length > 0) {
-        raw.push({ tag: "recent_stardew", order: FEATURE_ORDER.stardew, entries: stardewEntries });
+    // 星露谷自己组装提示词时，去掉「自身会话」的投影条目(recent_stardew)：
+    // 星露谷自己的对话已通过 history 以真实 user/assistant 角色喂入，投影一遍会重复且把 user 发言变成 system 事件。
+    // 投影条目只保留给主聊天等其它 app 看（它们需要记得星露谷），但不回到星露谷自己上下文，避免自说自话与失忆。
+    // 注意：这里只去掉星露谷自身投影，主聊天/其它 app 的短期记忆照常注入（否则才真的失忆）。
+    if (appId !== "stardew") {
+        const stardewEntries = timeline.filter(e => e.sourceApp === "stardew");
+        if (stardewEntries.length > 0) {
+            raw.push({ tag: "recent_stardew", order: FEATURE_ORDER.stardew, entries: stardewEntries });
+        }
     }
 
     const interviewEntries = timeline.filter(e => e.sourceApp === "interview_magazine");
@@ -1213,14 +1219,16 @@ export function prepareShortTermContext(
     }
 
     const unifiedRecentItems: UnifiedRecentItem[] = [];
-    for (let i = startIdx; i < pool.length; i++) {
-        const item = pool[i];
-        if (item.kind === "entry") {
-            const meta = entryMeta.get(item.entryId);
+    // 重要：必须从「已按 maxShortTermEntries(条数上限) 截断后的 kept」构建，而不是整个 token 窗口。
+    // 否则短消息场景(如星露谷)token 预算能装下几百条，maxShortTermEntries(如120)失效，会错误注入 300+ 条，
+    // 而主聊天因为消息长、token 只够装 120 条才「碰巧」正常——这正是星露谷 vs 主聊天条数悬殊的根因。
+    for (const it of kept) {
+        if (it.kind === "entry") {
+            const meta = it.entryId ? entryMeta.get(it.entryId) : undefined;
             if (!meta) continue;
             unifiedRecentItems.push({
                 kind: "event",
-                timestamp: item.timestamp,
+                timestamp: it.ts,
                 sourceApp: meta.entry.sourceApp,
                 sourceTag: meta.sourceTag,
                 text: meta.entry.content,
@@ -1228,11 +1236,11 @@ export function prepareShortTermContext(
             continue;
         }
 
-        const historyIndex = historyIndexMap.get(item.msgIdx);
+        const historyIndex = it.msgIdx !== undefined ? historyIndexMap.get(it.msgIdx) : undefined;
         if (historyIndex === undefined) continue;
         unifiedRecentItems.push({
             kind: "history",
-            timestamp: item.timestamp,
+            timestamp: it.ts,
             historyIndex,
         });
     }

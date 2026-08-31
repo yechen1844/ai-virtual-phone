@@ -39,6 +39,7 @@ import { previewXiaohongshuPromptPayload } from "@/lib/xiaohongshu-engine";
 import { loadCoCreateSession } from "@/lib/cocreate-storage";
 import { previewCoCreatePromptPayload } from "@/lib/cocreate-engine";
 import { previewShoppingPromptPayload } from "@/lib/shopping-engine";
+import { buildStardewAutonomyPromptHistory } from "@/lib/nagi-bridge";
 import { previewInterviewMagazinePromptPayload } from "@/lib/interview-magazine-engine";
 import { hydrateMapStorage, loadMapWorlds, getLatestSave } from "@/lib/map-storage";
 import { previewAdventureCompanionPromptPayload } from "@/lib/map-rpg-engine";
@@ -147,6 +148,7 @@ export function DebugPromptPanel() {
     const [extraResult, setExtraResult] = useState<PromptPreviewResult | null>(null);
     const [extraAppId, setExtraAppId] = useState<ExtraPromptAppId>("checkphone");
     const [extraCharacterId, setExtraCharacterId] = useState<string>("");
+    const [stardewAutonomyPreview, setStardewAutonomyPreview] = useState(false);
     const [checkPhoneAppId, setCheckPhoneAppId] = useState<CheckPhoneAppId | "manifest">("manifest");
     const [readingBookId, setReadingBookId] = useState<string>("");
     const [readingChapterIndex, setReadingChapterIndex] = useState<string>("");
@@ -538,7 +540,12 @@ export function DebugPromptPanel() {
                     .find(s => s.id.startsWith("sess_stardew_")
                         && s.contactId === `stardew:${extraCharacterId}`);
                 if (!stardewSession) throw new Error("没有找到该角色的星露谷会话，请先在星露谷聊过天或生成一次会话");
-                const snap = await previewPromptRequestSnapshot(stardewSession, loadChatMessages(stardewSession.id), {
+                const sessionHistory = loadChatMessages(stardewSession.id);
+                // 自由活动开关：追加【自主时间】+游戏操作偏好，模拟自主行动的真实提示词
+                const effectiveHistory = stardewAutonomyPreview
+                    ? buildStardewAutonomyPromptHistory(sessionHistory)
+                    : sessionHistory;
+                const snap = await previewPromptRequestSnapshot(stardewSession, effectiveHistory, {
                     appId: "stardew",
                     appTags: ["stardew"],
                     forceEnableTools: true,
@@ -845,6 +852,15 @@ export function DebugPromptPanel() {
     const renderExtraControls = () => (
         <>
             {extraAppId !== "shopping" && renderCharSelect(extraCharacterId, setExtraCharacterId)}
+            {extraAppId === "stardew" && (
+                <button
+                    onClick={() => setStardewAutonomyPreview(v => !v)}
+                    className="pv-toggle"
+                    {...(stardewAutonomyPreview ? { "data-active": "" } : {})}
+                >
+                    {stardewAutonomyPreview ? "自由活动 ON" : "自由活动 OFF"}
+                </button>
+            )}
             {extraAppId === "checkphone" && (
                 <select value={checkPhoneAppId} onChange={e => setCheckPhoneAppId(e.target.value as CheckPhoneAppId | "manifest")} className="pv-select">
                     <option value="manifest">桌面清单</option>

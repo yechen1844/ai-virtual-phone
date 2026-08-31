@@ -239,9 +239,23 @@ function SettingsPage(props: {
     );
 }
 
+// 剔除星露谷回复里的格式标签：只去掉标签外壳，不动标签内内容。
+// 标签内可能带空格(如 [私聊 ]/[/私聊 ]、[状态数值 ]/[/状态数值 ])，用 \s* 兼容；
+// 支持成对(...[/xx])与裸([xx]/[/xx])两种形态（防御性处理旧消息里残留的原始标签）。
+function stripStardewPrivateMarker(text: string): string {
+    if (!text) return text;
+    return text
+        .replace(/\[私聊\s*\]([\s\S]*?)\[\/私聊\s*\]/g, "$1")
+        .replace(/\[状态数值\s*\]([\s\S]*?)\[\/状态数值\s*\]/g, "$1")
+        .replace(/\[私聊\s*\]/g, "")
+        .replace(/\[\/私聊\s*\]/g, "")
+        .replace(/\[状态数值\s*\]/g, "")
+        .replace(/\[\/状态数值\s*\]/g, "");
+}
+
 // 复刻主聊天的多气泡划分：按空行(\n\s*\n+)把 AI 回复拆成多个段落，每段一个气泡
 function splitOfflineParagraphs(text: string): string[] {
-    const normalized = (text || "").replace(/\r\n?/g, "\n").trim();
+    const normalized = stripStardewPrivateMarker((text || "").replace(/\r\n?/g, "\n")).trim();
     if (!normalized) return [];
     return normalized
         .split(/\n\s*\n+/)
@@ -428,9 +442,14 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
                                         <BilingualTextBlock text={p} mode="plain" defaultExpanded />
                                     </div>
                                 ))}
-                                {!isUser && msg.statusPanel && (
+                                {!isUser && (msg.statusPanel || (!msg.innerMonologue && cardStateValues && cardStateValues.length > 0)) && (
                                     <div className="chat-status-bare" style={{ alignSelf: "flex-start" }}>
-                                        <BilingualTextBlock text={msg.statusPanel} mode="markdown" defaultExpanded />
+                                        {!msg.innerMonologue && cardStateValues && cardStateValues.length > 0 && (
+                                            <StateValuesPanel stateValues={cardStateValues} />
+                                        )}
+                                        {msg.statusPanel && (
+                                            <BilingualTextBlock text={msg.statusPanel} mode="markdown" defaultExpanded />
+                                        )}
                                     </div>
                                 )}
                                 {!isUser && msg.innerMonologue && (

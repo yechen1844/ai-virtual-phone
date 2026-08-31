@@ -10,7 +10,7 @@
 //    但短期上下文（shortTermMemory）仍会带该 char 的近期时间线（用户明确希望共享短期记忆）。
 // 4. 云端中转：从 Cloudflare Worker 拉取游戏消息 → 写入星露谷会话 → char 回复 → 推回云端。
 
-import { loadChatSessions, saveChatSessions, pushChatMessage, loadChatMessages, createOrGetSession, reassignChatSessionMessages, deleteChatSession, DEFAULT_VISION_IMAGE_PROMPT_LIMIT, type ChatSession } from "./chat-storage";
+import { loadChatSessions, saveChatSessions, pushChatMessage, loadChatMessages, createOrGetSession, reassignChatSessionMessages, deleteChatSession, DEFAULT_VISION_IMAGE_PROMPT_LIMIT, type ChatSession, type ChatMessage, type StateValue } from "./chat-storage";
 import { recordStardewMessage } from "./stardew-memory";
 import { generateChatCompletion, flattenCompletionResult } from "./chat-engine";
 import { parseAIResponse } from "./rich-message-parser";
@@ -29,6 +29,8 @@ export const STARDEW_APP_ID = "stardew";
 const STARDEW_SESSION_PREFIX = "sess_stardew_";
 // 星露谷回复只取最近 N 条，绝不全量历史（历史可能上万条，全量会撑爆上下文/崩溃）
 const STARDEW_HISTORY_LIMIT = 150;
+// 自主行动（自由活动）时追加给模型的内容：说明玩家没有说话，让 char 按性格决定说话或干活。
+const STARDEW_AUTONOMY_PROMPT = "【自主时间】现在玩家没有说话。你可以按自己的性格决定：要么主动跟玩家说句话，要么去做一件合适的农活（可调用工具）。不想做就安静待着也可以。";
 const KV_CHAR_KEY = "nagi_bridge_character_id";
 const KV_ENABLED_KEY = "nagi_bridge_enabled";
 
@@ -88,7 +90,7 @@ async function fireStardewAutonomy(characterId: string, session: any): Promise<v
       {
         sessionId: session.id,
         role: "system",
-        content: "【自主时间】现在玩家没有说话。你可以按自己的性格决定：要么主动跟玩家说句话，要么去做一件合适的农活（可调用工具）。不想做就安静待着也可以。",
+        content: STARDEW_AUTONOMY_PROMPT,
         status: "sent" as const,
       },
     ];
@@ -108,7 +110,9 @@ async function fireStardewAutonomy(characterId: string, session: any): Promise<v
     const text = flattenCompletionResult(cr);
     if (text) {
       const parsedReply = parseStardewReplyForStorage(text);
-      pushChatMessage({ sessionId: session.id, role: "assistant", content: parsedReply.content, statusPanel: parsedReply.statusPanel, innerMonologue: parsedReply.innerMonologue, status: "sent" });
+      pushChatMessage({ sessionId: session.id, role: "assistant", content: parsedReply.content, statusPanel: parsedReply.statusPanel, innerMonologue: parsedReply.innerMonologue, stateValues: parsedReply.stateValues, freshStateValues: parsedReply.freshStateValues, status: "sent" });
+      // 自主行动也要投影进主聊天短期记忆，否则主聊天看不到星露谷自主活动
+      recordStardewMessage(characterId, { role: "assistant", content: parsedReply.content });
       await pushReply(characterId, parsedReply.content);
     }
   } catch (e) {
@@ -287,12 +291,14 @@ async function pullGameMessages(): Promise<NagiEntry[]> {
   }
 }
 
-async function pushReply(sender: string, text: string): Promise<void> {
+async function pushReply(characterId: string, text: string): Promise<void> {
   try {
-    // char 的回复经本机管家送进游戏聊天框
+    // char 的回复经本机管家送进游戏聊天框。sender 用角色的显示名，而不是 id——
+    // 否则游戏弹窗会把发送者显示成角色 id 而非名字。
+    const name = loadCharacters().find(c => c.id === characterId)?.name || characterId;
     await cloudFetch("/message", {
       method: "POST",
-      body: JSON.stringify({ sender, text, ts: Date.now() }),
+      body: JSON.stringify({ sender: name, text, ts: Date.now() }),
     });
   } catch (e) {
     console.warn("[NagiBridge] 推送回复失败:", e);
@@ -347,6 +353,8 @@ export async function ingestNagiGameMessage(characterId: string, msg: NagiEntry)
     content: parsedReply.content,
     statusPanel: parsedReply.statusPanel,
     innerMonologue: parsedReply.innerMonologue,
+    stateValues: parsedReply.stateValues,
+    freshStateValues: parsedReply.freshStateValues,
     status: "sent",
   });
   recordStardewMessage(characterId, { role: "assistant", content: parsedReply.content });
@@ -458,17 +466,50 @@ async function generateStardewReply(session: any, history: any[]): Promise<strin
   }
 }
 
-// 把 char 回复文本解析成「纯可见正文 + 状态栏 + 内心独白」，与主聊天一致：
-// 剥离 [状态栏]...[/状态栏] 与 [内心]...[/内心]（否则星露谷看到原始标签、渲染出错），
+// 剔除星露谷回复里的格式标签：只去掉标签外壳，绝不改动标签内的内容。
+// 关键：标签内可能带空格（实测模型输出 [私聊 ]/[/私聊 ]、[状态数值 ]/[/状态数值 ]），
+// 所以用 \s* 兼容；并支持成对(...[/xx])与裸([xx]/[/xx])两种形态。
+function stripStardewPrivateMarker(text: string): string {
+    if (!text) return text;
+    return text
+        .replace(/\[私聊\s*\]([\s\S]*?)\[\/私聊\s*\]/g, "$1")
+        .replace(/\[状态数值\s*\]([\s\S]*?)\[\/状态数值\s*\]/g, "$1")
+        .replace(/\[私聊\s*\]/g, "")
+        .replace(/\[\/私聊\s*\]/g, "")
+        .replace(/\[状态数值\s*\]/g, "")
+        .replace(/\[\/状态数值\s*\]/g, "");
+}
+
+// 把 char 回复文本解析成「纯可见正文 + 状态栏 + 内心独白 + 状态数值」，与主聊天一致：
+// 剥离 [状态栏]...[/状态栏]、[内心]...[/内心]、[私聊] 与 [状态数值] 外壳标签（否则星露谷看到原始标签、渲染出错），
+// 同时把 [好感度:X] 等状态值提取出来供状态面板渲染。
 // 正文按空行保留多气泡结构，供星露谷聊天页渲染成多个气泡 + 心声卡片。
-function parseStardewReplyForStorage(reply: string): { content: string; statusPanel?: string; innerMonologue?: string } {
-    const parsed = parseAIResponse(reply, []);
+function parseStardewReplyForStorage(reply: string): {
+    content: string; statusPanel?: string; innerMonologue?: string;
+    stateValues?: StateValue[]; freshStateValues?: StateValue[];
+} {
+    const cleaned = stripStardewPrivateMarker(reply);
+    const parsed = parseAIResponse(cleaned, []);
     const content = parsed.parts.map(p => p.content).filter(Boolean).join("\n\n");
     return {
-        content: content || reply,
+        content: content || cleaned,
         statusPanel: parsed.statusPanel || undefined,
         innerMonologue: parsed.innerMonologue || undefined,
+        stateValues: parsed.stateValues.length > 0 ? parsed.stateValues : undefined,
+        freshStateValues: parsed.freshStateValues.length > 0 ? parsed.freshStateValues : undefined,
     };
+}
+
+// 构建「自由活动（自主行动）」预览用的历史：在会话历史末尾追加【自主时间】系统消息与游戏操作偏好(RULE)。
+// 供提示词查看器查看星露谷自主活动的真实提示词。不采集实时农工状态（避免预览时请求游戏后端）。
+export function buildStardewAutonomyPromptHistory(history: ChatMessage[]): ChatMessage[] {
+    const now = new Date().toISOString();
+    const seed = `stardew-auto-${Date.now()}`;
+    return [
+        ...history,
+        { id: `${seed}-1`, sessionId: "", role: "system", content: STARDEW_AUTONOMY_PROMPT, status: "sent" as const, createdAt: now },
+        { id: `${seed}-2`, sessionId: "", role: "system", content: STARDEW_RULE, status: "sent" as const, createdAt: now },
+    ];
 }
 
 /** float 星露谷 app 里用户直接对 char 说话：写入会话 → char 生成回复 → 推回游戏。 */
@@ -483,7 +524,7 @@ export async function stardewFrontendSay(characterId: string, text: string): Pro
   const replyText = await generateStardewReply(session, history);
   if (!replyText) return null;
   const parsedReply = parseStardewReplyForStorage(replyText);
-  pushChatMessage({ sessionId: session.id, role: "assistant", content: parsedReply.content, statusPanel: parsedReply.statusPanel, innerMonologue: parsedReply.innerMonologue, status: "sent" });
+  pushChatMessage({ sessionId: session.id, role: "assistant", content: parsedReply.content, statusPanel: parsedReply.statusPanel, innerMonologue: parsedReply.innerMonologue, stateValues: parsedReply.stateValues, freshStateValues: parsedReply.freshStateValues, status: "sent" });
   recordStardewMessage(characterId, { role: "assistant", content: parsedReply.content });
   await pushReply(characterId, parsedReply.content);
   armStardewAutonomy(characterId, session); // 完成后排 1 分钟自主
@@ -502,7 +543,7 @@ export async function stardewReplyLatestPending(characterId: string): Promise<st
   const replyText = await generateStardewReply(session, history);
   if (!replyText) return null;
   const parsedReply = parseStardewReplyForStorage(replyText);
-  pushChatMessage({ sessionId: session.id, role: "assistant", content: parsedReply.content, statusPanel: parsedReply.statusPanel, innerMonologue: parsedReply.innerMonologue, status: "sent" });
+  pushChatMessage({ sessionId: session.id, role: "assistant", content: parsedReply.content, statusPanel: parsedReply.statusPanel, innerMonologue: parsedReply.innerMonologue, stateValues: parsedReply.stateValues, freshStateValues: parsedReply.freshStateValues, status: "sent" });
   recordStardewMessage(characterId, { role: "assistant", content: parsedReply.content });
   await pushReply(characterId, parsedReply.content);
   armStardewAutonomy(characterId, session);
