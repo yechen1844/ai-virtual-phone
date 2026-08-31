@@ -133,7 +133,7 @@ export function getStardewTools(): StardewToolDef[] {
     { name: "stardew_face", description: "设置面朝方向：0=上 1=右 2=下 3=左。", parameterSchema: '{"type":"object","properties":{"direction":{"type":"integer","enum":[0,1,2,3]}},"required":["direction"],"additionalProperties":false}' },
     { name: "stardew_use_item", description: "使用/放置当前手持物品（种子、物体等）。", parameterSchema: "{}" },
     { name: "stardew_press_key", description: "模拟按键。可用：confirm, cancel, skip, ok, F1-F12。", parameterSchema: '{"type":"object","properties":{"key":{"type":"string"},"count":{"type":"integer","default":1}},"required":["key"],"additionalProperties":false}' },
-    { name: "stardew_run_script", description: "一键执行农场自动化脚本，一次完成整类任务（比一步步用手动工具高效，应优先使用）。可用脚本：farm_row(种田)、water_crops(浇水)、chop_trees(砍树)、harvest(收获)、mine_run(挖矿)、clear_area(开垦)、pet_animals(撸动物)、keg_manager(酿酒)、furnace_manager(熔炉)、fish_run(钓鱼)、shop_buy(购物)。参数 script 为脚本名，args 为可选命令行参数。", parameterSchema: '{"type":"object","properties":{"script":{"type":"string"},"args":{"type":"string"}},"required":["script"],"additionalProperties":false}' },
+    { name: "stardew_run_script", description: "【优先·一键脚本】一键执行农场自动化脚本，一次完成整类任务，比一步步手动工具高效，能做就用它。可用脚本：farm_row(种田)、water_crops(浇水)、chop_trees(砍树)、harvest(收获)、mine_run(挖矿)、clear_area(开垦)、pet_animals(撸动物)、keg_manager(酿酒)、furnace_manager(熔炉)、fish_run(钓鱼)、shop_buy(购物)。参数 script 为脚本名，args 为可选命令行参数。", parameterSchema: '{"type":"object","properties":{"script":{"type":"string"},"args":{"type":"string"}},"required":["script"],"additionalProperties":false}' },
     { name: "stardew_sleep", description: "上床睡觉结束今天。自动找床，不需要先回家。检查结果：state=slept 表示过夜了；state=ready 表示已上床但需等所有人就绪——此时不要再移动/warp/起床，否则会卡死所有人。", parameterSchema: "{}" },
     { name: "stardew_get_machines", description: "扫描当前地点所有机器（酒桶/熔炉等）的状态。", parameterSchema: "{}" },
     { name: "stardew_get_animals", description: "查看所有农场动物：是否已摸、好感度、心情、产品就绪。", parameterSchema: "{}" },
@@ -372,17 +372,28 @@ async function readStardewStateText(): Promise<string> {
   return lines.length > 1 ? lines.join("\n") : "";
 }
 
+// 星露谷操作偏好：整类农活优先一键脚本，尽量别一步步手动操作（更快更少出错）。
+const STARDEW_RULE =
+  "【游戏操作偏好】凡能用 stardew_run_script(一键脚本) 一次性完成的整类任务，必须优先用它，" +
+  "例如 种田farm_row、浇水water_crops、砍树chop_trees、收获harvest、挖矿mine_run、开垦clear_area、" +
+  "撸动物pet_animals、酿酒keg_manager、熔炉furnace_manager、钓鱼fish_run、购物shop_buy。" +
+  "只有脚本无法完成（如打怪、送礼物、特定剧情交互）时才回退到一步步的 stardew_warp/move_to/use_tool/select_item/press_key 等手工操作。";
+
 /** 把农工当前状态注入到 history 末尾（作为 system 消息），让 char 不必先调 get_state。 */
 async function injectStardewState(session: any, history: any[]): Promise<any[]> {
+  const injected: any[] = [];
   try {
     const stateText = await readStardewStateText();
     if (stateText && session?.id) {
-      return [...history, { sessionId: session.id, role: "system", content: stateText, status: "sent" as const }];
+      injected.push({ sessionId: session.id, role: "system", content: stateText, status: "sent" as const });
     }
   } catch (e) {
     console.warn("[NagiBridge] 状态注入失败:", e);
   }
-  return history;
+  if (session?.id) {
+    injected.push({ sessionId: session.id, role: "system", content: STARDEW_RULE, status: "sent" as const });
+  }
+  return injected.length ? [...history, ...injected] : history;
 }
 
 async function generateStardewReply(session: any, history: any[]): Promise<string | null> {
