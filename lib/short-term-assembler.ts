@@ -814,7 +814,7 @@ export function loadNativeTimeline(
     }
 
     // Sort by timestamp ascending
-    entries.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    entries.sort((a, b) => String(a.timestamp ?? "").localeCompare(String(b.timestamp ?? "")));
     return entries;
 }
 
@@ -1129,7 +1129,7 @@ export function prepareShortTermContext(
         pool.push({ kind: "history", timestamp: history[i].createdAt, tokens: estimateTokens(history[i].content) + 4, msgIdx: i });
     }
 
-    pool.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    pool.sort((a, b) => String(a.timestamp ?? "").localeCompare(String(b.timestamp ?? "")));
 
     // Truncate from oldest until within budget
     let total = pool.reduce((sum, p) => sum + p.tokens, 0);
@@ -1254,11 +1254,11 @@ export function prepareGroupShortTermContext(
         }
     }
 
-    const timeline = [...timelineByKey.values()].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    const timeline = [...timelineByKey.values()].sort((a, b) => String(a.timestamp ?? "").localeCompare(String(b.timestamp ?? "")));
     const activationPool = [
         ...timeline.map(entry => ({ timestamp: entry.timestamp, content: entry.content })),
         ...history.filter(msg => msg.mediaType !== "tool_notice").map(msg => ({ timestamp: msg.createdAt, content: msg.content })),
-    ].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    ].sort((a, b) => String(a.timestamp ?? "").localeCompare(String(b.timestamp ?? "")));
     const wbActivationContext = activationPool.slice(-10).map(item => item.content).join("\n");
 
     const budget = memConfig.shortTermTokenBudget;
@@ -1382,7 +1382,7 @@ export function prepareGroupShortTermContext(
         });
     }
 
-    pool.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    pool.sort((a, b) => String(a.timestamp ?? "").localeCompare(String(b.timestamp ?? "")));
 
     let total = pool.reduce((sum, item) => sum + item.tokens, 0);
     let startIdx = 0;
