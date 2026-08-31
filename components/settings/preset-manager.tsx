@@ -609,6 +609,28 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
         await downloadFile(blob, `${preset.name || "preset"}-entries.json`);
     }, [presets, editingId, selectedIds]);
 
+    const bulkDuplicateSelected = useCallback(() => {
+        const preset = presets.find(p => p.id === editingId);
+        if (!preset || selectedIds.size === 0) return;
+        const displayed = buildDisplayedPrompts(preset);
+        const newPrompts: Prompt[] = [];
+        for (const prompt of displayed) {
+            newPrompts.push(prompt);
+            if (selectedIds.has(prompt.identifier)) {
+                const copy: Prompt = {
+                    ...prompt,
+                    identifier: `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                    name: `${prompt.name || "提示词"}（副本）`,
+                };
+                newPrompts.push(copy);
+            }
+        }
+        const newOrder = newPrompts.map(p => ({ identifier: p.identifier, enabled: p.enabled }));
+        updatePreset(preset.id, { prompts: newPrompts, prompt_order: newOrder });
+        setSelectedIds(new Set());
+        setSelectMode(false);
+    }, [presets, editingId, selectedIds]);
+
     const deleteSelectedPrompts = useCallback(() => {
         const preset = presets.find(p => p.id === editingId);
         if (!preset || selectedIds.size === 0) return;
@@ -1210,6 +1232,10 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                 <button type="button" className="msfb-btn" onClick={() => bulkExportSelected()} disabled={selectedIds.size === 0}>
                                                     <Download size={15} strokeWidth={1.8} />
                                                     <span>导出</span>
+                                                </button>
+                                                <button type="button" className="msfb-btn" onClick={() => bulkDuplicateSelected()} disabled={selectedIds.size === 0}>
+                                                    <Copy size={15} strokeWidth={1.8} />
+                                                    <span>复制</span>
                                                 </button>
                                                 <button type="button" className="msfb-btn msfb-danger" onClick={() => setConfirmDeleteSelected(true)} disabled={selectedIds.size === 0}>
                                                     <Trash2 size={15} strokeWidth={1.8} />
