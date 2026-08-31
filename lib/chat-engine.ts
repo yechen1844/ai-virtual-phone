@@ -1968,9 +1968,20 @@ export async function buildChatPromptMessages(
         }).catch(() => null);
         if (bundle) {
             coreMemories = bundle.coreMemory;
-            longTermMemories = [bundle.fixedEvents, bundle.yesterdayDaily, bundle.specialDateDailies, bundle.activePeriods, bundle.recalled]
-                .filter(Boolean)
-                .join("\n\n");
+            // 长期记忆单条目内做两个分区，让 char 明确区分"最近发生的事"与"回忆(自然回想)"：
+            // 固定注入(最新事件/昨天日记/特殊日期/活跃周期) = 最近真实发生、贴近当下；
+            // 向量召回 = 靠语义想起来的往事，自然回想、不强制要用，别当成现状。
+            const recentLines = [
+                bundle.fixedEvents,
+                bundle.yesterdayDaily,
+                bundle.specialDateDailies,
+                bundle.activePeriods,
+            ].filter(Boolean).join("\n");
+            const recallLines = bundle.recalled;
+            const memoryParts: string[] = [];
+            if (recentLines) memoryParts.push(`【最近发生的事】\n${recentLines}`);
+            if (recallLines) memoryParts.push(`【回忆 · 自然回想（不一定真的用得上）】\n${recallLines}`);
+            longTermMemories = memoryParts.join("\n\n");
         }
     } else {
         const [memResults, coreResults] = await Promise.all([
