@@ -10,7 +10,7 @@
 //    但短期上下文（shortTermMemory）仍会带该 char 的近期时间线（用户明确希望共享短期记忆）。
 // 4. 云端中转：从 Cloudflare Worker 拉取游戏消息 → 写入星露谷会话 → char 回复 → 推回云端。
 
-import { loadChatSessions, saveChatSessions, pushChatMessage, loadChatMessages } from "./chat-storage";
+import { loadChatSessions, saveChatSessions, pushChatMessage, loadChatMessages, createOrGetSession, reassignChatSessionMessages, deleteChatSession } from "./chat-storage";
 import { generateChatCompletion, flattenCompletionResult } from "./chat-engine";
 import { loadCharacters } from "./character-storage";
 import { kvGet, kvSet } from "./kv-db";
@@ -237,36 +237,19 @@ function isStardewSession(s: { id?: string }): boolean {
 }
 
 export function getOrCreateStardewSession(characterId: string) {
-  let sessions = loadChatSessions();
-  // 清理此前 bug 造出的「contactId=角色id」的星露谷会话：它们与主聊天撞车导致主聊天/角色消失。
-  // 把这类 sess_stardew_* 会话的 contactId 修正为 stardew:角色id，既保留消息又消除撞车。
-  const needsClean = sessions.some((s) => s && typeof s.id === "string" && s.id.startsWith(STARDEW_SESSION_PREFIX) && typeof s.contactId === "string" && !s.contactId.startsWith("stardew:"));
-  if (needsClean) {
-    sessions = sessions.map((s) =>
-      s && typeof s.id === "string" && s.id.startsWith(STARDEW_SESSION_PREFIX) && typeof s.contactId === "string" && !s.contactId.startsWith("stardew:")
-        ? { ...s, contactId: `stardew:${s.contactId}` }
-        : s
-    );
-    saveChatSessions(sessions);
+  // 星露谷直接复用角色的主聊天会话：同一个会话，主聊天 ↔ 星露谷互相可见，不再新建独立星露谷会话。
+  const main = createOrGetSession(characterId);
+  // 清理此前 bug 造出的独立 sess_stardew_* 会话：把其消息并入主聊天后删除，避免「两边互不可见/多出假会话」。
+  const orphans = loadChatSessions().filter((s) => isStardewSession(s));
+  if (orphans.length > 0) {
+    for (const o of orphans) {
+      if (o.id !== main.id) {
+        reassignChatSessionMessages(o.id, main.id);
+        deleteChatSession(o.id);
+      }
+    }
   }
-  // 星露谷会话用独立 contactId（stardew:角色id），与主聊天隔离，避免按 contactId 去重时和主聊天撞车
-  // （撞车会导致主聊天/会话列表错乱、角色消失）。真实角色身份在 buildChatPromptMessages 解析时剥前缀取得。
-  const stardewContactId = `stardew:${characterId}`;
-  const existing = sessions.find((s) => s.contactId === stardewContactId && isStardewSession(s));
-  if (existing) return existing;
-
-  const newSession: any = {
-    id: `${STARDEW_SESSION_PREFIX}${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-    contactId: stardewContactId,
-    unreadCount: 0,
-    updatedAt: new Date().toISOString(),
-    isPinned: false,
-    bilingualTranslationEnabled: true,
-    collapseBilingualTranslation: true,
-    visionImagePromptLimit: 1,
-  };
-  saveChatSessions([newSession, ...sessions]);
-  return newSession;
+  return main;
 }
 
 // ── 云端中转 ──
