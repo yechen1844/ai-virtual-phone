@@ -210,6 +210,14 @@ html[data-glass-busy="1"] .settings-panel {
   background-color: #F1F2F6 !important;
 }
 
+/* 会话内累积对抗：聊天消息气泡跳过屏外绘制（content-visibility: auto），
+   使页面实际绘制量不随消息累积而上涨 → 消除「聊得越久、气泡越多、键盘开合越黑/越卡」。
+   auto 用实际尺寸占位，避免滚动跳动。 */
+.chat-room-main-pane [class*="chat-bubble-role-"] {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 48px;
+}
+
 .phone-shell[data-widget-effect="transparent"] .widget-glass > div:not(.wg-ios-menu) {
   /* background: transparent !important; */
   box-shadow: none !important;
