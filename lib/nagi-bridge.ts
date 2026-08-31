@@ -237,15 +237,27 @@ function isStardewSession(s: { id?: string }): boolean {
 }
 
 export function getOrCreateStardewSession(characterId: string) {
-  const sessions = loadChatSessions();
-  // 星露谷会话用角色的真实 contactId（同主聊天），不做假 charId，这样会话列表/提示词查看器看到的是真实角色；
-  // 但会话 id 仍用 sess_stardew_ 前缀，让消息流与主聊天分开（详见文件头设计注释）。
-  const existing = sessions.find((s) => s.contactId === characterId && isStardewSession(s));
+  let sessions = loadChatSessions();
+  // 清理此前 bug 造出的「contactId=角色id」的星露谷会话：它们与主聊天撞车导致主聊天/角色消失。
+  // 把这类 sess_stardew_* 会话的 contactId 修正为 stardew:角色id，既保留消息又消除撞车。
+  const needsClean = sessions.some((s) => s && typeof s.id === "string" && s.id.startsWith(STARDEW_SESSION_PREFIX) && typeof s.contactId === "string" && !s.contactId.startsWith("stardew:"));
+  if (needsClean) {
+    sessions = sessions.map((s) =>
+      s && typeof s.id === "string" && s.id.startsWith(STARDEW_SESSION_PREFIX) && typeof s.contactId === "string" && !s.contactId.startsWith("stardew:")
+        ? { ...s, contactId: `stardew:${s.contactId}` }
+        : s
+    );
+    saveChatSessions(sessions);
+  }
+  // 星露谷会话用独立 contactId（stardew:角色id），与主聊天隔离，避免按 contactId 去重时和主聊天撞车
+  // （撞车会导致主聊天/会话列表错乱、角色消失）。真实角色身份在 buildChatPromptMessages 解析时剥前缀取得。
+  const stardewContactId = `stardew:${characterId}`;
+  const existing = sessions.find((s) => s.contactId === stardewContactId && isStardewSession(s));
   if (existing) return existing;
 
   const newSession: any = {
     id: `${STARDEW_SESSION_PREFIX}${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-    contactId: characterId,
+    contactId: stardewContactId,
     unreadCount: 0,
     updatedAt: new Date().toISOString(),
     isPinned: false,

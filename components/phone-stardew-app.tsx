@@ -19,7 +19,6 @@ import {
   stopThinkProcessor,
   isStardewGenerating,
   getStardewReasoning,
-  stardewFrontendSay,
   stardewReplyLatestPending,
 } from "@/lib/nagi-bridge";
 import { loadChatMessages, pushChatMessage, type ChatMessage, type ChatSession } from "@/lib/chat-storage";
@@ -325,25 +324,22 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
         setMessages(all.slice(-visibleCountRef.current));
     }, []);
 
-    // 发送 = 发进游戏 + 让 char 基于这句话直接回复（float 星露谷 app 里就能跟 char 聊）
+    // 发送 = 只是发消息（发进游戏 + 写入本地会话），不触发 char 回复；回复必须手动点「回复」按钮
     const handleSend = useCallback(async () => {
         const text = inputValue.trim();
         if (!text || isThinking || replying || !sessionRef.current || !charId) return;
         setInputValue("");
-        setReplying(true);
-        setIsThinking(true);
         try {
             // 发进星露谷游戏（玩家在游戏聊天框里能看到）
             await sendGameMessageViaCloud(text, "玩家");
-            // 同时让 char 直接回复（写入会话 + 生成回复 + 推回游戏）
-            const reply = await stardewFrontendSay(charId, text);
-            if (!reply) onNotice?.("char 没有回复");
+            // 写入本地星露谷会话，让 app 里能看到这条消息；不生成回复
+            const session = getOrCreateStardewSession(charId);
+            sessionRef.current = session;
+            pushChatMessage({ sessionId: session.id, role: "user", content: text, status: "sent" });
         } catch (e) {
             console.warn("[StardewChat] 发送失败:", e);
             onNotice?.("发送失败，请重试");
         } finally {
-            setReplying(false);
-            setIsThinking(isStardewGenerating());
             refreshFromStorage();
             scrollToBottom();
         }

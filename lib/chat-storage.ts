@@ -467,7 +467,8 @@ export function compareChatMessages(a: ChatMessage, b: ChatMessage): number {
 
     if (aOrder !== null && bOrder === null) return -1;
     if (aOrder === null && bOrder !== null) return 1;
-    return a.id.localeCompare(b.id);
+    // 防御：id 可能缺失（历史脏数据/会话被合并），避免 localeCompare 在 undefined 上崩溃
+    return String(a.id ?? "").localeCompare(String(b.id ?? ""));
 }
 
 function getSortedSessionMessages(sessionId: string): ChatMessage[] {
