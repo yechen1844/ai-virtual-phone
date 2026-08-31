@@ -331,7 +331,7 @@ export async function ingestNagiGameMessage(characterId: string, msg: NagiEntry)
     status: "sent",
   });
 
-  const history = loadChatMessages(session.id).slice(-STARDEW_HISTORY_LIMIT);
+  const history = loadChatMessages(session.id, STARDEW_HISTORY_LIMIT);
   const replyText = await generateStardewReply(session, history);
   if (!replyText) return null;
 
@@ -455,7 +455,7 @@ export async function stardewFrontendSay(characterId: string, text: string): Pro
   const session = getOrCreateStardewSession(characterId);
   markStardewActivity(); // 玩家有互动，取消自主
   pushChatMessage({ sessionId: session.id, role: "user", content: text, status: "sent" });
-  const history = loadChatMessages(session.id).slice(-STARDEW_HISTORY_LIMIT);
+  const history = loadChatMessages(session.id, STARDEW_HISTORY_LIMIT);
   const replyText = await generateStardewReply(session, history);
   if (!replyText) return null;
   pushChatMessage({ sessionId: session.id, role: "assistant", content: replyText, status: "sent" });
