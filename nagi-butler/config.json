@@ -1,5 +1,6 @@
 {
   "nagibridgeUrl": "http://localhost:7843",
+  "replyPushUrl": "http://localhost:7842",
   "charName": "Nagi",
   "outboxFile": "outbox.jsonl",
   "channelServer": {

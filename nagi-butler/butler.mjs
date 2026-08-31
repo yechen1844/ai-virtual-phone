@@ -18,6 +18,9 @@ try {
 }
 
 const nagiUrl = String(cfg.nagibridgeUrl || 'http://localhost:7842').replace(/\/+$/, '');
+// 回复推送目标：把 char 的发言/回复额外推到「第二个」星露谷实例（用户主机，通常 :7842）。
+// 留空则只推 nagiUrl。工具动作(/nb/*,/script)仍只走 nagiUrl，只有 chat/push 回复走双推。
+const replyPushUrl = String(cfg.replyPushUrl || '').replace(/\/+$/, '');
 const charName = String(cfg.charName || 'Nagi');
 const outboxName = String(cfg.outboxFile || 'outbox.jsonl');
 const outboxPath = resolve(dirname(configPath), outboxName);
@@ -72,18 +75,26 @@ async function uploadToCloud(entry) {
 }
 
 async function pushToGame(text, sender) {
-  const res = await fetch(`${nagiUrl}/chat/push`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ sender, message: text }),
-    signal: AbortSignal.timeout(8000),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  try {
-    return await res.json();
-  } catch {
-    return {};
+  // 双推：char 的回复/发言同时送进主控实例(nagiUrl)与用户主机(replyPushUrl)，避免串号只出现在一边。
+  const targets = [nagiUrl, replyPushUrl].filter((u, i, arr) => u && arr.indexOf(u) === i);
+  const results = [];
+  let lastErr;
+  for (const target of targets) {
+    try {
+      const res = await fetch(`${target}/chat/push`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sender, message: text }),
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      results.push(await res.json().catch(() => ({})));
+    } catch (e) {
+      lastErr = e;
+    }
   }
+  if (results.length === 0) throw lastErr || new Error('push failed');
+  return results[0];
 }
 
 async function pollCloudReplies() {
