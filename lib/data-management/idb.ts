@@ -344,8 +344,12 @@ async function readKvRecords(source: KvSource): Promise<{ records: { key: string
   const byKey = new Map<string, { key: string; value: string }>();
   let readError: string | undefined;
   const db = await openDb("AiPhoneKvDB");
-  if (db && Array.from(db.objectStoreNames).includes("entries")) {
-    try {
+  if (!db) {
+    throw new Error("本机数据库（AiPhoneKvDB）打不开，为避免生成不完整的备份已中止。请重启浏览器后重试。");
+  }
+  try {
+    // 库刚建、还没有 entries 表 = 这台设备确实没写过 KV 数据，不算读取失败
+    if (Array.from(db.objectStoreNames).includes("entries")) {
       const transaction = db.transaction("entries", "readonly");
       const request = transaction.objectStore("entries").openCursor();
       await new Promise<void>((resolve, reject) => {
@@ -360,14 +364,19 @@ async function readKvRecords(source: KvSource): Promise<{ records: { key: string
         transaction.onerror = () => reject(transaction.error);
         transaction.onabort = () => reject(transaction.error);
       });
-    } catch (e) {
+} catch (e) {
       // 不再静默——标记读取失败，回退到内存缓存但告知调用方可能缺数据
       readError = `KV 读取失败（${e instanceof Error ? e.message : String(e)}），已回退到内存缓存，备份数据可能不完整`;
     } finally {
       db.close();
     }
+  } catch (error) {
+    throw new Error(`本机数据读取失败，为避免生成不完整的备份已中止（${error instanceof Error ? error.message : String(error)}）。请重试。`);
+  } finally {
+    db.close();
   }
 
+  // 内存缓存仍然要并进来：kvSet 是先写缓存再异步落盘，缓存可能比 IndexedDB 新
   for (const record of kvEntries()) {
     if (matchesKey(record.key, source)) byKey.set(record.key, record);
   }
