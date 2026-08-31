@@ -143,7 +143,7 @@ TOOLS = [
     },
     {
         "name": "run_script",
-        "description": "Run a farming automation script. Available: farm_row, water_crops, harvest, mine_run, chop_trees, clear_area, pet_animals, keg_manager, furnace_manager",
+        "description": "Run a farming automation script. Available: farm_row, water_crops, harvest, mine_run, chop_trees, clear_area, pet_animals, keg_manager, furnace_manager, combat_run",
         "parameters": {
             "type": "object",
             "properties": {
