@@ -167,12 +167,15 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
     const [selectMode, setSelectMode] = useState(false);
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [confirmDeleteSelected, setConfirmDeleteSelected] = useState(false);
+    const [bulkTagOpen, setBulkTagOpen] = useState(false); // 批量「设范围（tag）」选择面板
 
     // ── 按 App 筛选（高亮/仅显示/仅折叠/同类折叠） ──
     const [appFilterOpen, setAppFilterOpen] = useState(false);
     const [appFilterMode, setAppFilterMode] = useState<"highlight" | "only-show" | "collapse" | "group-collapse">("highlight");
     const [appFilterTags, setAppFilterTags] = useState<Set<string>>(new Set()); // 选中的大类 tag 集合（可多选）
     const [expandedCollapseGroups, setExpandedCollapseGroups] = useState<Set<string>>(new Set()); // 已展开的折叠组 key
+    const [draggedPromptIndex, setDraggedPromptIndex] = useState<number | null>(null); // 电脑端 HTML5 拖拽源 index
+    const [dragOverIndex, setDragOverIndex] = useState<number | null>(null); // 电脑端拖拽悬停目标 index
 
     const toggleFilterTag = useCallback((tag: string) => {
         setAppFilterTags(prev => {
@@ -629,6 +632,17 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
         updatePreset(preset.id, { prompts: newPrompts, prompt_order: newOrder });
         setSelectedIds(new Set());
         setSelectMode(false);
+    }, [presets, editingId, selectedIds]);
+
+    // 批量把选中条目的「起效范围 tag」统一覆盖为单个 tag（单选覆盖模式）
+    const bulkSetTag = useCallback((tags: string[]) => {
+        const preset = presets.find(p => p.id === editingId);
+        if (!preset || selectedIds.size === 0) return;
+        const newPrompts = preset.prompts.map(p =>
+            selectedIds.has(p.identifier) ? { ...p, ...setPromptTags(tags) } : p,
+        );
+        updatePreset(preset.id, { prompts: newPrompts });
+        setBulkTagOpen(false);
     }, [presets, editingId, selectedIds]);
 
     const deleteSelectedPrompts = useCallback(() => {
@@ -1237,6 +1251,10 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                     <Copy size={15} strokeWidth={1.8} />
                                                     <span>复制</span>
                                                 </button>
+                                                <button type="button" className="msfb-btn" onClick={() => setBulkTagOpen(true)} disabled={selectedIds.size === 0}>
+                                                    <Filter size={15} strokeWidth={1.8} />
+                                                    <span>设范围</span>
+                                                </button>
                                                 <button type="button" className="msfb-btn msfb-danger" onClick={() => setConfirmDeleteSelected(true)} disabled={selectedIds.size === 0}>
                                                     <Trash2 size={15} strokeWidth={1.8} />
                                                     <span>删除</span>
@@ -1255,6 +1273,8 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                         onTouchMove={onPromptTouchMove}
                                         onTouchEnd={onPromptTouchEnd}
                                         onTouchCancel={onPromptTouchEnd}
+                                        onDragOver={(e) => { if (draggedPromptIndex != null) e.preventDefault(); }}
+                                        onDrop={(e) => { e.preventDefault(); setDraggedPromptIndex(null); setDragOverIndex(null); }}
                                     >
                                         {(() => {
                                             // 按 prompt_order + 孤儿构建唯一列表（identifier 去重，避免重复条目/索引错位/拖错条目）
@@ -1493,15 +1513,44 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                     data-active={isEditing}
                                                     data-selected={selectMode && selectedIds.has(prompt.identifier) ? "true" : undefined}
                                                     data-disabled={!effectiveEnabled}
+                                                    data-drag-over={dragOverIndex === index ? "true" : undefined}
                                                     data-app-match={(() => {
                                                         if (appFilterTags.size === 0) return undefined;
                                                         if (appFilterMode === "only-show") return undefined;
                                                         return matchesSelectedAppTags(prompt, appFilterTags) ? "1" : "0";
                                                     })()}
+                                                    draggable={!isEditing}
+                                                    onDragStart={(e) => {
+                                                        if (isEditing) { e.preventDefault(); return; }
+                                                        setDraggedPromptIndex(index);
+                                                        setDragOverIndex(null);
+                                                        swipe.close();
+                                                        e.dataTransfer.effectAllowed = "move";
+                                                        try { e.dataTransfer.setData("text/plain", String(index)); } catch { /* ignore */ }
+                                                    }}
+                                                    onDragOver={(e) => {
+                                                        if (draggedPromptIndex == null || draggedPromptIndex === index) return;
+                                                        e.preventDefault();
+                                                        e.dataTransfer.dropEffect = "move";
+                                                        setDragOverIndex(index);
+                                                    }}
+                                                    onDragLeave={() => setDragOverIndex((cur) => (cur === index ? null : cur))}
+                                                    onDrop={(e) => {
+                                                        e.preventDefault();
+                                                        if (draggedPromptIndex != null && draggedPromptIndex !== index) {
+                                                            handlePromptReorder(draggedPromptIndex, index);
+                                                        }
+                                                        setDraggedPromptIndex(null);
+                                                        setDragOverIndex(null);
+                                                    }}
+                                                    onDragEnd={() => { setDraggedPromptIndex(null); setDragOverIndex(null); }}
                                                     style={{
                                                         gap: isEditing ? "12px" : "0px",
                                                         userSelect: isEditing ? undefined : "none",
                                                         WebkitUserSelect: isEditing ? undefined : "none",
+                                                        ...(dragOverIndex === index
+                                                            ? { boxShadow: "inset 0 0 0 2px var(--c-icon-active)" }
+                                                            : {}),
                                                     }}
                                                 >
                                                     {/* Summary Row */}
@@ -2040,6 +2089,42 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                     清除筛选
                                 </button>
                             )}
+                        </div>
+                    </BottomSheet>
+                );
+            })()}
+
+            {bulkTagOpen && editingId && (() => {
+                return (
+                    <BottomSheet title={`批量设置起效范围（已选 ${selectedIds.size} 项）`} onClose={() => setBulkTagOpen(false)}>
+                        <div className="flex flex-col gap-4">
+                            <div className="menu-desc ts-12">
+                                将选中的条目「起效范围」统一覆盖为下面选定的单项范围（覆盖原 tag，不合并）。
+                            </div>
+                            {tagGroups.map(group => (
+                                <div key={group.id}>
+                                    <div className="menu-label ts-12 mb-2">{group.label}</div>
+                                    <div className="flex flex-wrap gap-2">
+                                        {group.minors.map(minor => (
+                                            <button
+                                                key={minor.id}
+                                                type="button"
+                                                onClick={() => bulkSetTag(minor.tags)}
+                                                className={`inline-flex items-center justify-center gap-1 rounded-full border px-3 py-1.5 text-xs font-bold transition-all active:scale-95 ${minor.tags.length === 0 ? "border-black/10 bg-white text-gray-800 hover:bg-gray-50" : "border-[var(--c-icon-active)] bg-[var(--c-icon-active)] text-white"}`}
+                                            >
+                                                {minor.label}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            ))}
+                            <button
+                                type="button"
+                                onClick={() => bulkSetTag([])}
+                                className="ui-btn w-full"
+                            >
+                                通用（不限范围 / 清除 tag）
+                            </button>
                         </div>
                     </BottomSheet>
                 );
