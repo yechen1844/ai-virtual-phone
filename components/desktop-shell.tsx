@@ -3470,47 +3470,88 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
   }
 
   // 移动端键盘开合：整屏毛玻璃 blur 层会随 visualViewport 变化整层重组装 → 黑屏。
-  // 复用 suspendGlass 机制：键盘动画期间临时关 blur（静态雾面顶住），定时后恢复，
-  // 行为与桌面拖动一致，只解决黑屏/卡顿，不影响外观。
+  // 诊断数据证明：固定 900ms 会在键盘动画未结束时提前恢复 blur（页面有上百个 backdrop-filter），
+  // 重开 blur 瞬间再重采样 → 黑屏。改为：键盘「覆盖期间」持续保持 data-glass-busy（blur 全关），
+  // 只在键盘**完全收起**后再延迟 ~300ms 恢复，期间 blur 恒为 0，杜绝中途重开 blur。
   useEffect(() => {
     if (typeof window === "undefined") return;
     // 放宽判断：仅按窄屏视口，不强制 hover/pointer（部分 webview 报 pointer 不同导致失配→suspendGlass 完全不触发→黑屏依旧）。
     const mobileMq = window.matchMedia("(max-width: 600px)");
     const viewport = window.visualViewport;
     const shell = shellRef.current;
-    let lastInset = -1;
+    const KEYBOARD_THRESHOLD = 150;
+    let covering = false;
+    let settleTimer = 0;
     let scheduled = 0;
-    // 输入框聚焦即提前挂起：键盘即将弹出，视觉焦点还停留在输入框，先关 blur 顶住黑帧，避免
-    // 首个 resize 事件到来前那一帧黑屏（展开方向）。
+
+    const setBusy = (v: boolean) => {
+      const anon = shellRef.current;
+      if (anon) {
+        if (v) anon.setAttribute("data-glass-busy", "1");
+        else anon.removeAttribute("data-glass-busy");
+      }
+      if (v) document.documentElement.setAttribute("data-glass-busy", "1");
+      else document.documentElement.removeAttribute("data-glass-busy");
+    };
+
+    // 键盘是否覆盖内容：visualViewport 被压缩够多（含 iOS offsetTop 位移）。
+    const isCovering = (): boolean => {
+      if (!viewport) return false;
+      if (viewport.offsetTop !== 0) return true;
+      return window.innerHeight - viewport.height - viewport.offsetTop > KEYBOARD_THRESHOLD;
+    };
+
+    const onCovering = () => {
+      if (!covering) {
+        covering = true;
+        setBusy(true);
+      }
+      if (settleTimer) {
+        window.clearTimeout(settleTimer);
+        settleTimer = 0;
+      }
+    };
+
+    const onReleased = () => {
+      if (!covering) return;
+      covering = false;
+      // 键盘收起动画做完后再放开 blur，避免收起途中重开 blur → 二次重合成黑屏。
+      if (settleTimer) window.clearTimeout(settleTimer);
+      settleTimer = window.setTimeout(() => {
+        settleTimer = 0;
+        setBusy(false);
+      }, 300);
+    };
+
+    // 输入框聚焦即提前判定覆盖：键盘即将弹出，先关 blur 顶住黑帧，避免首个 resize 事件到来前那一帧黑屏。
     const onFocusIn = (e: FocusEvent) => {
       if (!mobileMq.matches) return;
       const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) {
-        suspendGlass(900);
-      }
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) onCovering();
     };
+
     const onViewport = () => {
       if (!viewport) return;
       if (scheduled) window.cancelAnimationFrame(scheduled);
       scheduled = window.requestAnimationFrame(() => {
         scheduled = 0;
         if (!mobileMq.matches) return;
-        const inset = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
-        if (viewport.offsetTop !== lastInset || Math.abs(inset - lastInset) > 4) {
-          lastInset = viewport.offsetTop;
-          // 键盘动画全程（约900ms）关闭 blur，避免 370ms 恢复瞬间二次重合成闪黑
-          suspendGlass(900);
-        }
+        if (isCovering()) onCovering();
+        else onReleased();
       });
     };
+
     viewport?.addEventListener("resize", onViewport);
     viewport?.addEventListener("scroll", onViewport);
     shell?.addEventListener("focusin", onFocusIn);
+    onViewport();
     return () => {
       if (scheduled) window.cancelAnimationFrame(scheduled);
+      if (settleTimer) window.clearTimeout(settleTimer);
       viewport?.removeEventListener("resize", onViewport);
       viewport?.removeEventListener("scroll", onViewport);
       shell?.removeEventListener("focusin", onFocusIn);
+      setBusy(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
