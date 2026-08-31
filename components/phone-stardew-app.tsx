@@ -5,6 +5,7 @@ import { Sprout, Loader2, Play, Square, RefreshCw, MessageSquare, Send } from "l
 import { PageShell } from "./ui/page-shell";
 import { kvGet, kvSet } from "@/lib/kv-db";
 import { BilingualTextBlock } from "./chat/message-bubble";
+import { StateValuesPanel } from "./chat/state-values-panel";
 import { shouldSendChatInputOnEnter } from "@/lib/chat-input-keyboard";
 import { useChatBottomReserve } from "./chat/use-chat-bottom-reserve";
 import {
@@ -415,6 +416,7 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
                     }
                     const isUser = msg.role === "user";
                     const paragraphs = isUser ? [msg.content] : splitOfflineParagraphs(msg.content);
+                    const cardStateValues = msg.freshStateValues ?? msg.stateValues;
                     return (
                         <div className="chat-msg-wrapper" data-role={isUser ? "user" : "assistant"} key={msg.id}>
                             <div className={`chat-msg-content-wrap ${isUser ? "ml-auto" : ""}`} style={{ maxWidth: "72%" }}>
@@ -426,6 +428,25 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
                                         <BilingualTextBlock text={p} mode="plain" defaultExpanded />
                                     </div>
                                 ))}
+                                {!isUser && msg.statusPanel && (
+                                    <div className="chat-status-bare" style={{ alignSelf: "flex-start" }}>
+                                        <BilingualTextBlock text={msg.statusPanel} mode="markdown" defaultExpanded />
+                                    </div>
+                                )}
+                                {!isUser && msg.innerMonologue && (
+                                    <div className="chat-thought-card">
+                                        <div className="chat-thought-tape-left" />
+                                        <div className="chat-thought-tape-right" />
+                                        <div className="chat-thought-title">💭 内心独白</div>
+                                        {cardStateValues && cardStateValues.length > 0 && (
+                                            <StateValuesPanel stateValues={cardStateValues} />
+                                        )}
+                                        <div className="chat-thought-body">
+                                            <BilingualTextBlock text={msg.innerMonologue} mode="markdown" defaultExpanded />
+                                        </div>
+                                        <div className="chat-thought-sig">— {charName || "TA"}</div>
+                                    </div>
+                                )}
                             </div>
                         </div>
                     );

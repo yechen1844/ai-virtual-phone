@@ -13,6 +13,7 @@
 import { loadChatSessions, saveChatSessions, pushChatMessage, loadChatMessages, createOrGetSession, reassignChatSessionMessages, deleteChatSession, DEFAULT_VISION_IMAGE_PROMPT_LIMIT, type ChatSession } from "./chat-storage";
 import { recordStardewMessage } from "./stardew-memory";
 import { generateChatCompletion, flattenCompletionResult } from "./chat-engine";
+import { parseAIResponse } from "./rich-message-parser";
 import { loadCharacters } from "./character-storage";
 import { kvGet, kvSet } from "./kv-db";
 import {
@@ -106,8 +107,9 @@ async function fireStardewAutonomy(characterId: string, session: any): Promise<v
     if ((cr as any)?.reasoning) stardewReasoning = (cr as any).reasoning;
     const text = flattenCompletionResult(cr);
     if (text) {
-      pushChatMessage({ sessionId: session.id, role: "assistant", content: text, status: "sent" });
-      await pushReply(characterId, text);
+      const parsedReply = parseStardewReplyForStorage(text);
+      pushChatMessage({ sessionId: session.id, role: "assistant", content: parsedReply.content, statusPanel: parsedReply.statusPanel, innerMonologue: parsedReply.innerMonologue, status: "sent" });
+      await pushReply(characterId, parsedReply.content);
     }
   } catch (e) {
     console.warn("[NagiBridge] 自主行动失败:", e);
@@ -338,17 +340,20 @@ export async function ingestNagiGameMessage(characterId: string, msg: NagiEntry)
   const replyText = await generateStardewReply(session, history);
   if (!replyText) return null;
 
+  const parsedReply = parseStardewReplyForStorage(replyText);
   pushChatMessage({
     sessionId: session.id,
     role: "assistant",
-    content: replyText,
+    content: parsedReply.content,
+    statusPanel: parsedReply.statusPanel,
+    innerMonologue: parsedReply.innerMonologue,
     status: "sent",
   });
-  recordStardewMessage(characterId, { role: "assistant", content: replyText });
+  recordStardewMessage(characterId, { role: "assistant", content: parsedReply.content });
 
-  await pushReply(characterId, replyText);
+  await pushReply(characterId, parsedReply.content);
   armStardewAutonomy(characterId, session); // 完成后排 1 分钟自主
-  return replyText;
+  return parsedReply.content;
 }
 
 /** 读取农工当前状态（位置/时间/金钱/体力/背包/周围），拼成一段文本。 */
@@ -453,6 +458,19 @@ async function generateStardewReply(session: any, history: any[]): Promise<strin
   }
 }
 
+// 把 char 回复文本解析成「纯可见正文 + 状态栏 + 内心独白」，与主聊天一致：
+// 剥离 [状态栏]...[/状态栏] 与 [内心]...[/内心]（否则星露谷看到原始标签、渲染出错），
+// 正文按空行保留多气泡结构，供星露谷聊天页渲染成多个气泡 + 心声卡片。
+function parseStardewReplyForStorage(reply: string): { content: string; statusPanel?: string; innerMonologue?: string } {
+    const parsed = parseAIResponse(reply, []);
+    const content = parsed.parts.map(p => p.content).filter(Boolean).join("\n\n");
+    return {
+        content: content || reply,
+        statusPanel: parsed.statusPanel || undefined,
+        innerMonologue: parsed.innerMonologue || undefined,
+    };
+}
+
 /** float 星露谷 app 里用户直接对 char 说话：写入会话 → char 生成回复 → 推回游戏。 */
 export async function stardewFrontendSay(characterId: string, text: string): Promise<string | null> {
   if (typeof window === "undefined") return null;
@@ -464,11 +482,12 @@ export async function stardewFrontendSay(characterId: string, text: string): Pro
   const history = loadChatMessages(session.id, STARDEW_HISTORY_LIMIT);
   const replyText = await generateStardewReply(session, history);
   if (!replyText) return null;
-  pushChatMessage({ sessionId: session.id, role: "assistant", content: replyText, status: "sent" });
-  recordStardewMessage(characterId, { role: "assistant", content: replyText });
-  await pushReply(characterId, replyText);
+  const parsedReply = parseStardewReplyForStorage(replyText);
+  pushChatMessage({ sessionId: session.id, role: "assistant", content: parsedReply.content, statusPanel: parsedReply.statusPanel, innerMonologue: parsedReply.innerMonologue, status: "sent" });
+  recordStardewMessage(characterId, { role: "assistant", content: parsedReply.content });
+  await pushReply(characterId, parsedReply.content);
   armStardewAutonomy(characterId, session); // 完成后排 1 分钟自主
-  return replyText;
+  return parsedReply.content;
 }
 
 /** 手动触发：队列无新消息时，若会话最后一条是 user 消息且还没有 assistant 回复，则强制 char 补一条回复。 */
@@ -482,11 +501,12 @@ export async function stardewReplyLatestPending(characterId: string): Promise<st
   if (last.role === "assistant") return null; // 已有回复，无需重复
   const replyText = await generateStardewReply(session, history);
   if (!replyText) return null;
-  pushChatMessage({ sessionId: session.id, role: "assistant", content: replyText, status: "sent" });
-  recordStardewMessage(characterId, { role: "assistant", content: replyText });
-  await pushReply(characterId, replyText);
+  const parsedReply = parseStardewReplyForStorage(replyText);
+  pushChatMessage({ sessionId: session.id, role: "assistant", content: parsedReply.content, statusPanel: parsedReply.statusPanel, innerMonologue: parsedReply.innerMonologue, status: "sent" });
+  recordStardewMessage(characterId, { role: "assistant", content: parsedReply.content });
+  await pushReply(characterId, parsedReply.content);
   armStardewAutonomy(characterId, session);
-  return replyText;
+  return parsedReply.content;
 }
 
 // ── 轮询 ──
