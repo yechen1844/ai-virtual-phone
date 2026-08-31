@@ -38,6 +38,8 @@ const MAX_LOG_MESSAGE_CHARS = 4000;
 const MAX_LOG_MESSAGES_TOTAL_CHARS = 96_000;
 const MAX_LOG_RESPONSE_CHARS = 8000;
 const MAX_LOG_METADATA_CHARS = 200;
+// 最新 N 条调用日志保留完整消息（不省略中间），更早的才做「省略中间」以控制存储体积。
+const LATEST_FULL_LOGS = 6;
 
 const API_LOGS_KEY = "ai_phone_api_logs_v1";
 // 工坊（QA 助手）专用调用记录：与聊天/记忆等底层调用日志彻底隔离，
@@ -107,6 +109,32 @@ function truncateEntryForLog(entry: Omit<DebugInfo, "id" | "timestamp">): Omit<D
     };
 }
 
+/** 保留完整消息（只做单条 4000 字上限，不做「省略中间」）——给最新 N 条日志用。 */
+function fullEntryForLog(entry: Omit<DebugInfo, "id" | "timestamp">): Omit<DebugInfo, "id" | "timestamp"> {
+    return {
+        ...entry,
+        characterName: entry.characterName !== undefined
+            ? truncateForLog(entry.characterName, MAX_LOG_METADATA_CHARS)
+            : undefined,
+        model: entry.model !== undefined ? truncateForLog(entry.model, MAX_LOG_METADATA_CHARS) : undefined,
+        messages: entry.messages.map(message => ({
+            ...message,
+            content: truncateForLog(message.content, MAX_LOG_MESSAGE_CHARS),
+        })),
+        rawResponse: truncateForLog(entry.rawResponse, MAX_LOG_RESPONSE_CHARS),
+        reasoning: entry.reasoning !== undefined ? truncateForLog(entry.reasoning, MAX_LOG_RESPONSE_CHARS) : undefined,
+    };
+}
+
+/** 只让最新 latestFull 条日志保留完整消息，更早的做「省略中间」，控制存储体积。
+ *  入参按 timestamp 升序（最旧→最新），最新在数组末尾。 */
+function enforceLogFullWindow(logs: DebugInfo[], latestFull: number): DebugInfo[] {
+    const fullStart = Math.max(0, logs.length - latestFull);
+    return logs.map((log, index) => (index >= fullStart
+        ? log
+        : { ...log, messages: truncateMessagesForLog(log.messages) }));
+}
+
 function trimLogsForStorage(logs: DebugInfo[], maxCount: number, maxSerializedChars: number): DebugInfo[] {
     const candidates = logs.slice(-maxCount);
     const newestFirst: DebugInfo[] = [];
@@ -142,10 +170,13 @@ export function pushApiLog(entry: Omit<DebugInfo, "id" | "timestamp">): void {
     try {
         const logs = _loadLogs(key);
         logs.push({
-            ...truncateEntryForLog(entry),
+            ...fullEntryForLog(entry),
             id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             timestamp: new Date().toISOString(),
         });
-        _saveLogs(key, trimLogsForStorage(logs, maxCount, maxSerializedChars));
+        // 升序（最旧→最新），最新在末尾；再只让最新 LATEST_FULL_LOGS 条完整、更早省略，控制体积
+        logs.sort((a, b) => String(a.timestamp ?? "").localeCompare(String(b.timestamp ?? "")));
+        const windowed = enforceLogFullWindow(logs, LATEST_FULL_LOGS);
+        _saveLogs(key, trimLogsForStorage(windowed, maxCount, maxSerializedChars));
     } catch { /* 日志写入失败不影响主流程 */ }
 }
