@@ -210,6 +210,23 @@ html[data-glass-busy="1"] .settings-panel {
   background-color: #F1F2F6 !important;
 }
 
+/* 可靠兜底：kb-open 由 KeyboardGlassGuard 直接按「视口被压缩」判定，在键盘覆盖期间精确保持、
+   收起后即移除（无 settle 竞态）。让 kb-open 也能关掉全局 blur/filter => 覆盖期 blur 恒为 0，
+   即使 data-glass-busy 因事件时序偶发提前落地，键盘覆盖期也不会重开上百个 backdrop-filter 导致黑屏。 */
+html.kb-open [style*="backdrop-filter"],
+html.kb-open *,
+html.kb-open *::before,
+html.kb-open *::after {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+  filter: none !important;
+}
+html.kb-open body,
+html.kb-open .app-open-shell,
+html.kb-open .settings-panel {
+  background-color: #F1F2F6 !important;
+}
+
 /* 会话内累积对抗：聊天消息气泡跳过屏外绘制（content-visibility: auto），
    使页面实际绘制量不随消息累积而上涨 → 消除「聊得越久、气泡越多、键盘开合越黑/越卡」。
    auto 用实际尺寸占位，避免滚动跳动。 */
