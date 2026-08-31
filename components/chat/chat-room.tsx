@@ -1,7 +1,7 @@
 "use client";
 
 import { forwardRef, Fragment, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ChatSession, ChatMessage, CHAT_APP_SETTINGS_UPDATED_EVENT, CHAT_INITIAL_VISIBLE_MESSAGE_COUNT, CHAT_LOAD_MORE_MESSAGE_COUNT, CHAT_REQUEST_REPLY_EVENT, loadChatAppSettings, loadChatMessages, loadChatContacts, loadChatSessions, saveChatSessions, pushChatMessage, updateChatMessage, deleteChatMessage, deleteChatMessagesFrom, deleteChatMessagesByIds, retractChatMessage, editChatMessage, updateMessageMediaData, replaceResponseBatchWithParts, replaceGroupResponseRound, isReadingDiscussMessage, isSystemInstructionMessage, createResponseBatchId, createResponseRoundId, getLatestStateValues, getLatestCharacterStateValues, compareChatMessages } from "@/lib/chat-storage";
+import { ChatSession, ChatMessage, CHAT_APP_SETTINGS_UPDATED_EVENT, CHAT_INITIAL_VISIBLE_MESSAGE_COUNT, CHAT_LOAD_MORE_MESSAGE_COUNT, CHAT_REQUEST_REPLY_EVENT, loadChatAppSettings, loadChatMessages, loadChatContacts, loadChatSessions, saveChatSessions, pushChatMessage, updateChatMessage, deleteChatMessage, deleteChatMessagesFrom, deleteChatMessagesAfter, deleteChatMessagesByIds, retractChatMessage, editChatMessage, updateMessageMediaData, replaceResponseBatchWithParts, replaceGroupResponseRound, isReadingDiscussMessage, isSystemInstructionMessage, createResponseBatchId, createResponseRoundId, getLatestStateValues, getLatestCharacterStateValues, compareChatMessages } from "@/lib/chat-storage";
 import { cleanStreamText } from "@/lib/stream-preview";
 import type { StateValue } from "@/lib/chat-storage";
 import { parseStateValues, mergeStateValues } from "@/lib/state-value-parser";
@@ -4835,6 +4835,33 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
         });
     };
 
+    // 回退到某条消息：保留该条及之前，删除严格在其后的所有消息（含工具执行链），纯化错误回复污染的上下文。
+    const handleRollbackToMessage = (msgId: string) => {
+        if (isTransientMessage(msgId)) {
+            setTransientMessages(prev => {
+                const idx = prev.findIndex(m => m.id === msgId);
+                return idx >= 0 ? prev.slice(0, idx + 1) : prev;
+            });
+            setActiveMessageId(null);
+            return;
+        }
+        setActiveMessageId(null);
+        const storedMessages = loadChatMessages(session.id);
+        const targetMsg = storedMessages.find(m => m.id === msgId);
+        if (!targetMsg) return;
+        const targetMessages = storedMessages.filter(m => (
+            m.sessionId === session.id && compareChatMessages(m, targetMsg) > 0
+        ));
+        if (!window.confirm("回退到此消息？将删除该条之后的所有消息，用于清除错误回复。")) return;
+        void deleteWeixinCloudBeforeLocal(targetMessages, () => {
+            deleteChatMessagesAfter(msgId);
+            setMessages(prev => {
+                const idx = prev.findIndex(m => m.id === msgId);
+                return idx >= 0 ? prev.slice(0, idx + 1) : prev;
+            });
+        });
+    };
+
     const renderOfflineContextMenu = (turn: ChatOfflineTurn, role: OfflineActionTarget["role"]) => {
         const menu = (
             <div
@@ -4908,6 +4935,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                     )}
                     <button onClick={() => handleDeleteMessage(m.id)} className="ctx-menu-btn ctx-menu-btn-danger">删除</button>
                     <button onClick={() => handleDeleteMessagesFrom(m.id)} className="ctx-menu-btn ctx-menu-btn-danger">删除以下</button>
+                    <button onClick={() => handleRollbackToMessage(m.id)} className="ctx-menu-btn ctx-menu-btn-danger">回退到此消息</button>
                 </div>
                 {(() => {
                     // 聊天插件注册的消息操作菜单项
