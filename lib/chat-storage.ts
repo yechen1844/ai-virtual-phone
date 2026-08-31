@@ -1547,6 +1547,42 @@ export function deleteChatMessagesFrom(messageId: string) {
     dispatchDeletedMessages(deletedMessages);
 }
 
+/** 回退到某条消息：保留该条及之前，删除严格在其后的所有消息（含工具执行链）。返回删除条数。 */
+export function deleteChatMessagesAfter(messageId: string): number {
+    const targetMsg = _messagesCache.find(m => m.id === messageId);
+    if (!targetMsg) return 0;
+    const sessionId = targetMsg.sessionId;
+
+    const deletedMessages = expandToolExecutionDeleteSet(
+        _messagesCache.filter(m => m.sessionId === sessionId && compareChatMessages(m, targetMsg) > 0),
+    );
+    const deletedIds = deletedMessages.map(m => m.id);
+    if (deletedIds.length === 0) return 0;
+    const deletedIdSet = new Set(deletedIds);
+
+    _messagesCache = _messagesCache.filter(m => !deletedIdSet.has(m.id));
+    syncDeletedResponseBatchMetadata(deletedMessages);
+    dbDeleteMessagesByIds(deletedIds);
+
+    const lastMsg = getLastVisibleSessionMessage(sessionId);
+    const sessions = loadChatSessions();
+    const sessIdx = sessions.findIndex(s => s.id === sessionId);
+    if (sessIdx !== -1) {
+        if (lastMsg) {
+            sessions[sessIdx].lastMessageId = lastMsg.id;
+            sessions[sessIdx].lastMessagePreview = getChatMessagePreview(lastMsg);
+            sessions[sessIdx].updatedAt = lastMsg.createdAt;
+        } else {
+            sessions[sessIdx].lastMessageId = undefined;
+            sessions[sessIdx].lastMessagePreview = "";
+        }
+        saveChatSessions(sessions);
+    }
+
+    dispatchDeletedMessages(deletedMessages);
+    return deletedIds.length;
+}
+
 export function deleteChatMessagesByIds(sessionId: string, messageIds: string[]): number {
     const targetIds = new Set(messageIds);
     if (targetIds.size === 0) return 0;
