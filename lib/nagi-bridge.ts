@@ -384,7 +384,9 @@ const STARDEW_RULE =
   "撸动物pet_animals、酿酒keg_manager、熔炉furnace_manager、钓鱼fish_run、购物shop_buy。" +
   "只有脚本无法完成（如打怪、送礼物、特定剧情交互）时才回退到一步步的 stardew_warp/move_to/use_tool/select_item/press_key 等手工操作。";
 
-/** 把农工当前状态注入到 history 末尾（作为 system 消息），让 char 不必先调 get_state。 */
+/** 把农工当前状态注入到 history 开头（作为 system 消息），让 char 不必先调 get_state。
+ *  注意必须放开头而不是末尾：若放在末尾，history 最后一条会变成 system，导致续写守卫
+ *  appendEmptyGenerateGuardMessage 把「用户已输入新消息」误判成「未输入」→ 错误追加续写提示。 */
 async function injectStardewState(session: any, history: any[]): Promise<any[]> {
   const injected: any[] = [];
   try {
@@ -398,7 +400,7 @@ async function injectStardewState(session: any, history: any[]): Promise<any[]> 
   if (session?.id) {
     injected.push({ sessionId: session.id, role: "system", content: STARDEW_RULE, status: "sent" as const });
   }
-  return injected.length ? [...history, ...injected] : history;
+  return injected.length ? [...injected, ...history] : history;
 }
 
 async function generateStardewReply(session: any, history: any[]): Promise<string | null> {
