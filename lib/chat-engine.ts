@@ -1509,6 +1509,17 @@ function countChatActivity(characterId: string, characterName: string, history: 
             if (newLastId) {
                 updateRingBuffer(characterId, { lastCountedChatMessageId: newLastId });
             }
+            // 计数日志（写入端）：记录主聊天每轮计分明细，便于核对计数；读取侧由 UI 按需拉取，不做高频轮询
+            try {
+                if (typeof window !== "undefined") {
+                    const K = "ai_phone_cm_chat_count_log_v1";
+                    let ll: unknown[] = [];
+                    try { ll = JSON.parse(localStorage.getItem(K) ?? "[]") as unknown[]; } catch { ll = []; }
+                    ll.push({ at: new Date().toISOString(), user: userMsgs, reply: replyMsgs, count: activityCount, lastId: newLastId ?? null });
+                    if (ll.length > 30) ll = ll.slice(-30);
+                    localStorage.setItem(K, JSON.stringify(ll));
+                }
+            } catch { /* 日志失败不阻断 */ }
         } else {
             const replyMsgs = countReplyMessages(parts);
             activityCount = Math.max(2, replyMsgs);
