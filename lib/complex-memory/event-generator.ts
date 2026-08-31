@@ -17,23 +17,11 @@ import { buildGenerationContext } from "./context-builder";
 import { ensureWatermarkAnchored } from "./watermark";
 import { loadSourceTimeline } from "./source";
 import { renderMemoryPrompt, DEFAULT_PROMPTS } from "./prompts";
-import { saveEvent, saveEvents, savePeriod, loadPeriods, loadEvents, getCurrentCoreView, loadActivePeriods, getDaily } from "./storage";
+import { saveEvent, savePeriod, loadPeriods, loadEvents, getCurrentCoreView, loadActivePeriods, getDaily } from "./storage";
 import { mirrorEventToFloat } from "./mirror";
 import { pushFeedAudit } from "./feed-audit";
 import { getUserName, capSourceMaterials, dateString, dateFromTimestamp, formatLocalDateTime } from "./utils";
 import type { ComplexEvent, EmotionVector } from "./types";
-
-// 事件 id 自增计数器：保证同一毫秒内分窗生成多个事件时 id 也绝不相同。
-// 之前依赖 Date.now() + 随机串，在同毫秒并发生成时会因 id 相同互相覆盖，导致「生成了多条却只剩最后一条」。
-let eventIdSeq = 0;
-function nextEventId(characterId: string): string {
-  eventIdSeq += 1;
-  const seq = eventIdSeq.toString(36);
-  const rand = (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function")
-    ? crypto.randomUUID().replace(/-/g, "").slice(0, 8)
-    : Math.random().toString(36).slice(2, 10);
-  return `evt_${characterId}_${Date.now()}_${seq}_${rand}`;
-}
 
 function clampNum(v: unknown, min: number, max: number, fallback: number): number {
   return typeof v === "number" && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback;
@@ -103,11 +91,8 @@ export async function runEventGeneration(
     const windowSize = config.eventWindowMaxEntries;
     const windows = sliceWindows(allEntries, windowSize);
     let generated = 0;
-    // 本批各窗生成的事件（供循环后自愈校验，防写入被静默吞掉）
-    const savedEvents: ComplexEvent[] = [];
 
-    for (let wi = 0; wi < windows.length; wi++) {
-      const windowEntries = windows[wi];
+    for (const windowEntries of windows) {
       const event = await generateEventForWindow(
         characterId,
         characterName,
@@ -120,29 +105,12 @@ export async function runEventGeneration(
         break;
       }
 
-      savedEvents.push(event);
       const winLast = windowEntries[windowEntries.length - 1];
       updateRingBuffer(characterId, {
         watermarkEventId: winLast.id,
         watermarkTimestamp: winLast.timestamp,
       });
       generated += 1;
-    }
-
-    // 自愈校验：逐条确认本批事件真正落库；有任何一条缺失（写入被静默吞掉），
-    // 用单事务 bulkPut 一次性原子补写。根治「生成了多条却只剩最后一条被收录」。
-    if (savedEvents.length > 0) {
-      try {
-        const stored = await loadEvents(characterId);
-        const storedIds = new Set(stored.map((e) => e.id));
-        const missing = savedEvents.filter((e) => !storedIds.has(e.id));
-        if (missing.length > 0) {
-          await saveEvents(missing);
-          console.warn(`[ComplexMemory] 事件自愈补写: ${missing.length} 条缺失已补回`);
-        }
-      } catch (healErr) {
-        console.warn("[ComplexMemory] 事件自愈校验失败:", healErr);
-      }
     }
 
     if (generated === 0) {
@@ -236,8 +204,7 @@ async function generateEventForWindow(
     characterId,
     characterName,
     kind: "event",
-    // 归属日期：正常路径取窗口最早素材日期（之前为 undefined，审计页左侧时间戳显示为空）
-    date: dateFromTimestamp(opts?.contextDate ?? earliest),
+    date: opts?.contextDate ? dateFromTimestamp(opts.contextDate) : undefined,
     prompt,
     response: result.content ?? (result.error ?? ""),
     model: apiConfig.defaultModel,
@@ -272,8 +239,8 @@ async function generateEventForWindow(
     : dateFromTimestamp(earliest);
   const event: ComplexEvent = {
     // 事件 id 必须绝对唯一，否则同一毫秒内分窗生成的多个事件会因 id 相同互相覆盖，只剩最后一条。
-    // 事件 id 必须绝对唯一，否则同一毫秒内分窗生成的多个事件会因 id 相同互相覆盖，只剩最后一条。
-    id: nextEventId(characterId),
+    // 用「字符 id + 时间戳 + crypto 随机串」保证在同一毫秒多窗并发生成时也绝不撞。
+    id: `evt_${characterId}_${Date.now()}_${(globalThis?.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2, 10)).replace(/-/g, "").slice(0, 12)}`,
     characterId,
     timestamp: eventTimestamp,
     content: parsed.content,

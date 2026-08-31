@@ -1607,18 +1607,18 @@ function EventTab({ characterId, characterName, notify, refresh }: {
           </button>
         </div>
       </div>
-      <div className="cm-card" style={{ marginBottom: 10, padding: 8 }}>
-        <div className="cm-meta-text" style={{ fontWeight: 600 }}>事件保存日志（空=saveEvent 从未被调用）</div>
-        <div style={{ maxHeight: 120, overflow: "auto", fontSize: 11 }}>
-          {saveLog.length === 0 ? (
-            <div style={{ color: "var(--c-warning, #d08770)", marginTop: 2 }}>（空：saveEvent 一次都没有执行过。若事件记忆页却有新事件，说明写入走的是别的路径）</div>
-          ) : saveLog.slice(-10).map((s, i) => (
-            <div key={i} style={{ color: "var(--c-text-dim, rgba(255,255,255,0.55))", marginTop: 2 }}>
-              [{new Date(s.at).toLocaleTimeString()}] id={s.id} · 时={s.timestamp || "（空）"} · {s.content}
-            </div>
-          ))}
+      {saveLog && saveLog.length > 0 && (
+        <div className="cm-card" style={{ marginBottom: 10, padding: 8 }}>
+          <div className="cm-meta-text" style={{ fontWeight: 600 }}>最近事件保存日志（排查覆盖问题）</div>
+          <div style={{ maxHeight: 120, overflow: "auto", fontSize: 11 }}>
+            {saveLog.slice(-10).map((s, i) => (
+              <div key={i} style={{ color: "var(--c-text-dim, rgba(255,255,255,0.55))", marginTop: 2 }}>
+                [{new Date(s.at).toLocaleTimeString()}] id={s.id} · 时={s.timestamp || "（空）"} · {s.content}
+              </div>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
       {sorted.length === 0 ? (
         <div className="cm-empty-inline cm-card"><p className="cm-muted">暂无事件记忆</p></div>
       ) : (
