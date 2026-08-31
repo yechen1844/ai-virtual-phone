@@ -532,11 +532,12 @@ export function DebugPromptPanel() {
                 });
             } else if (extraAppId === "stardew") {
                 // 星露谷独立标签：以真实发送给模型的参数（appId=stardew、强制工具）预览
-                const stardewSession = chatSessionOptions
-                    .find(o => o.session.id.startsWith("sess_stardew_")
-                        && o.session.contactId === `stardew:${extraCharacterId}`)
-                    ?.session;
-                if (!stardewSession) throw new Error("没有找到该角色的星露谷会话，请先绑定并在星露谷聊过天");
+                // 注意：chatSessionOptions 在上方已把 sess_stardew_ 过滤掉，必须直接查 loadChatSessions()
+                const allSessions = loadChatSessions();
+                const stardewSession = allSessions
+                    .find(s => s.id.startsWith("sess_stardew_")
+                        && s.contactId === `stardew:${extraCharacterId}`);
+                if (!stardewSession) throw new Error("没有找到该角色的星露谷会话，请先在星露谷聊过天或生成一次会话");
                 const snap = await previewPromptRequestSnapshot(stardewSession, loadChatMessages(stardewSession.id), {
                     appId: "stardew",
                     appTags: ["stardew"],
