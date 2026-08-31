@@ -26,14 +26,25 @@ export function KeyboardGlassGuard() {
     if (typeof window === "undefined") return;
 
     const viewport = window.visualViewport;
+    // 键盘关闭时的全屏高度基线：resizes-content 模式下 innerHeight 会随键盘缩水，
+    // 用它判断「innerHeight 相对基线缩水」也能识别键盘开启。
+    let maxHeight = window.innerHeight;
+
+    const isKeyboardOpen = (): boolean => {
+      if (!viewport) return false;
+      if (viewport.offsetTop !== 0) return true;
+      if (window.innerHeight - viewport.height - viewport.offsetTop > KEYBOARD_THRESHOLD) return true;
+      if (maxHeight - window.innerHeight > KEYBOARD_THRESHOLD) return true;
+      return false;
+    };
 
     const update = () => {
+      maxHeight = Math.max(maxHeight, window.innerHeight);
       if (!viewport || !hasEditableFocus()) {
         applyKeyboardClass(false);
         return;
       }
-      const occluded = window.innerHeight - viewport.height - viewport.offsetTop;
-      applyKeyboardClass(occluded > KEYBOARD_THRESHOLD);
+      applyKeyboardClass(isKeyboardOpen());
     };
 
     // 键盘收起动画期、焦点切换期间分批重算，避免过早移除类导致闪回。

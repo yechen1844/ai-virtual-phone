@@ -3483,6 +3483,8 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
     let covering = false;
     let settleTimer = 0;
     let scheduled = 0;
+    // 键盘关闭时的全屏高度基线：resizes-content 模式下 innerHeight 会随键盘缩水，用它识别键盘。
+    let maxHeight = window.innerHeight;
 
     const setBusy = (v: boolean) => {
       const anon = shellRef.current;
@@ -3494,11 +3496,13 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
       else document.documentElement.removeAttribute("data-glass-busy");
     };
 
-    // 键盘是否覆盖内容：visualViewport 被压缩够多（含 iOS offsetTop 位移）。
+    // 键盘是否覆盖内容：视口被压缩够多（含 iOS offsetTop 位移），或 innerHeight 相对基线缩水（resizes-content）。
     const isCovering = (): boolean => {
       if (!viewport) return false;
       if (viewport.offsetTop !== 0) return true;
-      return window.innerHeight - viewport.height - viewport.offsetTop > KEYBOARD_THRESHOLD;
+      if (window.innerHeight - viewport.height - viewport.offsetTop > KEYBOARD_THRESHOLD) return true;
+      if (maxHeight - window.innerHeight > KEYBOARD_THRESHOLD) return true;
+      return false;
     };
 
     const onCovering = () => {
@@ -3536,6 +3540,7 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
       scheduled = window.requestAnimationFrame(() => {
         scheduled = 0;
         if (!mobileMq.matches) return;
+        maxHeight = Math.max(maxHeight, window.innerHeight);
         if (isCovering()) onCovering();
         else onReleased();
       });

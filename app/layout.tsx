@@ -17,6 +17,8 @@ export const viewport: Viewport = {
   maximumScale: 1,
   userScalable: false,
   viewportFit: "cover",
+  // 键盘弹出用「内容重排」而非「视觉视口覆盖/缩放」→ 消除移动端键盘视口重排动画导致的合成空帧黑屏。
+  interactiveWidget: "resizes-content",
 };
 
 export const metadata: Metadata = {
