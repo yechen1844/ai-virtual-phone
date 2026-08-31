@@ -184,6 +184,30 @@
 .phone-shell[data-glass-busy="1"] *::after {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
+  filter: none !important;
+}
+
+/* Portal/弹层兜底：预设/世界书/正则等面板及若干弹窗通过 React Portal 挂在 body/html 下，
+   超出 .phone-shell 作用域，上面那组选择器够不着。data-glass-busy 已同步挂到 <html>，
+   这里用 html 作用域把它们的 blur 与普通 filter 一起关掉，避免这些区域再黑屏。 */
+html[data-glass-busy="1"] [style*="backdrop-filter"],
+html[data-glass-busy="1"] *,
+html[data-glass-busy="1"] *::before,
+html[data-glass-busy="1"] *::after {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+  filter: none !important;
+}
+
+/* 键盘动画期间：把主容器/设置面板/整页底色换成不透明白，即使视口 resize 出现重绘间隙，
+   也不会透出背后深色或空帧 → 黑屏变浅色过渡。 */
+.phone-shell[data-glass-busy="1"] .app-open-shell,
+.phone-shell[data-glass-busy="1"] .settings-panel,
+.phone-shell[data-glass-busy="1"] [data-ui="input"],
+html[data-glass-busy="1"] body,
+html[data-glass-busy="1"] .app-open-shell,
+html[data-glass-busy="1"] .settings-panel {
+  background-color: #F1F2F6 !important;
 }
 
 .phone-shell[data-widget-effect="transparent"] .widget-glass > div:not(.wg-ios-menu) {

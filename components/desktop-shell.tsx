@@ -3458,23 +3458,37 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
     const el = shellRef.current;
     if (!el) return;
     el.setAttribute("data-glass-busy", "1");
+    // 顺带挂到 <html>，让超出 .phone-shell 作用域（React Portal 挂在 body/html 下）的
+    // 面板（预设/世界书/正则/弹窗等）也能命中 html 作用域的 blur/filter 关闭规则。
+    document.documentElement.setAttribute("data-glass-busy", "1");
     if (glassBusyTimerRef.current) window.clearTimeout(glassBusyTimerRef.current);
     glassBusyTimerRef.current = window.setTimeout(() => {
       shellRef.current?.removeAttribute("data-glass-busy");
+      document.documentElement.removeAttribute("data-glass-busy");
       glassBusyTimerRef.current = 0;
     }, ms);
   }
 
   // 移动端键盘开合：整屏毛玻璃 blur 层会随 visualViewport 变化整层重组装 → 黑屏。
-  // 复用 suspendGlass 机制：键盘动画期间临时关 blur（静态雾面顶住），370ms 后恢复，
+  // 复用 suspendGlass 机制：键盘动画期间临时关 blur（静态雾面顶住），定时后恢复，
   // 行为与桌面拖动一致，只解决黑屏/卡顿，不影响外观。
   useEffect(() => {
     if (typeof window === "undefined") return;
     // 放宽判断：仅按窄屏视口，不强制 hover/pointer（部分 webview 报 pointer 不同导致失配→suspendGlass 完全不触发→黑屏依旧）。
     const mobileMq = window.matchMedia("(max-width: 600px)");
     const viewport = window.visualViewport;
+    const shell = shellRef.current;
     let lastInset = -1;
     let scheduled = 0;
+    // 输入框聚焦即提前挂起：键盘即将弹出，视觉焦点还停留在输入框，先关 blur 顶住黑帧，避免
+    // 首个 resize 事件到来前那一帧黑屏（展开方向）。
+    const onFocusIn = (e: FocusEvent) => {
+      if (!mobileMq.matches) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) {
+        suspendGlass(900);
+      }
+    };
     const onViewport = () => {
       if (!viewport) return;
       if (scheduled) window.cancelAnimationFrame(scheduled);
@@ -3484,17 +3498,19 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
         const inset = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
         if (viewport.offsetTop !== lastInset || Math.abs(inset - lastInset) > 4) {
           lastInset = viewport.offsetTop;
-          // 键盘动画全程（约650ms）关闭 blur，避免 370ms 恢复瞬间二次重合成闪黑
-          suspendGlass(650);
+          // 键盘动画全程（约900ms）关闭 blur，避免 370ms 恢复瞬间二次重合成闪黑
+          suspendGlass(900);
         }
       });
     };
     viewport?.addEventListener("resize", onViewport);
     viewport?.addEventListener("scroll", onViewport);
+    shell?.addEventListener("focusin", onFocusIn);
     return () => {
       if (scheduled) window.cancelAnimationFrame(scheduled);
       viewport?.removeEventListener("resize", onViewport);
       viewport?.removeEventListener("scroll", onViewport);
+      shell?.removeEventListener("focusin", onFocusIn);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
