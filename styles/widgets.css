@@ -175,6 +175,17 @@
   filter: none !important;
 }
 
+/* 键盘开合黑屏定位实验：data-glass-busy=1 期间禁用全局所有 backdrop-filter/filter，
+   覆盖未被上面枚举到的 app 容器(工坊/世界书/正则/弹层等)与后续恢复瞬间的二次重合成。
+   若黑屏改善 → 元凶是 backdrop-filter 的整层重合成。 */
+.phone-shell[data-glass-busy="1"] [style*="backdrop-filter"],
+.phone-shell[data-glass-busy="1"] *,
+.phone-shell[data-glass-busy="1"] *::before,
+.phone-shell[data-glass-busy="1"] *::after {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
 .phone-shell[data-widget-effect="transparent"] .widget-glass > div:not(.wg-ios-menu) {
   /* background: transparent !important; */
   box-shadow: none !important;

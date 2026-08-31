@@ -3454,7 +3454,7 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
    * during reflow; we toggle a DOM attribute directly (no React state) so it
    * doesn't itself trigger a re-render, then let the blur snap back when idle.
    */
-  function suspendGlass(): void {
+  function suspendGlass(ms = 360): void {
     const el = shellRef.current;
     if (!el) return;
     el.setAttribute("data-glass-busy", "1");
@@ -3462,7 +3462,7 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
     glassBusyTimerRef.current = window.setTimeout(() => {
       shellRef.current?.removeAttribute("data-glass-busy");
       glassBusyTimerRef.current = 0;
-    }, 360);
+    }, ms);
   }
 
   // 移动端键盘开合：整屏毛玻璃 blur 层会随 visualViewport 变化整层重组装 → 黑屏。
@@ -3470,21 +3470,29 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
   // 行为与桌面拖动一致，只解决黑屏/卡顿，不影响外观。
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const mobileMq = window.matchMedia("(max-width: 600px) and (hover: none) and (pointer: coarse)");
-    if (!mobileMq.matches) return;
+    // 放宽判断：仅按窄屏视口，不强制 hover/pointer（部分 webview 报 pointer 不同导致失配→suspendGlass 完全不触发→黑屏依旧）。
+    const mobileMq = window.matchMedia("(max-width: 600px)");
     const viewport = window.visualViewport;
     let lastInset = -1;
+    let scheduled = 0;
     const onViewport = () => {
       if (!viewport) return;
-      const inset = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
-      if (viewport.offsetTop !== lastInset || Math.abs(inset - lastInset) > 4) {
-        lastInset = viewport.offsetTop;
-        suspendGlass();
-      }
+      if (scheduled) window.cancelAnimationFrame(scheduled);
+      scheduled = window.requestAnimationFrame(() => {
+        scheduled = 0;
+        if (!mobileMq.matches) return;
+        const inset = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
+        if (viewport.offsetTop !== lastInset || Math.abs(inset - lastInset) > 4) {
+          lastInset = viewport.offsetTop;
+          // 键盘动画全程（约650ms）关闭 blur，避免 370ms 恢复瞬间二次重合成闪黑
+          suspendGlass(650);
+        }
+      });
     };
     viewport?.addEventListener("resize", onViewport);
     viewport?.addEventListener("scroll", onViewport);
     return () => {
+      if (scheduled) window.cancelAnimationFrame(scheduled);
       viewport?.removeEventListener("resize", onViewport);
       viewport?.removeEventListener("scroll", onViewport);
     };
