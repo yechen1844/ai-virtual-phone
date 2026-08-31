@@ -259,6 +259,11 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
     const messagesRef = useRef<ChatMessage[]>([]);
     const textareaRef = useRef<HTMLTextAreaElement | null>(null);
     const sessionRef = useRef<ChatSession | null>(null);
+    // 懒加载：只显示最近 PAGE 条，往上翻再加载更早；缓存全量用于比对，避免每 2s 全量重渲
+    const PAGE = 60;
+    const visibleCountRef = useRef(PAGE);
+    const allMsgsRef = useRef<ChatMessage[]>([]);
+    const lastMsgIdRef = useRef<string | null>(null);
 
     useChatBottomReserve(wrapperRef, scrollRef, "stardew-chat");
 
@@ -270,15 +275,17 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
             const session = getOrCreateStardewSession(charId);
             sessionRef.current = session;
             const initMsgs = loadChatMessages(session.id);
+            allMsgsRef.current = initMsgs;
             messagesRef.current = initMsgs;
-            setMessages(initMsgs);
+            setMessages(initMsgs.slice(-visibleCountRef.current));
             const handler = () => {
             if (cancelled) return;
-            // 只在消息真正变化时才 setMessages，避免每 2s 全量重载/重渲整表
+            // 懒加载缓存比对：只在消息真正变化时才重渲，避免每 2s 全量重载/重渲整表
             const next = loadChatMessages(session.id);
-            if (!chatMessagesEqual(messagesRef.current, next)) {
+            if (!chatMessagesEqual(allMsgsRef.current, next)) {
+                allMsgsRef.current = next;
                 messagesRef.current = next;
-                setMessages(next);
+                setMessages(next.slice(-visibleCountRef.current));
             }
             setIsThinking(isStardewGenerating());
             setReasoning(getStardewReasoning());
@@ -302,7 +309,12 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
     }, []);
 
     useEffect(() => {
-        scrollToBottom();
+        // 只在底部消息变化(新消息/开始思考)时才滚到底；「加载更早」(往前prepend)不触发跳底
+        const lastId = messages.length ? messages[messages.length - 1].id : null;
+        if (lastMsgIdRef.current !== lastId) {
+            lastMsgIdRef.current = lastId;
+            scrollToBottom();
+        }
     }, [messages, isThinking, scrollToBottom]);
 
     // 发送 = 发进游戏 + 让 char 基于这句话直接回复（float 星露谷 app 里就能跟 char 聊）
@@ -366,9 +378,24 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
         el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
     }, []);
 
+    const loadOlder = useCallback(() => {
+        visibleCountRef.current += PAGE;
+        setMessages(allMsgsRef.current.slice(-visibleCountRef.current));
+    }, []);
+
     return (
         <div className="stardew-chat-room" ref={wrapperRef}>
             <div className="stardew-chat-scroll" ref={scrollRef}>
+                {allMsgsRef.current.length > visibleCountRef.current && (
+                    <button
+                        type="button"
+                        className="stardew-btn"
+                        onClick={loadOlder}
+                        style={{ alignSelf: "center", margin: "8px 0" }}
+                    >
+                        加载更早的消息（{allMsgsRef.current.length - visibleCountRef.current} 条）
+                    </button>
+                )}
                 {messages.length === 0 && (
                     <div className="stardew-chat-empty">和 {charName || "char"} 聊聊星露谷吧～</div>
                 )}
