@@ -10,7 +10,8 @@
 //    但短期上下文（shortTermMemory）仍会带该 char 的近期时间线（用户明确希望共享短期记忆）。
 // 4. 云端中转：从 Cloudflare Worker 拉取游戏消息 → 写入星露谷会话 → char 回复 → 推回云端。
 
-import { loadChatSessions, saveChatSessions, pushChatMessage, loadChatMessages, createOrGetSession, reassignChatSessionMessages, deleteChatSession } from "./chat-storage";
+import { loadChatSessions, saveChatSessions, pushChatMessage, loadChatMessages, createOrGetSession, reassignChatSessionMessages, deleteChatSession, DEFAULT_VISION_IMAGE_PROMPT_LIMIT, type ChatSession } from "./chat-storage";
+import { recordStardewMessage } from "./stardew-memory";
 import { generateChatCompletion, flattenCompletionResult } from "./chat-engine";
 import { loadCharacters } from "./character-storage";
 import { kvGet, kvSet } from "./kv-db";
@@ -237,19 +238,25 @@ function isStardewSession(s: { id?: string }): boolean {
 }
 
 export function getOrCreateStardewSession(characterId: string) {
-  // 星露谷直接复用角色的主聊天会话：同一个会话，主聊天 ↔ 星露谷互相可见，不再新建独立星露谷会话。
-  const main = createOrGetSession(characterId);
-  // 清理此前 bug 造出的独立 sess_stardew_* 会话：把其消息并入主聊天后删除，避免「两边互不可见/多出假会话」。
-  const orphans = loadChatSessions().filter((s) => isStardewSession(s));
-  if (orphans.length > 0) {
-    for (const o of orphans) {
-      if (o.id !== main.id) {
-        reassignChatSessionMessages(o.id, main.id);
-        deleteChatSession(o.id);
-      }
-    }
-  }
-  return main;
+  // 星露谷使用独立 app 会话（sess_stardew_* + contactId = stardew:角色id），
+  // 与主聊天隔离（像小红书/朋友圈那样是独立记录），同时其记录经 stardew 投影写入主聊天短期记忆。
+  if (!characterId) return null as any;
+  const contactId = `stardew:${characterId}`;
+  const sessions = loadChatSessions();
+  const existing = sessions.find((s) => isStardewSession(s) && s.contactId === contactId);
+  if (existing) return existing;
+  const newSession: ChatSession = {
+    id: `sess_stardew_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    contactId,
+    unreadCount: 0,
+    updatedAt: new Date().toISOString(),
+    isPinned: false,
+    bilingualTranslationEnabled: true,
+    collapseBilingualTranslation: true,
+    visionImagePromptLimit: DEFAULT_VISION_IMAGE_PROMPT_LIMIT,
+  };
+  saveChatSessions([newSession, ...sessions]);
+  return newSession;
 }
 
 // ── 云端中转 ──
@@ -325,6 +332,7 @@ export async function ingestNagiGameMessage(characterId: string, msg: NagiEntry)
     content: msg.text,
     status: "sent",
   });
+  recordStardewMessage(characterId, { role: "user", content: msg.text });
 
   const history = loadChatMessages(session.id, STARDEW_HISTORY_LIMIT);
   const replyText = await generateStardewReply(session, history);
@@ -336,6 +344,7 @@ export async function ingestNagiGameMessage(characterId: string, msg: NagiEntry)
     content: replyText,
     status: "sent",
   });
+  recordStardewMessage(characterId, { role: "assistant", content: replyText });
 
   await pushReply(characterId, replyText);
   armStardewAutonomy(characterId, session); // 完成后排 1 分钟自主
@@ -450,10 +459,12 @@ export async function stardewFrontendSay(characterId: string, text: string): Pro
   const session = getOrCreateStardewSession(characterId);
   markStardewActivity(); // 玩家有互动，取消自主
   pushChatMessage({ sessionId: session.id, role: "user", content: text, status: "sent" });
+  recordStardewMessage(characterId, { role: "user", content: text });
   const history = loadChatMessages(session.id, STARDEW_HISTORY_LIMIT);
   const replyText = await generateStardewReply(session, history);
   if (!replyText) return null;
   pushChatMessage({ sessionId: session.id, role: "assistant", content: replyText, status: "sent" });
+  recordStardewMessage(characterId, { role: "assistant", content: replyText });
   await pushReply(characterId, replyText);
   armStardewAutonomy(characterId, session); // 完成后排 1 分钟自主
   return replyText;
@@ -471,6 +482,7 @@ export async function stardewReplyLatestPending(characterId: string): Promise<st
   const replyText = await generateStardewReply(session, history);
   if (!replyText) return null;
   pushChatMessage({ sessionId: session.id, role: "assistant", content: replyText, status: "sent" });
+  recordStardewMessage(characterId, { role: "assistant", content: replyText });
   await pushReply(characterId, replyText);
   armStardewAutonomy(characterId, session);
   return replyText;

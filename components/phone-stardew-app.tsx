@@ -22,6 +22,7 @@ import {
   stardewReplyLatestPending,
 } from "@/lib/nagi-bridge";
 import { loadChatMessages, pushChatMessage, type ChatMessage, type ChatSession } from "@/lib/chat-storage";
+import { recordStardewMessage } from "@/lib/stardew-memory";
 
 type NAGI_STATUS = "idle" | "running" | "checking";
 type StardewPage = "settings" | "chat";
@@ -336,6 +337,7 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
             const session = getOrCreateStardewSession(charId);
             sessionRef.current = session;
             pushChatMessage({ sessionId: session.id, role: "user", content: text, status: "sent" });
+            recordStardewMessage(charId, { role: "user", content: text });
         } catch (e) {
             console.warn("[StardewChat] 发送失败:", e);
             onNotice?.("发送失败，请重试");

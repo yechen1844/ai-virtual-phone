@@ -29,6 +29,7 @@ import { stripStateAndInnerForPrompt } from "./prompt-sanitizer";
 import { renderUserNameMacro } from "./user-macro";
 import { loadChatOfflineProjectionEntries } from "./chat-offline-storage";
 import { loadCheckPhoneProjectionEntries } from "./checkphone-storage";
+import { loadStardewProjectionEntries } from "./stardew-memory";
 import { formatShoppingPaymentRequestHistory } from "./shopping-payment-request";
 import { loadCustomAppTimelineEntries } from "./custom-app-storage";
 import {
@@ -52,8 +53,8 @@ function formatPhotoDirectiveForPrompt(msg: ChatMessage): string {
 
 export type NativeTimelineEntry = {
     id: string;
-    sourceApp: "chat" | "moments" | "story" | "vn" | "map" | "game" | "diary" | "xiaohongshu" | "interview_magazine" | "cocreate" | "checkphone" | "custom_app";
-    sourceDetail?: "direct" | "group" | "system" | "story" | "chat_offline" | "game" | "diary_entry" | "notewall" | "xiaohongshu" | "black_market_theater" | "interview_issue" | "interview_shared_issue" | "cocreate_project" | "checkphone" | "custom_app_event"; // chat sub-type: 1:1 vs group chat vs system note
+    sourceApp: "chat" | "moments" | "story" | "vn" | "map" | "game" | "diary" | "xiaohongshu" | "interview_magazine" | "cocreate" | "checkphone" | "custom_app" | "stardew";
+    sourceDetail?: "direct" | "group" | "system" | "story" | "chat_offline" | "game" | "diary_entry" | "notewall" | "xiaohongshu" | "black_market_theater" | "interview_issue" | "interview_shared_issue" | "cocreate_project" | "checkphone" | "custom_app_event" | "stardew"; // chat sub-type: 1:1 vs group chat vs system note
     authorType?: "user" | "character" | "npc"; // who authored this entry
     postAuthorType?: "user" | "character"; // for moments: who owns the parent post
     sessionId?: string;
@@ -748,6 +749,28 @@ export function loadNativeTimeline(
         });
     }
 
+    // ── Stardew projections ──
+    const stardewEntries = loadStardewProjectionEntries(characterId, {
+        afterTimestamp: options?.afterTimestamp,
+    });
+    for (const stardewEntry of stardewEntries) {
+        const speaker = stardewEntry.role === "user" ? userName : charName;
+        const rendered = `${stardewEntry.role === "user" ? "在星露谷说" : "在星露谷回应"}`;
+        entries.push({
+            id: stardewEntry.id,
+            sourceApp: "stardew",
+            sourceDetail: "stardew",
+            authorType: stardewEntry.role === "user" ? "user" : "character",
+            timestamp: stardewEntry.timestamp,
+            content: formatStoredPromptEventContent(`${speaker}${rendered}: ${stardewEntry.content}`, {
+                label: "星露谷",
+                timestamp: stardewEntry.timestamp,
+                timeAware,
+                timestampOptions,
+            }),
+        });
+    }
+
     // ── Interview magazine projections ──
     const interviewEntries = loadInterviewMagazineProjectionEntries(characterId, {
         afterTimestamp: options?.afterTimestamp,
@@ -819,7 +842,7 @@ export function loadNativeTimeline(
 }
 
 // Fixed order — lower = further from LLM output (appears higher in prompt)
-const FEATURE_ORDER: Record<string, number> = { map: 0, game: 0.5, moments: 1, xiaohongshu: 1.5, checkphone: 1.7, story: 2, vn: 2, theater: 2.2, interview: 2.35, cocreate: 2.4, diary_entry: 2.45, notewall: 2.5, custom_app: 2.6, group_chat: 3, chat: 4 };
+const FEATURE_ORDER: Record<string, number> = { map: 0, game: 0.5, moments: 1, xiaohongshu: 1.5, checkphone: 1.7, stardew: 1.8, story: 2, vn: 2, theater: 2.2, interview: 2.35, cocreate: 2.4, diary_entry: 2.45, notewall: 2.5, custom_app: 2.6, group_chat: 3, chat: 4 };
 // Map appId → XML tag name for the "current feature" wrapper
 const FEATURE_TAG: Record<string, string> = {
     chat: "recent_chat",
@@ -832,6 +855,7 @@ const FEATURE_TAG: Record<string, string> = {
     diary: "recent_notewall",
     xiaohongshu: "recent_xiaohongshu",
     checkphone: "recent_checkphone",
+    stardew: "recent_stardew",
     interview_magazine: "recent_interview",
     cocreate: "recent_cocreate",
 };
@@ -1049,6 +1073,11 @@ export function prepareShortTermContext(
     const checkPhoneEntries = timeline.filter(e => e.sourceApp === "checkphone");
     if (checkPhoneEntries.length > 0) {
         raw.push({ tag: "recent_checkphone", order: FEATURE_ORDER.checkphone, entries: checkPhoneEntries });
+    }
+
+    const stardewEntries = timeline.filter(e => e.sourceApp === "stardew");
+    if (stardewEntries.length > 0) {
+        raw.push({ tag: "recent_stardew", order: FEATURE_ORDER.stardew, entries: stardewEntries });
     }
 
     const interviewEntries = timeline.filter(e => e.sourceApp === "interview_magazine");
@@ -1317,6 +1346,11 @@ export function prepareGroupShortTermContext(
     const checkPhoneEntries = timeline.filter(e => e.sourceApp === "checkphone");
     if (checkPhoneEntries.length > 0) {
         raw.push({ tag: "recent_checkphone", order: FEATURE_ORDER.checkphone, entries: checkPhoneEntries });
+    }
+
+    const stardewEntries = timeline.filter(e => e.sourceApp === "stardew");
+    if (stardewEntries.length > 0) {
+        raw.push({ tag: "recent_stardew", order: FEATURE_ORDER.stardew, entries: stardewEntries });
     }
 
     const interviewEntries = timeline.filter(e => e.sourceApp === "interview_magazine");
