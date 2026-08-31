@@ -33,14 +33,6 @@ type StatusSummary = {
 export function ComplexMemoryToggle({ characterId, characterName }: ComplexMemoryToggleProps) {
   const [enabled, setEnabled] = useState<boolean>(() => isComplexMemoryEnabled(characterId));
   const [status, setStatus] = useState<StatusSummary | null>(null);
-  const [countLog, setCountLog] = useState<Array<{ at: string; user: number; reply: number; count: number; lastId: string | null }>>([]);
-
-  const loadCountLog = () => {
-    try {
-      const raw = localStorage.getItem("ai_phone_cm_chat_count_log_v1");
-      setCountLog(raw ? (JSON.parse(raw) as Array<{ at: string; user: number; reply: number; count: number; lastId: string | null }>) : []);
-    } catch { setCountLog([]); }
-  };
 
   useEffect(() => {
     let cancelled = false;
@@ -64,12 +56,9 @@ export function ComplexMemoryToggle({ characterId, characterName }: ComplexMemor
       });
     };
     void refresh();
-    loadCountLog();
-    // 无控制台也能看到实时变化：每 2 秒刷新一次
-    const timer = setInterval(() => { void refresh(); loadCountLog(); }, 2000);
+    // 仅在挂载/切换时读取一次，避免高频轮询拖慢 float 主界面
     return () => {
       cancelled = true;
-      clearInterval(timer);
     };
   }, [characterId, enabled]);
 
@@ -95,11 +84,6 @@ export function ComplexMemoryToggle({ characterId, characterName }: ComplexMemor
         <span className="menu-desc" style={{ color: "var(--c-info, #6ab0ff)" }}>
           [诊断] enabled={String(enabled)} · autoSummary={String(status?.autoSummarize)} · count={String(status?.pendingCount)}/{String(status?.threshold)} · wm={status?.watermark ?? "null"} · ev={String(status?.eventCount)} · 今日日记={status?.lastDailyDate ?? "无"}
         </span>
-        {countLog.length > 0 && (
-          <span className="menu-desc" style={{ color: "var(--c-warning, #d08770)", fontSize: 11 }}>
-            计数日志：{countLog.slice(-5).map((x, i) => `${new Date(x.at).toLocaleTimeString()} +${x.count}(${x.user}u/${x.reply}r)`).join(" → ")}
-          </span>
-        )}
         {enabled && status && (
           <span className="menu-desc" style={{ color: "var(--c-text-dim, rgba(255,255,255,0.55))" }}>
             自动总结 {status.autoSummarize ? "开" : "关"} · 事件计数 {status.pendingCount}/{status.threshold} · 上次总结到 {status.watermark ? new Date(status.watermark).toLocaleString() : "未开始"}

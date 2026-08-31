@@ -35,31 +35,6 @@ function nextEventId(characterId: string): string {
   return `evt_${characterId}_${Date.now()}_${seq}_${rand}`;
 }
 
-// 窗口生成可见日志：记录 for 循环里每一窗「几号窗/时段/生成id/是否入库」，
-// 用于确认「一次自动总结分窗生成多条」时到底走了几个窗口、id 是否重叠。
-function recordWindowLog(entry: { win: number; total: number; earliest?: string; latest?: string; id?: string; saved?: boolean; error?: string }): void {
-  try {
-    if (typeof window === "undefined") return;
-    const KEY = "ai_phone_cm_window_log_v1";
-    let list: unknown[] = [];
-    try { list = JSON.parse(localStorage.getItem(KEY) ?? "[]") as unknown[]; } catch { list = []; }
-    list.push({ ...entry, at: new Date().toISOString() });
-    if (list.length > 30) list = list.slice(-30);
-    localStorage.setItem(KEY, JSON.stringify(list));
-  } catch { /* 诊断不阻断 */ }
-}
-
-/** 读取窗口生成日志（供 UI 排查）。 */
-export function loadWindowLog(): Array<{ win: number; total: number; earliest?: string; latest?: string; id?: string; saved?: boolean; error?: string; at: string }> {
-  try {
-    if (typeof window === "undefined") return [];
-    const raw = localStorage.getItem("ai_phone_cm_window_log_v1");
-    return raw ? (JSON.parse(raw) as Array<{ win: number; total: number; earliest?: string; latest?: string; id?: string; saved?: boolean; error?: string; at: string }>) : [];
-  } catch {
-    return [];
-  }
-}
-
 function clampNum(v: unknown, min: number, max: number, fallback: number): number {
   return typeof v === "number" && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback;
 }
@@ -133,9 +108,6 @@ export async function runEventGeneration(
 
     for (let wi = 0; wi < windows.length; wi++) {
       const windowEntries = windows[wi];
-      const winEarliest = windowEntries[0]?.timestamp;
-      const winLatest = windowEntries[windowEntries.length - 1]?.timestamp;
-      recordWindowLog({ win: wi + 1, total: windows.length, earliest: winEarliest, latest: winLatest, saved: false });
       const event = await generateEventForWindow(
         characterId,
         characterName,
@@ -145,11 +117,9 @@ export async function runEventGeneration(
       if (!event) {
         // 某一窗失败即停：已成功的前序窗已随各自水位线持久化，断点续跑天然成立
         console.warn(`[ComplexMemory] 第 ${generated + 1} 窗事件生成失败，停止后续窗口`);
-        recordWindowLog({ win: wi + 1, total: windows.length, earliest: winEarliest, latest: winLatest, error: "事件生成失败" });
         break;
       }
 
-      recordWindowLog({ win: wi + 1, total: windows.length, earliest: winEarliest, latest: winLatest, id: event.id, saved: true });
       savedEvents.push(event);
       const winLast = windowEntries[windowEntries.length - 1];
       updateRingBuffer(characterId, {
@@ -168,7 +138,6 @@ export async function runEventGeneration(
         const missing = savedEvents.filter((e) => !storedIds.has(e.id));
         if (missing.length > 0) {
           await saveEvents(missing);
-          recordWindowLog({ win: 0, total: windows.length, error: `自愈补写：${missing.length} 条生成后被吞，已原子补回` });
           console.warn(`[ComplexMemory] 事件自愈补写: ${missing.length} 条缺失已补回`);
         }
       } catch (healErr) {

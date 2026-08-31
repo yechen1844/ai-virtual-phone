@@ -196,20 +196,6 @@ function recordEventSaveLog(event: ComplexEvent): void {
 }
 
 export async function saveEvent(event: ComplexEvent): Promise<void> {
-  // 事件 id 覆盖检测 + 持久化生成日志（用于排查「生成了多个事件却只剩最后一条」）
-  try {
-    const db = await openDb();
-    if (db) {
-      const tx = db.transaction(STORE_EVENTS, "readonly");
-      const existing = await runRequest(tx.objectStore(STORE_EVENTS).get(event.id));
-      db.close();
-      if (existing) {
-        console.warn(`[ComplexMemory:DIAG] 事件 id 覆盖 id=${event.id} 时段=${event.timestamp} 旧=${String(existing.content).slice(0, 40)} 新=${String(event.content).slice(0, 40)}`);
-      }
-    }
-  } catch {
-    /* 诊断失败不阻断保存 */
-  }
   recordEventSaveLog(event);
   await put(STORE_EVENTS, event);
 }

@@ -1506,25 +1506,12 @@ function countChatActivity(characterId: string, characterName: string, history: 
             const replyMsgs = countReplyMessages(parts);
             activityCount = Math.max(1, userMsgs + replyMsgs);
             const newLastId = history.length > 0 ? history[history.length - 1].id : lastId;
-            console.log(`[ComplexMemory:DIAG] 主聊天按id计数 lastId=${lastId ?? "null"} startIdx=${startIdx} 新增user=${userMsgs} 回复${replyMsgs}段 = ${activityCount} 分 新lastId=${newLastId ?? "null"}`);
             if (newLastId) {
                 updateRingBuffer(characterId, { lastCountedChatMessageId: newLastId });
             }
-            // 持久化诊断（无控制台也可见）：记录主聊天每轮计数
-            try {
-                if (typeof window !== "undefined") {
-                    const K = "ai_phone_cm_chat_count_log_v1";
-                    let ll: unknown[] = [];
-                    try { ll = JSON.parse(localStorage.getItem(K) ?? "[]") as unknown[]; } catch { ll = []; }
-                    ll.push({ at: new Date().toISOString(), user: userMsgs, reply: replyMsgs, count: activityCount, lastId: newLastId ?? null });
-                    if (ll.length > 20) ll = ll.slice(-20);
-                    localStorage.setItem(K, JSON.stringify(ll));
-                }
-            } catch { /* 诊断不阻断 */ }
         } else {
             const replyMsgs = countReplyMessages(parts);
             activityCount = Math.max(2, replyMsgs);
-            console.log(`[ComplexMemory:DIAG] 主聊天float计数 回复${replyMsgs}段 = ${activityCount} 分`);
         }
         // 主聊天是唯一会「检查阈值并触发总结」的入口：副 app 只累加不触发。
         recordCharacterActivity(characterId, characterName, activityCount, { trigger: true });
@@ -2510,9 +2497,7 @@ export async function generateChatCompletion(
     const { llmMessages, character, config, preset, regexes, userIdentity, toolsEnabled } = await buildChatPromptMessages(session, history, options);
     const requestAppTags = mergeAppTags(options?.appTags, options?.promptProfile?.appTags, options?.appId ?? "chat");
 
-    console.log(`[ComplexMemory:DIAG] 路径判断 toolsEnabled=${String(toolsEnabled)} nativeProtocol=${String(nativeToolProtocolForConfig(config))} enabledTools=${String(getEnabledTools(options?.appId ?? "chat").length)}`);
     if (toolsEnabled && nativeToolProtocolForConfig(config) && getEnabledTools(options?.appId ?? "chat").length > 0) {
-        console.log("[ComplexMemory:DIAG] 走原生工具协议路径 generateNativeChatCompletion（已接入计数）");
         return generateNativeChatCompletion({
             session,
             llmMessages,
