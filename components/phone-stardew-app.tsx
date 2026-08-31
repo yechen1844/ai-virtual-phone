@@ -316,6 +316,14 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
         }
     }, [messages, isThinking, scrollToBottom]);
 
+    // 从存储刷新：更新全量缓存，但只渲染最近窗口（避免"点回复/发送后全量渲染整个会话"导致卡顿）
+    const refreshFromStorage = useCallback(() => {
+        const all = loadChatMessages(sessionRef.current?.id || "");
+        allMsgsRef.current = all;
+        messagesRef.current = all;
+        setMessages(all.slice(-visibleCountRef.current));
+    }, []);
+
     // 发送 = 发进游戏 + 让 char 基于这句话直接回复（float 星露谷 app 里就能跟 char 聊）
     const handleSend = useCallback(async () => {
         const text = inputValue.trim();
@@ -335,10 +343,10 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
         } finally {
             setReplying(false);
             setIsThinking(isStardewGenerating());
-            setMessages(loadChatMessages(sessionRef.current?.id || ""));
+            refreshFromStorage();
             scrollToBottom();
         }
-    }, [inputValue, isThinking, replying, charId, onNotice, scrollToBottom]);
+    }, [inputValue, isThinking, replying, charId, onNotice, scrollToBottom, refreshFromStorage]);
 
     // 回复按钮 = 从 Worker 拉取游戏消息，触发 char 生成回复并推回
     const handleReply = useCallback(async () => {
@@ -348,7 +356,6 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
         try {
             ensureStardewToolsRegistered();
             const n = await processNagiInbox(charId);
-            setMessages(loadChatMessages(sessionRef.current?.id || ""));
             if (n === 0 && charId) onNotice?.("没有新的游戏消息可回复");
         } catch (e) {
             console.warn("[StardewChat] 回复失败:", e);
@@ -356,9 +363,10 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
         } finally {
             setReplying(false);
             setIsThinking(isStardewGenerating());
+            refreshFromStorage();
             scrollToBottom();
         }
-    }, [charId, replying, isThinking, onNotice, scrollToBottom]);
+    }, [charId, replying, isThinking, onNotice, scrollToBottom, refreshFromStorage]);
 
     const onInputKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
         if (shouldSendChatInputOnEnter(e, true)) {
