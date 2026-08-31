@@ -236,15 +236,14 @@ function isStardewSession(s: { id?: string }): boolean {
 
 export function getOrCreateStardewSession(characterId: string) {
   const sessions = loadChatSessions();
-  // 用独立 contactId（stardew:角色id），避免与普通私聊（contactId=角色id）在按 contactId 去重时被合并，
-  // 从而导致提示词查看器/会话列表看不到星露谷会话。
-  const stardewContactId = `stardew:${characterId}`;
-  const existing = sessions.find((s) => s.contactId === stardewContactId && isStardewSession(s));
+  // 星露谷会话用角色的真实 contactId（同主聊天），不做假 charId，这样会话列表/提示词查看器看到的是真实角色；
+  // 但会话 id 仍用 sess_stardew_ 前缀，让消息流与主聊天分开（详见文件头设计注释）。
+  const existing = sessions.find((s) => s.contactId === characterId && isStardewSession(s));
   if (existing) return existing;
 
   const newSession: any = {
     id: `${STARDEW_SESSION_PREFIX}${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-    contactId: stardewContactId,
+    contactId: characterId,
     unreadCount: 0,
     updatedAt: new Date().toISOString(),
     isPinned: false,
@@ -447,6 +446,23 @@ export async function stardewFrontendSay(characterId: string, text: string): Pro
   pushChatMessage({ sessionId: session.id, role: "assistant", content: replyText, status: "sent" });
   await pushReply(characterId, replyText);
   armStardewAutonomy(characterId, session); // 完成后排 1 分钟自主
+  return replyText;
+}
+
+/** 手动触发：队列无新消息时，若会话最后一条是 user 消息且还没有 assistant 回复，则强制 char 补一条回复。 */
+export async function stardewReplyLatestPending(characterId: string): Promise<string | null> {
+  if (typeof window === "undefined") return null;
+  if (!characterId) return null;
+  const session = getOrCreateStardewSession(characterId);
+  const history = loadChatMessages(session.id);
+  if (history.length === 0) return null;
+  const last = history[history.length - 1];
+  if (last.role === "assistant") return null; // 已有回复，无需重复
+  const replyText = await generateStardewReply(session, history);
+  if (!replyText) return null;
+  pushChatMessage({ sessionId: session.id, role: "assistant", content: replyText, status: "sent" });
+  await pushReply(characterId, replyText);
+  armStardewAutonomy(characterId, session);
   return replyText;
 }
 
