@@ -423,9 +423,20 @@ async function generateStardewReply(session: any, history: any[]): Promise<strin
       },
     });
     if ((cr as any)?.reasoning) stardewReasoning = (cr as any).reasoning;
-    return flattenCompletionResult(cr);
+    const reply = flattenCompletionResult(cr);
+    if (!reply && session?.id) {
+      pushChatMessage({ sessionId: session.id, role: "system", content: "⚠️ char 返回了空回复", mediaType: "tool_notice", status: "sent" });
+    }
+    return reply;
   } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
     console.warn("[NagiBridge] char 生成回复失败:", e);
+    // 把真实报错写到星露谷聊天页，便于定位为什么触发不了回复
+    if (session?.id) {
+      try {
+        pushChatMessage({ sessionId: session.id, role: "system", content: `⚠️ char 回复失败：${msg}`, mediaType: "tool_notice", status: "sent" });
+      } catch { /* ignore */ }
+    }
     return null;
   } finally {
     stardewGenerating = false;
