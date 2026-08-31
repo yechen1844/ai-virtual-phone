@@ -469,7 +469,7 @@ export async function stardewReplyLatestPending(characterId: string): Promise<st
   if (typeof window === "undefined") return null;
   if (!characterId) return null;
   const session = getOrCreateStardewSession(characterId);
-  const history = loadChatMessages(session.id);
+  const history = loadChatMessages(session.id, STARDEW_HISTORY_LIMIT);
   if (history.length === 0) return null;
   const last = history[history.length - 1];
   if (last.role === "assistant") return null; // 已有回复，无需重复

@@ -20,6 +20,7 @@ import {
   isStardewGenerating,
   getStardewReasoning,
   stardewFrontendSay,
+  stardewReplyLatestPending,
 } from "@/lib/nagi-bridge";
 import { loadChatMessages, pushChatMessage, type ChatMessage, type ChatSession } from "@/lib/chat-storage";
 
@@ -356,7 +357,11 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
         try {
             ensureStardewToolsRegistered();
             const n = await processNagiInbox(charId);
-            if (n === 0 && charId) onNotice?.("没有新的游戏消息可回复");
+            if (n === 0 && charId) {
+                // 队列无新消息，但会话里若有最后一条 user 消息还没被 char 回复 → 强制补一条（历史已限制最近150条，不会全量）
+                const forced = await stardewReplyLatestPending(charId);
+                if (!forced) onNotice?.("没有新的游戏消息，且没有待回复的对话");
+            }
         } catch (e) {
             console.warn("[StardewChat] 回复失败:", e);
             onNotice?.("回复失败，请稍后再试");
