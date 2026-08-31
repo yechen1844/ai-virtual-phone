@@ -496,8 +496,12 @@ export function appendEmptyGenerateGuardMessage(
     messages: LLMMessage[],
     config: ApiConfig,
     history: ChatMessage[],
+    options?: { appId?: string },
 ): void {
     if (!shouldApplyEmptyGenerateGuard(config)) return;
+    // 星露谷 app 不需要续写判定（回复由手动「回复」按钮/游戏消息自动触发），
+    // 避免把「用户已输入新消息」误判成「未输入」而追加续写提示，只影响星露谷，不影响主聊天。
+    if (options?.appId === "stardew") return;
 
     const hasRealUserHistory = history.some(isRealUserHistoryMessage);
     if (!hasRealUserHistory) return;
@@ -2075,7 +2079,7 @@ export async function buildChatPromptMessages(
             content: "本次自定义 APP AI 任务只输出严格 JSON。不要输出 Markdown 代码块、解释文字或聊天富媒体指令。",
         });
     }
-    appendEmptyGenerateGuardMessage(llmMessages, config, historyForPrompt);
+    appendEmptyGenerateGuardMessage(llmMessages, config, historyForPrompt, { appId: resolvedAppId });
 
     return { llmMessages, character, config, preset, regexes, userIdentity, toolsEnabled };
 }
