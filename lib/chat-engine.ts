@@ -1859,7 +1859,12 @@ export async function buildChatPromptMessages(
     toolsEnabled: boolean;
 }> {
     const chars = loadCharacters();
-    const character = chars.find(c => c.id === session.contactId);
+    // 星露谷会话的 contactId 单独加了 "stardew:" 前缀(避免与普通私聊按 contactId 去重合并)，
+    // 解析角色时要剥掉该前缀，否则匹配不到角色 → 抛 "Character not found" → char 无法回复/看不到该会话消息。
+    const contactId = typeof session.contactId === "string" && session.contactId.startsWith("stardew:")
+        ? session.contactId.slice("stardew:".length)
+        : session.contactId;
+    const character = chars.find(c => c.id === contactId);
     if (!character) throw new ChatEngineError(`Character not found: ${session.contactId}`);
 
     const resolvedAppId = options?.appId ?? "chat";
