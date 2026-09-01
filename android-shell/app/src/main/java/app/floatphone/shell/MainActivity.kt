@@ -110,7 +110,11 @@ class MainActivity : AppCompatActivity() {
 
         webView.addJavascriptInterface(ShellBridge(), "AndroidShell")
         webView.addJavascriptInterface(FloatBleBridge(this, webView), "FloatBle")
+        webView.addJavascriptInterface(FloatKeepAliveJs(), "FloatKeepAlive")
         requestBlePermissions()
+        // 启动本地保活（无需登录/网络）；有悬浮窗权限则弹出悬浮球
+        KeepAliveService.start(this)
+        requestOverlayPermission()
 
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
@@ -216,7 +220,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // 蓝牙 BLE 运行时权限（Android 12+ 用 SCAN/CONNECT，老版本用定位）
     private fun requestBlePermissions() {
         val perms = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= 31) {
@@ -228,6 +231,43 @@ class MainActivity : AppCompatActivity() {
             perms.add(Manifest.permission.ACCESS_FINE_LOCATION)
         }
         if (perms.isNotEmpty()) requestPermissions(perms.toTypedArray(), 4001)
+    }
+
+    // 悬浮窗权限：未授权时引导用户去系统设置打开（才能显示系统悬浮球）
+    private fun requestOverlayPermission() {
+        if (Build.VERSION.SDK_INT >= 23 && !Settings.canDrawOverlays(this)) {
+            runCatching {
+                startActivity(
+                    Intent(
+                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:$packageName"),
+                    ),
+                )
+            }
+        }
+    }
+
+    /** 网页 JS 桥 `window.FloatKeepAlive`：启停保活服务（内含本地静音 + 悬浮球）。 */
+    private inner class FloatKeepAliveJs {
+        @android.webkit.JavascriptInterface
+        fun start() {
+            KeepAliveService.start(this@MainActivity)
+        }
+        @android.webkit.JavascriptInterface
+        fun stop() {
+            KeepAliveService.stop(this@MainActivity)
+        }
+        @android.webkit.JavascriptInterface
+        fun status(): String = if (KeepAliveService.instance != null) "running" else "stopped"
+        @android.webkit.JavascriptInterface
+        fun showBall() {
+            KeepAliveService.instance?.showBall()
+            requestOverlayPermission()
+        }
+        @android.webkit.JavascriptInterface
+        fun hideBall() {
+            KeepAliveService.instance?.hideBall()
+        }
     }
 
     // ── 沉浸式全屏：隐藏状态栏 + 导航栏，让 float 全屏沉浸 ──
