@@ -10,6 +10,7 @@ import { getActiveAppTags } from "./content-tag-utils";
 import { loadChatMessages, loadChatSessions, reindexSessionMessageOrdersByTime } from "./chat-storage";
 import { hasAccountPushSubscription } from "./push-client";
 import { isPersonalPushCloudActive, loadPersonalPushCloudState, personalPushFetch } from "./personal-push-cloud";
+import { isCloudBackupConfigured, loadCloudBackupConfig } from "./cloud-backup/config";
 import { removeTimedWakeSchedule } from "./timed-wake-storage";
 import { appendBridgeFeed } from "./reality-bridge/storage";
 import { loadScreenChatSettings, saveScreenChatAck } from "./reality-bridge/storage";
@@ -57,12 +58,24 @@ function clearTimedWakeIfHandled(triggerKey: string | null): void {
 
 export async function consumeServerOutbox(options?: { silent?: boolean; force?: boolean }): Promise<void> {
     if (typeof window === "undefined") return;
+    const force = options?.force === true;
     // 共享回传箱已紧急停用：没有个人 Supabase 时直接结束，不请求 status/outbox。
-    if (!isPersonalPushCloudActive()) return;
+    if (!isPersonalPushCloudActive()) {
+        // 壳由 __float_pull_outbox 强制触发时，最可能卡这里：壳这个 WebView 的本地
+        // 状态下没有「个人云已部署」标记，导致 outbox 从不拉取 → 本地聊天不写入。
+        if (force) console.warn("[PushOutbox] pull skipped: personal cloud not active in this WebView", {
+            hasPersonalState: Boolean(loadPersonalPushCloudState()),
+            cloudBackupConfigured: isCloudBackupConfigured(loadCloudBackupConfig()),
+        });
+        return;
+    }
     if (consuming) return;
     if (options?.force !== true && Date.now() - lastConsumeAt < OUTBOX_FOREGROUND_CHECK_INTERVAL_MS) return;
     // 没有任何设备订阅推送时，服务端不可能产生普通离线回传；避免所有在线用户空轮询。
-    if (!loadScreenChatSettings().enabled && !(await hasAccountPushSubscription())) return;
+    if (!loadScreenChatSettings().enabled && !(await hasAccountPushSubscription())) {
+        if (force) console.warn("[PushOutbox] pull skipped: gate (无屏幕速聊且账号无离线推送订阅)");
+        return;
+    }
     consuming = true;
     lastConsumeAt = Date.now();
     const passStartMs = Date.now();

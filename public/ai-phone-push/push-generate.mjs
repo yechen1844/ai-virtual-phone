@@ -136,7 +136,12 @@ function stripHallucinatedTimestamps(text: string): string {
  *  确保 outbox raw_text / 弹窗预览都不含思维链。 */
 function stripThinkingMarkup(text: string): string {
   return text
-    .replace(/<(?:think|thinking|thought)>[\s\S]*?<\/(?:think|thinking|thought)>/gi, "")
+    // 成对块：<thinking>…</thinking>（模型回显了开标签）
+    .replace(/<\s*(?:think|thinking|thought)\s*>[\s\S]*?<\s*\/(?:think|thinking|thought)\s*>/gi, "")
+    // 无前缀/仅闭合标签：开标签由预设注入、模型不回显，只输出闭合标签；
+    // 推理在文本开头，剥掉开头到首个闭合标签之间（含闭合标签）的内容。
+    .replace(/^[\s\S]*?<\s*\/(?:think|thinking|thought)\s*>/gi, "")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
