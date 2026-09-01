@@ -134,8 +134,10 @@ class PushService : Service() {
             }
         }
 
-        // self-hosted 模式身份恒为 local_user，不再调 /api/auth/me——避免"登录失败"假报
-        val userId = "local_user"
+        // 离线推送的身份必须与个人云服务端一致：个人云固定 OWNER_ID="owner"，
+        // push-generate 只按 user_id=eq.owner 取订阅、广播到 shellpush:owner。
+        // 此前硬编码 local_user，导致「喊 owner / 听 local_user」频道对不上，收不到广播。
+        val userId = "owner"
         // 优先用「float 设置里配好的 Supabase」(recordSupabase 存 SharedPreferences)，否则回退服务器 /api/online/config
         val sp = getSharedPreferences("float_supabase", 0)
         var url = sp.getString("url", "")?.trim().orEmpty()
@@ -148,16 +150,24 @@ class PushService : Service() {
             }
         }
         if (url.isEmpty() || key.isEmpty()) return null
-        registerShellSubscription(userId)
+        // 登记走个人云网关 ai-phone-push?action=subscribe 而不是站点 /api/push/subscribe：
+        // 站点路由在自托管模式写的是 account.id=local_user，进不了 owner 的订阅清单；
+        // 个人云网关才能写入 user_id='owner'，让 push-generate 取到并广播。
+        registerShellSubscription(userId, url.trimEnd('/'), key)
         PushConfig(url.trimEnd('/'), key, userId)
     }.getOrNull()
 
     /**
-     * 在站点注册一条合成推送订阅（endpoint = shell:<userId>）。
-     * 作用是让离线消息排期的"账号已订阅"门控放行，并让服务端知道
-     * 要往 shellpush 频道广播；服务端不会对它做 Web Push 投递。
+     * 在【个人云】注册一条合成推送订阅（endpoint = shell:<userId>）。
+     * 作用：让离线消息排期的"账号已订阅"门控放行（push-generate 按
+     * user_id=eq.owner 拉订阅），并让服务端知道要往 shellpush:owner 广播；
+     * 服务端不会对 shell: 开头的合成订阅做 Web Push 投递。
+     *
+     * 必须走个人云网关 action=subscribe（写 user_id='owner'），不能用站点
+     * /api/push/subscribe（自托管下写 account.id=local_user，对不上 owner）。
+     * 用壳持有（recordSupabase 从 cloud backup 推入）的 service_role 密钥做鉴权。
      */
-    private fun registerShellSubscription(userId: String) {
+    private fun registerShellSubscription(userId: String, supabaseUrl: String, serviceKey: String) {
         if (shellSubRegistered) return
         runCatching {
             val body = JSONObject()
@@ -169,7 +179,9 @@ class PushService : Service() {
                 .toString()
                 .toRequestBody("application/json".toMediaType())
             val request = Request.Builder()
-                .url("${MainActivity.SITE_URL}/api/push/subscribe")
+                .url("$supabaseUrl/functions/v1/ai-phone-push?action=subscribe")
+                .header("x-ai-phone-service-key", serviceKey)
+                .header("x-ai-phone-origin", MainActivity.SITE_URL)
                 .post(body)
                 .build()
             client.newCall(request).execute().use { response ->
