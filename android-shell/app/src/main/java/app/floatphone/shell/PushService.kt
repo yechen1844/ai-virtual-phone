@@ -101,7 +101,7 @@ class PushService : Service() {
         while (!stopped) {
             val config = fetchConfig()
             if (config == null) {
-                updateKeepAlive("离线推送未配置：请在 float 设置里配置 Supabase")
+                updateKeepAlive("离线推送未启用")
                 sleepSec(60); continue
             }
             updateKeepAlive("已连接，等待角色消息")
