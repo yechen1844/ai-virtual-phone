@@ -35,6 +35,10 @@ android {
     }
 
     buildTypes {
+        debug {
+            // 固定签名：debug 与 release 共用同一个 keystore，升级安装不再因签名不一致而冲突
+            if (ksFile) signingConfig signingConfigs.release
+        }
         release {
             minifyEnabled false
             if (ksFile) signingConfig signingConfigs.release
