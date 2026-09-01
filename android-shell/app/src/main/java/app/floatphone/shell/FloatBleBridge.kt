@@ -7,6 +7,7 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.BluetoothLeScanner
@@ -37,6 +38,7 @@ class FloatBleBridge(private val activity: MainActivity, private val webView: We
         activity.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
     private val adapter: BluetoothAdapter? = manager?.adapter
     private val gatts = HashMap<String, BluetoothGatt>()
+    private val connected = HashSet<String>()
 
     private var scanCb: String? = null
     private var scanning = false
@@ -50,15 +52,14 @@ class FloatBleBridge(private val activity: MainActivity, private val webView: We
         j.put("scanSupported", adapter?.bluetoothLeScanner != null)
         j.put("gattCount", gatts.size)
         val info = JSONObject()
-        for ((addr, g) in gatts) info.put(addr, gState(g))
+        for ((addr, g) in gatts) info.put(addr, gState(addr))
         j.put("devices", info)
         return j.toString()
     }
 
-    private fun gState(g: BluetoothGatt?): String = when (g?.connectionState) {
-        BluetoothProfile.STATE_CONNECTED -> "connected"
-        BluetoothProfile.STATE_CONNECTING -> "connecting"
-        BluetoothProfile.STATE_DISCONNECTING -> "disconnecting"
+    private fun gState(address: String): String = when {
+        address in connected -> "connected"
+        address in gatts -> "connecting"
         else -> "disconnected"
     }
 
@@ -192,7 +193,7 @@ class FloatBleBridge(private val activity: MainActivity, private val webView: We
             connectGatt(dev, callback, address)
             return
         }
-        if (gatt.connectionState != BluetoothProfile.STATE_CONNECTED) { callback?.let { emit(it, err("未连接 $address")) }; return }
+        if (address !in connected) { callback?.let { emit(it, err("未连接 $address")) }; return }
         op(gatt)
     }
 
@@ -208,11 +209,13 @@ class FloatBleBridge(private val activity: MainActivity, private val webView: We
         object : BluetoothGattCallback() {
             override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
+                    connected.add(address)
                     g.discoverServices()
                     readyCb?.let { emit(it, ok("onConnected", JSONObject().apply {
                         put("address", address); put("status", status)
                     })) }
                 } else {
+                    connected.remove(address)
                     runCatching { g.close() }.onFailure { }
                     gatts.remove(address)
                     readyCb?.let { emit(it, ok("onDisconnected", JSONObject().put("address", address))) }
