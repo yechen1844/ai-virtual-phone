@@ -116,14 +116,16 @@ class PushService : Service() {
 
     private data class PushConfig(val supabaseUrl: String, val anonKey: String, val userId: String)
 
-    /** 借 WebView 的登录 Cookie 调站点接口获取连接参数。 */
+    /**
+     * 获取连接参数。float 自托管模式（NEXT_PUBLIC_SELF_HOSTED_MODE=true）下，
+     * 服务端不校验登录 Cookie，getCurrentAccount 直接返回 local_user 身份。
+     * 因此壳不再强求站点 Cookie——否则免登录环境因 getCookie 为 null 永远
+     * "未登录或站点不可达"，Realtime 长连接也建不起来。
+     */
     private fun fetchConfig(): PushConfig? = runCatching {
-        val cookie = CookieManager.getInstance().getCookie(MainActivity.SITE_URL) ?: return null
-
         fun getJson(path: String): JSONObject? {
             val request = Request.Builder()
                 .url("${MainActivity.SITE_URL}$path")
-                .header("Cookie", cookie)
                 .header("Accept", "application/json")
                 .build()
             client.newCall(request).execute().use { response ->
@@ -140,7 +142,7 @@ class PushService : Service() {
         val url = online.optString("supabaseUrl")
         val key = online.optString("anonKey")
         if (url.isEmpty() || key.isEmpty()) return null
-        registerShellSubscription(cookie, userId)
+        registerShellSubscription(userId)
         PushConfig(url.trimEnd('/'), key, userId)
     }.getOrNull()
 
@@ -149,7 +151,7 @@ class PushService : Service() {
      * 作用是让离线消息排期的"账号已订阅"门控放行，并让服务端知道
      * 要往 shellpush 频道广播；服务端不会对它做 Web Push 投递。
      */
-    private fun registerShellSubscription(cookie: String, userId: String) {
+    private fun registerShellSubscription(userId: String) {
         if (shellSubRegistered) return
         runCatching {
             val body = JSONObject()
@@ -162,7 +164,6 @@ class PushService : Service() {
                 .toRequestBody("application/json".toMediaType())
             val request = Request.Builder()
                 .url("${MainActivity.SITE_URL}/api/push/subscribe")
-                .header("Cookie", cookie)
                 .post(body)
                 .build()
             client.newCall(request).execute().use { response ->
