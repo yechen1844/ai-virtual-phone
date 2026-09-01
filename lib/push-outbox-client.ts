@@ -283,6 +283,10 @@ export function installServerOutboxConsumer(): void {
         }, 150);
     };
 
+    // 壳（无 Service Worker）收到 Realtime 广播弹完系统通知后，由壳调用它强制
+    // 拉取并合并 outbox，让完整消息落进聊天。重复触发靠 consumeServerOutbox 幂等去重。
+    (window as unknown as Record<string, unknown>).__float_pull_outbox = () => requestConsume(true);
+
     requestConsume(false);
     document.addEventListener("visibilitychange", () => {
         if (!document.hidden) requestConsume(true);

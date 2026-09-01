@@ -255,6 +255,17 @@ class PushService : Service() {
                         if (shown) return
                     }
                     showMessageNotification(title, text2)
+                    // 壳没有 Service Worker，收不到浏览器里的 "push_outbox_ready" 触发，
+                    // 完整消息存在云端 push_outbox，光弹通知不会进聊天。这里在弹通知同时
+                    // 通知网页调 window.__float_pull_outbox() 去拉取并合并 outbox。
+                    runCatching {
+                        MainActivity.webViewRef?.post {
+                            it.evaluateJavascript(
+                                "window.__float_pull_outbox && window.__float_pull_outbox()",
+                                null,
+                            )
+                        }
+                    }
                 }
             }
 

@@ -43,6 +43,9 @@ class MainActivity : AppCompatActivity() {
         const val VERSION = "1.0.0"
         /** 来电接听等场景的站内深链（必须以 SITE_URL 开头，否则忽略） */
         const val EXTRA_OPEN_URL = "open_url"
+        /** 供 PushService（前台服务、无 Activity 上下文）往 WebView 投递 JS，
+         *  例如收到 Realtime 广播弹通知后，触发前端拉取 outbox 合并进聊天。 */
+        var webViewRef: WebView? = null
     }
 
     private lateinit var webView: WebView
@@ -96,6 +99,7 @@ class MainActivity : AppCompatActivity() {
         volumeControlStream = AudioManager.STREAM_MUSIC
 
         webView = WebView(this)
+        webViewRef = webView
         setContentView(webView)
         // 一进界面就沉浸（不等 onWindowFocusChanged），避免初始一帧露出状态栏/导航栏
         window.decorView.post { hideSystemBars() }
