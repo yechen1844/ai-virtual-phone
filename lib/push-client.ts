@@ -351,6 +351,15 @@ export async function disableOfflinePush(): Promise<{ ok: boolean; error?: strin
 }
 
 export async function sendTestOfflinePush(): Promise<{ ok: boolean; error?: string }> {
+    // 壳（APK）：直接走壳原生通知，不依赖浏览器 SW / Web Push 订阅。
+    if (inShell()) {
+        try {
+            const shell = (window as unknown as Record<string, unknown>)?.AndroidShell as
+                | { showNotification?: (title: string, body?: string, tag?: string) => void } | undefined;
+            shell?.showNotification?.("测试通知", "如果看到这条，离线推送通道已连通。", "float-offline-test");
+            return { ok: true };
+        } catch { return { ok: false, error: "通知失败。" }; }
+    }
     const response = await (isPersonalPushCloudActive()
         ? personalPushFetch("test", { method: "POST" })
         : fetch("/api/push/test", { method: "POST", credentials: "include"}))
