@@ -634,6 +634,14 @@ Deno.serve(async (req: Request) => {
     }
     const data = await llmResponse.json();
     let rawText = extractResponseText(payload.request.providerKind, data).trim();
+    // 思维链剥离：以"最后一个闭合标签 </thinking>"为准，它之前整体视为思维链去掉。
+    // 即使开头没有 <thinking> 前缀也适用；思维链内部残留的"提前的错误标签"不单独当正文边界。
+    {
+      const closeIdx = rawText.lastIndexOf("</thinking>");
+      if (closeIdx !== -1) {
+        rawText = rawText.slice(closeIdx + "</thinking>".length).trim();
+      }
+    }
     if (!rawText) {
       await finish("failed", "empty response");
       return;
