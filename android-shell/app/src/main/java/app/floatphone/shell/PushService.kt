@@ -101,7 +101,7 @@ class PushService : Service() {
         while (!stopped) {
             val config = fetchConfig()
             if (config == null) {
-                updateKeepAlive("未登录或站点不可达，稍后重试")
+                updateKeepAlive("离线推送未配置：请在 float 设置里配置 Supabase")
                 sleepSec(60); continue
             }
             updateKeepAlive("已连接，等待角色消息")
@@ -134,16 +134,14 @@ class PushService : Service() {
             }
         }
 
-        val me = getJson("/api/auth/me") ?: return null
-        val userId = me.optJSONObject("account")?.optString("id").orEmpty()
-        if (userId.isEmpty()) return null
-        // 优先用「float 设置里配好的 Supabase」(网页 recordSupabase 推给壳存进 SharedPreferences)，
-        // 其次才回退服务器 /api/online/config——这样离线推送用你前端配的库，不依赖服务器环境变量。
+        // self-hosted 模式身份恒为 local_user，不再调 /api/auth/me——避免"登录失败"假报
+        val userId = "local_user"
+        // 优先用「float 设置里配好的 Supabase」(recordSupabase 存 SharedPreferences)，否则回退服务器 /api/online/config
         val sp = getSharedPreferences("float_supabase", 0)
         var url = sp.getString("url", "")?.trim().orEmpty()
         var key = sp.getString("key", "")?.trim().orEmpty()
         if (url.isEmpty() || key.isEmpty()) {
-            val online = getJson("/api/online/config")
+            val online = runCatching { getJson("/api/online/config") }.getOrNull()
             if (online != null && online.optBoolean("configured")) {
                 url = online.optString("supabaseUrl")
                 key = online.optString("anonKey")
