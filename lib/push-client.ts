@@ -107,6 +107,9 @@ export function isShellEnvironment(): boolean {
 }
 
 function isPushSupported(): boolean {
+    // 壳（FloatShell App）：自带安卓原生推送通道，不依赖浏览器的 Web Push / Notification。
+    // 必须在这里放行，否则聊天设置的「后台通知」会被误判为不支持而永远打不开。
+    if (isShellEnvironment()) return true;
     return typeof window !== "undefined"
         && "serviceWorker" in navigator
         && "PushManager" in window
