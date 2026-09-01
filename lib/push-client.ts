@@ -234,9 +234,6 @@ export async function getOfflinePushState(): Promise<OfflinePushState> {
 }
 
 export async function enableOfflinePush(): Promise<{ ok: boolean; error?: string }> {
-    if (isShellEnvironment()) {
-        return { ok: false, error: "App 版自带推送通道，无需在此开启；保持系统通知权限开启即可收到离线消息。" };
-    }
     if (!isPushSupported()) {
         return { ok: false, error: "当前环境不支持系统推送。iOS 请先「添加到主屏幕」，再从主屏幕图标打开开启。" };
     }
