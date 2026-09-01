@@ -259,8 +259,9 @@ class PushService : Service() {
                     // 完整消息存在云端 push_outbox，光弹通知不会进聊天。这里在弹通知同时
                     // 通知网页调 window.__float_pull_outbox() 去拉取并合并 outbox。
                     runCatching {
-                        MainActivity.webViewRef?.post {
-                            it.evaluateJavascript(
+                        val wv = MainActivity.webViewRef ?: return@runCatching
+                        wv.post {
+                            wv.evaluateJavascript(
                                 "window.__float_pull_outbox && window.__float_pull_outbox()",
                                 null,
                             )
