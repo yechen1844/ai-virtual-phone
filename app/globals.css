@@ -227,6 +227,352 @@
   padding: 40px 16px;
 }
 
+/* ═══════════════════════════════════════════════════════
+   星露谷像素主题层（暖色牧场风 · 可爱化）
+   覆盖/追加在现有 .stardew-* 类之上。
+   通过给 .stardew-app-root 加 data-pixel-theme 变体
+   可切换，但当前直接全局覆盖（保持简单）。
+   色彩：暖棕 #5C3A1E · 奶油 #FFF8E7 · 草绿 #5B8C3A ·
+         金色 #E8AF3C · 深褐 #3E2A15
+   字体：系统像素回退（无外部字体依赖，用字间距+阴影模拟）
+   ═══════════════════════════════════════════════════════ */
+
+/* 像素字体模拟：用 monospace + 字间距 + 描边阴影营造像素感 */
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+.stardew-app-root {
+  --stardew-brown: #5C3A1E;
+  --stardew-cream: #FFF8E7;
+  --stardew-green: #5B8C3A;
+  --stardew-gold: #E8AF3C;
+  --stardew-dark: #3E2A15;
+  --stardew-red: #D46A5A;
+  --stardew-pixel-font: 'Press Start 2P', 'Courier New', monospace;
+  font-family: var(--stardew-pixel-font);
+  letter-spacing: 0.02em;
+  background: #F5E6CA;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  position: relative;
+}
+/* 像素噪点纹理背景 */
+.stardew-app-root::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: 0.03;
+  background-image: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.06) 2px, rgba(0,0,0,0.06) 4px);
+  pointer-events: none;
+  z-index: 0;
+}
+.stardew-app-root > * { position: relative; z-index: 1; }
+
+.stardew-hero {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  background: var(--stardew-cream);
+  border: 3px solid var(--stardew-brown);
+  box-shadow: 4px 4px 0 var(--stardew-dark);
+  image-rendering: pixelated;
+}
+.stardew-hero-icon {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  background: var(--stardew-green);
+  color: var(--stardew-cream);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--stardew-dark);
+  box-shadow: inset -2px -2px 0 rgba(0,0,0,0.2);
+}
+.stardew-hero-title {
+  font-size: 13px;
+  color: var(--stardew-dark);
+  text-shadow: 1px 1px 0 var(--stardew-gold);
+  letter-spacing: 0.06em;
+}
+.stardew-hero-desc {
+  font-size: 8px;
+  color: var(--stardew-brown);
+  margin-top: 4px;
+  line-height: 1.6;
+  opacity: 0.85;
+}
+
+.stardew-section {
+  padding: 14px;
+  background: var(--stardew-cream);
+  border: 3px solid var(--stardew-brown);
+  box-shadow: 4px 4px 0 var(--stardew-dark);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.stardew-label {
+  font-size: 10px;
+  color: var(--stardew-brown);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  border-bottom: 2px solid var(--stardew-gold);
+  padding-bottom: 4px;
+}
+
+.stardew-select {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--stardew-cream);
+  border: 3px solid var(--stardew-brown);
+  color: var(--stardew-dark);
+  font-family: var(--stardew-pixel-font);
+  font-size: 10px;
+  outline: none;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpolygon points='6,10 1,3 11,3' fill='%235C3A1E'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 32px;
+  box-shadow: 3px 3px 0 var(--stardew-dark);
+}
+
+.stardew-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 12px;
+  border: 3px solid var(--stardew-brown);
+  font-family: var(--stardew-pixel-font);
+  font-size: 10px;
+  cursor: pointer;
+  box-shadow: 3px 3px 0 var(--stardew-dark);
+  transition: none;
+  image-rendering: pixelated;
+}
+.stardew-toggle.on { background: var(--stardew-green); color: #fff; border-color: var(--stardew-dark); }
+.stardew-toggle.off { background: var(--stardew-cream); color: var(--stardew-brown); }
+.stardew-toggle:disabled { opacity: 0.5; cursor: wait; }
+
+.stardew-spin { animation: stardew-rotate 0.9s linear infinite; }
+@keyframes stardew-rotate { to { transform: rotate(360deg); } }
+
+.stardew-backend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9px;
+  color: var(--stardew-brown);
+  font-family: var(--stardew-pixel-font);
+  word-break: break-all;
+  opacity: 0.8;
+}
+.stardew-backend-dot {
+  width: 8px;
+  height: 8px;
+  background: var(--stardew-green);
+  border: 2px solid var(--stardew-dark);
+  flex-shrink: 0;
+}
+
+.stardew-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.stardew-stat {
+  font-size: 10px;
+  color: var(--stardew-brown);
+}
+.stardew-stat b {
+  color: var(--stardew-dark);
+  font-size: 13px;
+}
+
+.stardew-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: var(--stardew-cream);
+  border: 3px solid var(--stardew-brown);
+  color: var(--stardew-dark);
+  font-family: var(--stardew-pixel-font);
+  font-size: 9px;
+  cursor: pointer;
+  box-shadow: 3px 3px 0 var(--stardew-dark);
+}
+.stardew-btn:disabled { opacity: 0.5; cursor: wait; }
+
+.stardew-logs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.stardew-log {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 9px;
+  color: var(--stardew-dark);
+  padding: 8px 10px;
+  background: rgba(255, 248, 231, 0.7);
+  border: 2px solid var(--stardew-brown);
+}
+.stardew-log.ok { color: var(--stardew-dark); }
+.stardew-log.err { color: var(--stardew-red); }
+.stardew-log span { flex: 1; word-break: break-word; }
+.stardew-log em {
+  font-style: normal;
+  font-size: 8px;
+  color: var(--stardew-brown);
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.stardew-btn-block { width: 100%; justify-content: center; }
+
+.stardew-chat-room {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: #F5E6CA;
+}
+.stardew-chat-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 12px calc(8px + var(--chat-bottom-reserve, 0px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.stardew-msg {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  padding: 8px 10px;
+  font-size: 9px;
+  font-family: var(--stardew-pixel-font);
+  background: var(--stardew-cream);
+  border: 2px solid var(--stardew-brown);
+  box-shadow: 2px 2px 0 var(--stardew-dark);
+}
+.stardew-msg-gap { margin-top: 4px; }
+.stardew-input-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.stardew-input-actions .stardew-btn { flex: 0 0 auto; }
+.stardew-chat-empty {
+  color: var(--stardew-brown);
+  font-size: 10px;
+  text-align: center;
+  padding: 40px 16px;
+  opacity: 0.7;
+}
+
+/* 同步 UI 新增类 */
+.stardew-sync-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.stardew-sync-role {
+  max-width: 200px;
+}
+.stardew-sync-toggle {
+  max-width: 160px;
+}
+.stardew-input {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--stardew-cream);
+  border: 3px solid var(--stardew-brown);
+  color: var(--stardew-dark);
+  font-family: var(--stardew-pixel-font);
+  font-size: 9px;
+  outline: none;
+  box-shadow: 3px 3px 0 var(--stardew-dark);
+}
+.stardew-input::placeholder {
+  color: var(--stardew-brown);
+  opacity: 0.5;
+}
+.stardew-sync-status {
+  font-size: 9px;
+  color: var(--stardew-brown);
+  font-family: var(--stardew-pixel-font);
+  padding: 8px 10px;
+  border: 2px solid var(--stardew-brown);
+  background: rgba(255, 248, 231, 0.5);
+}
+.stardew-sync-status.running {
+  color: var(--stardew-green);
+  border-color: var(--stardew-green);
+}
+.stardew-sync-status.error {
+  color: var(--stardew-red);
+  border-color: var(--stardew-red);
+}
+
+/* 聊天气泡样式覆盖 */
+.stardew-chat-scroll .chat-msg-wrapper[data-role="user"] .stardew-msg {
+  background: #E8D5B7;
+  border-color: var(--stardew-brown);
+}
+.stardew-chat-scroll .chat-msg-wrapper[data-role="assistant"] .stardew-msg {
+  background: var(--stardew-cream);
+  border-color: var(--stardew-green);
+}
+.stardew-chat-scroll .stardew-sys-msg {
+  font-size: 9px;
+  font-family: var(--stardew-pixel-font);
+  color: var(--stardew-brown);
+  text-align: center;
+  opacity: 0.7;
+  padding: 6px 10px;
+}
+
+/* 星露谷专用 reasoning 折叠 */
+.stardew-reasoning {
+  background: var(--stardew-cream);
+  border: 2px solid var(--stardew-brown);
+  padding: 8px 10px;
+  font-size: 9px;
+  font-family: var(--stardew-pixel-font);
+  color: var(--stardew-dark);
+}
+.stardew-reasoning-summary {
+  cursor: pointer;
+  font-size: 9px;
+  color: var(--stardew-brown);
+  user-select: none;
+}
+.stardew-reasoning-body {
+  margin-top: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 系统提示消息气泡（stardew-sys-msg 覆盖） */
+.stardew-chat-scroll .chat-msg-wrapper[data-role="system"] .stardew-sys-msg {
+  text-align: center;
+  font-size: 9px;
+  color: var(--stardew-brown);
+  opacity: 0.7;
+  padding: 6px 10px;
+}
+
 /* ---------------- 键盘开合黑闪防护 ---------------- */
 /* 软键盘弹出/收起会触发视口 resize，WebView 在这瞬间把带 backdrop-filter
    （毛玻璃）的层重合成黑色，导致整屏黑闪一下。这里在键盘期间（<html> 带

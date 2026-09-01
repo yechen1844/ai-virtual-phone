@@ -24,6 +24,8 @@ import {
 } from "@/lib/nagi-bridge";
 import { loadChatMessages, pushChatMessage, type ChatMessage, type ChatSession } from "@/lib/chat-storage";
 import { recordStardewMessage } from "@/lib/stardew-memory";
+import { useStardewSync, type SyncUiState } from "@/lib/sync-runtime/use-stardew-sync";
+import type { StardewSyncConfig, SyncRole } from "@/lib/sync-runtime/config";
 
 type NAGI_STATUS = "idle" | "running" | "checking";
 type StardewPage = "settings" | "chat";
@@ -54,6 +56,9 @@ export function PhoneStardewApp({ onClose, onNotice }: { onClose: () => void; on
     const [inboxCount, setInboxCount] = useState<number>(0);
     const statusRef = useRef<NAGI_STATUS>("idle");
 
+    // PC↔手机实时同步（游玩端/遥控端）。两端都是同一 float 程序，由 user 手动指定 syncRole。
+    const sync = useStardewSync();
+
     useEffect(() => {
         setChars(listBindableCharacters());
         const savedChar = kvGet(KV_CHAR_KEY) || "";
@@ -72,6 +77,12 @@ export function PhoneStardewApp({ onClose, onNotice }: { onClose: () => void; on
             stopThinkProcessor();
         };
     }, []);
+
+    // 同步开关状态联动：任一时刻改变配置的 enabled/role → 启动/停止引擎
+    useEffect(() => {
+        sync.start(sync.cfg);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sync.cfg.enabled, sync.cfg.role]);
 
     const pushLog = useCallback((text: string, ok: boolean) => {
         setLogs((prev) => {
@@ -152,9 +163,19 @@ export function PhoneStardewApp({ onClose, onNotice }: { onClose: () => void; on
                     onPullNow={handlePullNow}
                     onEnterChat={() => setPage("chat")}
                     charName={chars.find((c) => c.id === charId)?.name}
+                    syncCfg={sync.cfg}
+                    syncUi={sync.ui}
+                    onSyncApply={sync.apply}
                 />
             ) : (
-                <StardewChatPage charId={charId} charName={chars.find((c) => c.id === charId)?.name} onNotice={onNotice} />
+                <StardewChatPage
+                    charId={charId}
+                    charName={chars.find((c) => c.id === charId)?.name}
+                    onNotice={onNotice}
+                    syncCfg={sync.cfg}
+                    onRemoteSendUser={sync.remoteSendUser}
+                    onRemoteRequestReply={sync.remoteRequestReply}
+                />
             )}
         </PageShell>
     );
@@ -173,8 +194,11 @@ function SettingsPage(props: {
     onPullNow: () => void;
     onEnterChat: () => void;
     charName?: string;
+    syncCfg: StardewSyncConfig;
+    syncUi: SyncUiState;
+    onSyncApply: (patch: Partial<StardewSyncConfig>) => StardewSyncConfig;
 }) {
-    const { chars, charId, enabled, status, inboxCount, logs, KV_BACKEND, onBindChar, onToggle, onPullNow, onEnterChat, charName } = props;
+    const { chars, charId, enabled, status, inboxCount, logs, KV_BACKEND, onBindChar, onToggle, onPullNow, onEnterChat, charName, syncCfg, syncUi, onSyncApply } = props;
     return (
         <div className="stardew-app-root">
             <div className="stardew-hero">
@@ -210,6 +234,50 @@ function SettingsPage(props: {
                     {status === "checking" ? <Loader2 size={18} className="stardew-spin" /> : enabled ? <Play size={18} /> : <Square size={18} />}
                     <span>{enabled ? "联动已开启 · 实时串联中" : "联动已关闭"}</span>
                 </button>
+            </div>
+
+            {/* PC↔手机实时同步：两端相同 float 程序，user 手动选游玩端；两端都开才工作 */}
+            <div className="stardew-section">
+                <div className="stardew-label">实时同步（电脑↔手机）</div>
+                <div className="stardew-sync-box">
+                    <div className="stardew-row" style={{ justifyContent: "space-between" }}>
+                        <span className="stardew-backend">本机角色</span>
+                        <select
+                            className="stardew-select stardew-sync-role"
+                            value={syncCfg.role}
+                            onChange={(e) => onSyncApply({ role: e.target.value as SyncRole })}
+                        >
+                            <option value="play">游玩端（生成/调工具）</option>
+                            <option value="remote">遥控端（只读/转发）</option>
+                        </select>
+                    </div>
+                    <div className="stardew-row" style={{ justifyContent: "space-between" }}>
+                        <span className="stardew-backend">同步开关（两端都要开）</span>
+                        <button
+                            type="button"
+                            className={`stardew-toggle stardew-sync-toggle ${syncCfg.enabled ? "on" : "off"}`}
+                            onClick={() => onSyncApply({ enabled: !syncCfg.enabled })}
+                        >
+                            <span>{syncCfg.enabled ? "同步已开启" : "同步已关闭"}</span>
+                        </button>
+                    </div>
+                    <input
+                        className="stardew-input"
+                        placeholder="Supabase 项目地址 (https://xxxx.supabase.co)"
+                        value={syncCfg.url}
+                        onChange={(e) => onSyncApply({ url: e.target.value })}
+                    />
+                    <input
+                        className="stardew-input"
+                        placeholder="anon/public key"
+                        value={syncCfg.anonKey}
+                        onChange={(e) => onSyncApply({ anonKey: e.target.value })}
+                    />
+                    <div className={`stardew-sync-status ${syncUi.state}`}>
+                        {syncUi.configured ? (syncCfg.enabled ? `同步中…（${syncUi.role === "play" ? "游玩端" : "遥控端"}）` : "已配置，等待开启") : "未配置（填地址+密钥）"}
+                        {syncUi.state === "error" && syncUi.errorMsg ? ` · ${syncUi.errorMsg}` : ""}
+                    </div>
+                </div>
             </div>
 
             <div className="stardew-section">
@@ -263,7 +331,12 @@ function splitOfflineParagraphs(text: string): string[] {
         .filter(Boolean);
 }
 
-function StardewChatPage({ charId, charName, onNotice }: { charId: string; charName?: string; onNotice?: (msg: string) => void }) {
+function StardewChatPage({ charId, charName, onNotice, syncCfg, onRemoteSendUser, onRemoteRequestReply }: {
+    charId: string; charName?: string; onNotice?: (msg: string) => void;
+    syncCfg: StardewSyncConfig;
+    onRemoteSendUser: (cfg: StardewSyncConfig, sessionId: string, characterId: string, content: string) => Promise<void>;
+    onRemoteRequestReply: (cfg: StardewSyncConfig, sessionId: string, characterId: string) => Promise<void>;
+}) {
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [inputValue, setInputValue] = useState("");
     const [isThinking, setIsThinking] = useState(false);
@@ -340,19 +413,24 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
         setMessages(all.slice(-visibleCountRef.current));
     }, []);
 
-    // 发送 = 只是发消息（发进游戏 + 写入本地会话），不触发 char 回复；回复必须手动点「回复」按钮
+    // 发送 = 只是发消息（发进游戏 + 写入会话），不触发 char 回复；回复必须手动点「回复」按钮
     const handleSend = useCallback(async () => {
         const text = inputValue.trim();
-        if (!text || isThinking || replying || !sessionRef.current || !charId) return;
+        if (!text || isThinking || replying || !charId) return;
         setInputValue("");
         try {
-            // 发进星露谷游戏（玩家在游戏聊天框里能看到）
-            await sendGameMessageViaCloud(text, "玩家");
-            // 写入本地星露谷会话，让 app 里能看到这条消息；不生成回复
             const session = getOrCreateStardewSession(charId);
             sessionRef.current = session;
-            pushChatMessage({ sessionId: session.id, role: "user", content: text, status: "sent" });
-            recordStardewMessage(charId, { role: "user", content: text });
+            if (syncCfg.enabled && syncCfg.role === "remote") {
+                // 遥控端：只把 user 消息同步给游玩端（不本地生成、不直接进游戏）
+                await onRemoteSendUser(syncCfg, session.id, charId, text);
+                onNotice?.("已发送，等待游玩端回复");
+            } else {
+                // 游玩端（或未开同步）：发进游戏 + 写本地会话
+                await sendGameMessageViaCloud(text, "玩家");
+                pushChatMessage({ sessionId: session.id, role: "user", content: text, status: "sent" });
+                recordStardewMessage(charId, { role: "user", content: text });
+            }
         } catch (e) {
             console.warn("[StardewChat] 发送失败:", e);
             onNotice?.("发送失败，请重试");
@@ -360,20 +438,27 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
             refreshFromStorage();
             scrollToBottom();
         }
-    }, [inputValue, isThinking, replying, charId, onNotice, scrollToBottom, refreshFromStorage]);
+    }, [inputValue, isThinking, replying, charId, syncCfg, onRemoteSendUser, onNotice, scrollToBottom, refreshFromStorage]);
 
-    // 回复按钮 = 从 Worker 拉取游戏消息，触发 char 生成回复并推回
+    // 回复按钮：遥控端 → 请求游玩端生成并拉回；游玩端 → 本地触发生成并推回
     const handleReply = useCallback(async () => {
         if (replying || isThinking || !charId) return;
         setReplying(true);
         setIsThinking(true);
         try {
-            ensureStardewToolsRegistered();
-            const n = await processNagiInbox(charId);
-            if (n === 0 && charId) {
-                // 队列无新消息，但会话里若有最后一条 user 消息还没被 char 回复 → 强制补一条（历史已限制最近150条，不会全量）
-                const forced = await stardewReplyLatestPending(charId);
-                if (!forced) onNotice?.("没有新的游戏消息，且没有待回复的对话");
+            const session = getOrCreateStardewSession(charId);
+            sessionRef.current = session;
+            if (syncCfg.enabled && syncCfg.role === "remote") {
+                // 遥控端：请求游玩端对已同步的 user 消息生成回复，回复经 fanout 拉回
+                await onRemoteRequestReply(syncCfg, session.id, charId);
+            } else {
+                // 游玩端（或未开同步）：本机生成（含工具）
+                ensureStardewToolsRegistered();
+                const n = await processNagiInbox(charId);
+                if (n === 0 && charId) {
+                    const forced = await stardewReplyLatestPending(charId);
+                    if (!forced) onNotice?.("没有新的游戏消息，且没有待回复的对话");
+                }
             }
         } catch (e) {
             console.warn("[StardewChat] 回复失败:", e);
@@ -384,7 +469,7 @@ function StardewChatPage({ charId, charName, onNotice }: { charId: string; charN
             refreshFromStorage();
             scrollToBottom();
         }
-    }, [charId, replying, isThinking, onNotice, scrollToBottom, refreshFromStorage]);
+    }, [charId, replying, isThinking, syncCfg, onRemoteRequestReply, onNotice, scrollToBottom, refreshFromStorage]);
 
     const onInputKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
         if (shouldSendChatInputOnEnter(e, true)) {
