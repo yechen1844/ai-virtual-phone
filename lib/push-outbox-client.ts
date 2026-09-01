@@ -113,6 +113,7 @@ export async function consumeServerOutbox(options?: { silent?: boolean; force?: 
     consuming = true;
     lastConsumeAt = Date.now();
     const passStartMs = Date.now();
+    let consumedAnyThisPass = 0;
     try {
         // 共享回传箱已停用，只读取用户自己的 Supabase。
         const sources: Array<"personal" | "shared"> = ["personal"];
@@ -304,6 +305,7 @@ export async function consumeServerOutbox(options?: { silent?: boolean; force?: 
             }
 
             if (consumedIds.length === 0) break;
+            consumedAnyThisPass += consumedIds.length;
             const ackInit: RequestInit = {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -319,6 +321,10 @@ export async function consumeServerOutbox(options?: { silent?: boolean; force?: 
         }
     } finally {
         consuming = false;
+        // 前台若开着 float，要让当前聊天界面收到"有新数据"去重画，否则离线消息要重进才显示。
+        if (consumedAnyThisPass > 0) {
+            window.dispatchEvent(new CustomEvent("chat-messages-updated"));
+        }
     }
 }
 
