@@ -7,6 +7,7 @@ import { KeyboardGlassGuard } from "@/components/keyboard-glass-guard";
 import { CSSImportEnhancer } from "@/components/css-import-enhancer";
 import { PWAManifestInjector } from "@/components/pwa-manifest-injector";
 import { PWARegistrar } from "@/components/pwa-registrar";
+import { SupabaseBridge } from "@/components/supabase-bridge";
 import "../styles/fonts.css";
 import "./globals.css";
 
@@ -47,6 +48,7 @@ export default function RootLayout({
         <ChatPluginBootstrap />
         <ChatReasoningVisibilityController />
         <KeyboardGlassGuard />
+        <SupabaseBridge />
         {children}
       </body>
     </html>

@@ -300,6 +300,22 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun getVersion(): String = VERSION
 
+        /**
+         * 网页把「在 float 设置里配好的 Supabase」(url + key) 推给壳，
+         * 壳存进 SharedPreferences，PushService 优先用它连 Realtime——
+         * 这样离线推送用的是你前端配的数据库，不依赖服务器环境变量。
+         */
+        @JavascriptInterface
+        fun recordSupabase(url: String, key: String) {
+            runCatching {
+                getSharedPreferences("float_supabase", 0)
+                    .edit()
+                    .putString("url", (url ?: "").trim())
+                    .putString("key", (key ?: "").trim())
+                    .apply()
+            }
+        }
+
         /** 打开本应用的系统设置页（引导用户关电池限制、开自启动）。 */
         @JavascriptInterface
         fun openAppSettings() {

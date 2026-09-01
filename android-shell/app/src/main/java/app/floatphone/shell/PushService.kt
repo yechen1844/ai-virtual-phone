@@ -137,10 +137,18 @@ class PushService : Service() {
         val me = getJson("/api/auth/me") ?: return null
         val userId = me.optJSONObject("account")?.optString("id").orEmpty()
         if (userId.isEmpty()) return null
-        val online = getJson("/api/online/config") ?: return null
-        if (!online.optBoolean("configured")) return null
-        val url = online.optString("supabaseUrl")
-        val key = online.optString("anonKey")
+        // 优先用「float 设置里配好的 Supabase」(网页 recordSupabase 推给壳存进 SharedPreferences)，
+        // 其次才回退服务器 /api/online/config——这样离线推送用你前端配的库，不依赖服务器环境变量。
+        val sp = getSharedPreferences("float_supabase", 0)
+        var url = sp.getString("url", "")?.trim().orEmpty()
+        var key = sp.getString("key", "")?.trim().orEmpty()
+        if (url.isEmpty() || key.isEmpty()) {
+            val online = getJson("/api/online/config")
+            if (online != null && online.optBoolean("configured")) {
+                url = online.optString("supabaseUrl")
+                key = online.optString("anonKey")
+            }
+        }
         if (url.isEmpty() || key.isEmpty()) return null
         registerShellSubscription(userId)
         PushConfig(url.trimEnd('/'), key, userId)
