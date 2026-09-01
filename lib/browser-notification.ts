@@ -2,19 +2,26 @@
 // Browser Notification API wrapper for background alerts.
 
 import { loadChatAppSettings } from "./chat-storage";
+import { isShellEnvironment } from "./push-client";
 
 let _notifCounter = 0;
 
 /** Check if notifications are enabled in app settings. */
 export function isNotificationEnabled(): boolean {
     if (typeof window === "undefined") return false;
+    // 壳（APK）：用安卓原生通道，不依赖浏览器 Notification API。
+    if (isShellEnvironment()) {
+        const settings = loadChatAppSettings();
+        return settings.browserNotificationsEnabled === true;
+    }
     if (!("Notification" in window)) return false;
     const settings = loadChatAppSettings();
     return settings.browserNotificationsEnabled === true && Notification.permission === "granted";
 }
 
-/** Request notification permission from the browser. Returns true if granted. */
+/** Request notification permission. In shell, permission is native (already granted by system). */
 export async function requestNotificationPermission(): Promise<boolean> {
+    if (isShellEnvironment()) return true;
     if (typeof window === "undefined" || !("Notification" in window)) return false;
     if (Notification.permission === "granted") return true;
     if (Notification.permission === "denied") return false;
@@ -69,6 +76,15 @@ export function sendBrowserNotification(
 ): void {
     if (!isNotificationEnabled()) return;
     if (!document.hidden) return;
+
+    // 壳（APK）：走安卓原生通知，不依赖 ServiceWorker / Notification API。
+    if (isShellEnvironment()) {
+        const shell = (window as unknown as Record<string, unknown>).AndroidShell as
+            | { showNotification?: (title: string, body?: string, tag?: string) => void }
+            | undefined;
+        try { shell?.showNotification?.(title, options?.body, `char-${_notifCounter++}`); } catch { /* ignore */ }
+        return;
+    }
 
     const payload: NotificationOptions = {
         body: options?.body,

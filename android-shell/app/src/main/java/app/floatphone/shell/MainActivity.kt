@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
+import android.view.Gravity
 import android.webkit.CookieManager
 import android.webkit.DownloadListener
 import android.webkit.JavascriptInterface
@@ -20,6 +21,8 @@ import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
@@ -314,6 +317,39 @@ class MainActivity : AppCompatActivity() {
                     .putString("url", (url ?: "").trim())
                     .putString("key", (key ?: "").trim())
                     .apply()
+            }
+        }
+
+        /**
+         * 后台推送：网页在后台收到 char 新消息时调用，用安卓原生通道弹系统通知。
+         * 不依赖浏览器 Notification API / ServiceWorker / Supabase。
+         */
+        @JavascriptInterface
+        fun showNotification(title: String, body: String, tag: String?) {
+            try {
+                val nm = getSystemService(android.app.NotificationManager::class.java)
+                val channelId = "float_bg_notify"
+                if (Build.VERSION.SDK_INT >= 26) {
+                    nm.createNotificationChannel(
+                        android.app.NotificationChannel(channelId, "后台通知", android.app.NotificationManager.IMPORTANCE_HIGH)
+                    )
+                }
+                val click = android.app.PendingIntent.getActivity(
+                    this, 0,
+                    Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    android.app.PendingIntent.FLAG_IMMUTABLE,
+                )
+                val notif = android.app.Notification.Builder(this, channelId)
+                    .setSmallIcon(R.drawable.ic_stat)
+                    .setContentTitle(title ?: "")
+                    .setContentText(body ?: "")
+                    .setAutoCancel(true)
+                    .setContentIntent(click)
+                    .build()
+                val id = (tag?.hashCode() ?: (System.currentTimeMillis() % 100000).toInt())
+                nm.notify(id, notif)
+            } catch (e: Exception) {
+                // ignore
             }
         }
 
