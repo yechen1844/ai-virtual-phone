@@ -493,6 +493,25 @@ Deno.serve(async (req: Request) => {
     return new Response("forbidden", { status: 403 });
   }
 
+  // 定时/主动类（前后端会同时触发）：先给前端 2 分钟在客户端抢先生成并把本轮云端
+  // pending job 撤销(cancelled)，再用原原子 `where status=pending` 抢锁——若前端已撤，
+  // claim 匹配不到(pending) 自然跳过，避免前后端同时生成、又撞车又浪费资源。
+  // 前端若被杀、无人撤销，则 2 分钟后仍 pending → claim 成功，后端兜底生成。
+  // 长期计划本体不动：每次到期都重新走一遍本逻辑，下个周期照常。
+  try {
+    const pre = await rest(`push_jobs?id=eq.${encodeURIComponent(jobId)}&select=kind,trigger_key&limit=1`);
+    if (pre.ok) {
+      const preRows = await pre.json() as { kind?: string; trigger_key?: string }[];
+      const preKind = preRows[0]?.kind ?? "";
+      const preTk = preRows[0]?.trigger_key ?? "";
+      const isProactive = preKind === "timed_task"
+        || preTk.startsWith("idle:")
+        || preTk.startsWith("timedwake:")
+        || preTk.startsWith("periodcare:");
+      if (isProactive) await sleep(120_000);
+    }
+  } catch { /* 预检失败不阻塞主流程 */ }
+
   const claim = await rest(`push_jobs?id=eq.${encodeURIComponent(jobId)}&status=eq.pending&kind=neq.bridge_scan`, {
     method: "PATCH",
     headers: { Prefer: "return=representation" },
