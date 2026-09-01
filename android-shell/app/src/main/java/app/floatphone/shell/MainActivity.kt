@@ -327,7 +327,7 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun showNotification(title: String, body: String, tag: String?) {
             try {
-                val nm = getSystemService(android.app.NotificationManager::class.java)
+                val nm = this@MainActivity.getSystemService(android.app.NotificationManager::class.java)
                 val channelId = "float_bg_notify"
                 if (Build.VERSION.SDK_INT >= 26) {
                     nm.createNotificationChannel(
@@ -335,11 +335,11 @@ class MainActivity : AppCompatActivity() {
                     )
                 }
                 val click = android.app.PendingIntent.getActivity(
-                    this, 0,
-                    Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    this@MainActivity, 0,
+                    Intent(this@MainActivity, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                     android.app.PendingIntent.FLAG_IMMUTABLE,
                 )
-                val notif = android.app.Notification.Builder(this, channelId)
+                val notif = android.app.Notification.Builder(this@MainActivity, channelId)
                     .setSmallIcon(R.drawable.ic_stat)
                     .setContentTitle(title ?: "")
                     .setContentText(body ?: "")
