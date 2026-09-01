@@ -454,14 +454,14 @@ export function UserProfilePanel({ onClose, className }: UserProfilePanelProps) 
                             </div>
                             <Toggle checked={notifEnabled} disabled={notifChecking} onChange={handleNotificationToggle} />
                         </div>
-                        {isShellApp && (
+                        {isShellEnvironment() && (
                             <div className="flex items-center gap-3 py-3 w-full">
                                 <Bell size={18} className="text-[var(--c-icon)] opacity-70" strokeWidth={1.25}/>
                                 <div className="flex flex-col flex-1 text-left gap-0.5">
                                     <span className="ts-14 font-semibold text-[var(--c-text-title)]">安卓后台通知</span>
                                     <span className="ts-11 text-[var(--c-text)] opacity-70">用安卓原生通道弹新消息横幅（APK 专用，无需浏览器权限）</span>
                                 </div>
-                                <Toggle checked={notifEnabled} disabled={notifChecking || !isShellApp} onChange={handleNotificationToggle} />
+                                <Toggle checked={notifEnabled} disabled={notifChecking || !isShellEnvironment()} onChange={handleNotificationToggle} />
                             </div>
                         )}
                     </div>
