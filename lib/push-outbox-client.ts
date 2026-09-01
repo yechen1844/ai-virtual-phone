@@ -45,6 +45,37 @@ const OUTBOX_BATCH_SIZE = 20;
 const MAX_OUTBOX_BATCHES_PER_PASS = 10;
 const OUTBOX_FOREGROUND_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 
+/**
+ * 确认能否访问个人云离线推送网关（ai-phone-push?action=outbox）。
+ * 优先看「个人云已部署」状态；缺失时（最常见于 APK 壳：独立 WebView 里没有
+ * personal_push_cloud_state_v1 标记）只要云备份里有 url+key 就能直连网关。
+ */
+function hasPersonalGatewayTarget(): boolean {
+    if (isPersonalPushCloudActive()) return true;
+    const backup = loadCloudBackupConfig();
+    return isCloudBackupConfigured(backup) && Boolean(backup.url && backup.key);
+}
+
+/**
+ * 从个人云网关拉/确认 outbox。个人云即云备份同一项目（isPersonalPushCloudActive
+ * 要求两者同 ref），因此可用云备份的 url + service key 直连，与英壳 recordSupabase
+ * 推给壳的是同一套凭据——弥补壳没有「已部署」标记时仍能拉取消息。
+ */
+function personalGatewayFetch(action: "outbox", init?: RequestInit): Promise<Response> | null {
+    if (isPersonalPushCloudActive()) return personalPushFetch("outbox", init);
+    const backup = loadCloudBackupConfig();
+    if (!isCloudBackupConfigured(backup) || !backup.url || !backup.key) return null;
+    const headers = new Headers(init?.headers);
+    headers.set("x-ai-phone-service-key", backup.key.trim());
+    headers.set("x-ai-phone-origin", typeof window !== "undefined" ? window.location.origin : "");
+    if (init?.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+    return fetch(`${backup.url.replace(/\/+$/, "")}/functions/v1/ai-phone-push?action=outbox`, {
+        ...init,
+        headers,
+        cache: "no-store",
+    });
+}
+
 function getTimedWakeIdFromTriggerKey(triggerKey: string | null): string | null {
     if (!triggerKey?.startsWith("timedwake:")) return null;
     const id = triggerKey.slice("timedwake:".length);
@@ -72,7 +103,10 @@ export async function consumeServerOutbox(options?: { silent?: boolean; force?: 
     if (consuming) return;
     if (options?.force !== true && Date.now() - lastConsumeAt < OUTBOX_FOREGROUND_CHECK_INTERVAL_MS) return;
     // 没有任何设备订阅推送时，服务端不可能产生普通离线回传；避免所有在线用户空轮询。
-    if (!loadScreenChatSettings().enabled && !(await hasAccountPushSubscription())) {
+    // 壳（APK）自带原生通道、没有浏览器 Web Push 订阅——必须放行，否则离线回传永不拉取。
+    const isShellLike = () => typeof window !== "undefined"
+        && !!(window as unknown as Record<string, unknown>)?.AndroidShell;
+    if (!loadScreenChatSettings().enabled && !(await hasAccountPushSubscription()) && !isShellLike()) {
         if (force) console.warn("[PushOutbox] pull skipped: gate (无屏幕速聊且账号无离线推送订阅)");
         return;
     }
