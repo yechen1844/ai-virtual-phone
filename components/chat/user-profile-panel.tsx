@@ -461,7 +461,7 @@ export function UserProfilePanel({ onClose, className }: UserProfilePanelProps) 
                                     <span className="ts-14 font-semibold text-[var(--c-text-title)]">安卓后台通知</span>
                                     <span className="ts-11 text-[var(--c-text)] opacity-70">用安卓原生通道弹新消息横幅（APK 专用，无需浏览器权限）</span>
                                 </div>
-                                <Toggle checked={notifEnabled} disabled={notifChecking || !isShellEnvironment()} onChange={handleNotificationToggle} />
+                                <Toggle checked={notifEnabled} disabled={notifChecking} onChange={(enabled) => { saveChatAppSettings({ ...loadChatAppSettings(), browserNotificationsEnabled: enabled }); setNotifEnabled(enabled); }} />
                             </div>
                         )}
                     </div>

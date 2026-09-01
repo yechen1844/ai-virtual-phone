@@ -9,10 +9,9 @@ let _notifCounter = 0;
 /** Check if notifications are enabled in app settings. */
 export function isNotificationEnabled(): boolean {
     if (typeof window === "undefined") return false;
-    // 壳（APK）：用安卓原生通道，不依赖浏览器 Notification API。
-    if (isShellEnvironment()) {
-        const settings = loadChatAppSettings();
-        return settings.browserNotificationsEnabled === true;
+    // 壳（APK）：用安卓原生通道，不依赖浏览器 Notification API。直接 feature-detect 桥，最可靠。
+    if ((window as unknown as Record<string, unknown>)?.AndroidShell) {
+        return loadChatAppSettings().browserNotificationsEnabled === true;
     }
     if (!("Notification" in window)) return false;
     const settings = loadChatAppSettings();
