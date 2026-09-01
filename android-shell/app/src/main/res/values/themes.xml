@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.FloatShell" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <!-- 真沉浸全屏：隐藏状态栏窗口级别动画 + 系统栏透明 -->
+        <item name="android:windowFullscreen">true</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
     </style>
 </resources>

@@ -94,6 +94,8 @@ class MainActivity : AppCompatActivity() {
 
         webView = WebView(this)
         setContentView(webView)
+        // 一进界面就沉浸（不等 onWindowFocusChanged），避免初始一帧露出状态栏/导航栏
+        window.decorView.post { hideSystemBars() }
 
         webView.settings.apply {
             javaScriptEnabled = true
