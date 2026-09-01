@@ -216,6 +216,10 @@ export async function ensurePersonalPushSubscription(): Promise<{ ok: boolean; e
 }
 
 export async function getOfflinePushState(): Promise<OfflinePushState> {
+    // 壳（APK）：用壳自己的原生通道承载离线推送，状态由本机构建。
+    if (isShellEnvironment()) {
+        try { return localStorage.getItem("float_offline_push") === "1" ? "on" : "off"; } catch { return "off"; }
+    }
     if (!isPushSupported()) return "unsupported";
     if (isPersonalPushCloudActive()) {
         const personalRegistration = await getPersonalPushRegistration(false);
@@ -234,6 +238,11 @@ export async function getOfflinePushState(): Promise<OfflinePushState> {
 }
 
 export async function enableOfflinePush(): Promise<{ ok: boolean; error?: string }> {
+    // 壳（APK）：由壳的原生通道承担，开启即本地标记，不依赖浏览器 SW / Notification API。
+    if (isShellEnvironment()) {
+        try { localStorage.setItem("float_offline_push", "1"); } catch { /* ignore */ }
+        return { ok: true };
+    }
     if (!isPushSupported()) {
         return { ok: false, error: "当前环境不支持系统推送。iOS 请先「添加到主屏幕」，再从主屏幕图标打开开启。" };
     }
@@ -302,6 +311,11 @@ export async function enableOfflinePush(): Promise<{ ok: boolean; error?: string
 }
 
 export async function disableOfflinePush(): Promise<{ ok: boolean; error?: string }> {
+    // 壳（APK）：清除本地标记即可关闭。
+    if (isShellEnvironment()) {
+        try { localStorage.removeItem("float_offline_push"); } catch { /* ignore */ }
+        return { ok: true };
+    }
     const registration = await getReadyRegistration(2000);
     const subscription = registration ? await registration.pushManager.getSubscription().catch(() => null) : null;
     if (subscription) {
