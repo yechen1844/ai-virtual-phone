@@ -1403,8 +1403,8 @@ function OfflinePushSettingsPage({ onBack }: { onBack: () => void }) {
                                         <button className="ui-btn ui-btn-outline py-1 px-2 ts-11" style={{ whiteSpace: "nowrap" }} onClick={() => void handleOfflinePushTest()} disabled={offlinePushBusy}>测试</button>
                                     )}
                                     <Toggle
-                                        checked={offlinePushState === "on" || isShellApp}
-                                        disabled={offlinePushBusy || isShellApp || offlinePushState === "unsupported"}
+                                        checked={offlinePushState === "on"}
+                                        disabled={offlinePushBusy || offlinePushState === "unsupported"}
                                         onChange={enabled => void handleOfflinePushToggle(enabled)}
                                     />
                                 </div>
