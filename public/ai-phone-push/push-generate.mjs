@@ -131,6 +131,15 @@ function stripHallucinatedTimestamps(text: string): string {
     .replace(/\(system\s*time\s*[:：][^)]*\)\s*/gi, "");
 }
 
+/** 兜底剥离模型思维链：<think>/<thinking>/<thought> 包裹的推理块。部分 provider
+ *  把推理直接塞进 content，只用 thought=true 片段过滤盖不住，这里统一剥掉再入库，
+ *  确保 outbox raw_text / 弹窗预览都不含思维链。 */
+function stripThinkingMarkup(text: string): string {
+  return text
+    .replace(/<(?:think|thinking|thought)>[\s\S]*?<\/(?:think|thinking|thought)>/gi, "")
+    .trim();
+}
+
 function textFromUnknownContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
@@ -151,7 +160,7 @@ function extractResponseText(providerKind: ProviderKind, data: unknown): string 
       const item = block as { type?: string; text?: string };
       if (item.type === "text") text += item.text ?? "";
     }
-    return stripHallucinatedTimestamps(text);
+    return stripHallucinatedTimestamps(stripThinkingMarkup(text));
   }
   if (providerKind === "gemini") {
     const parts = (data as { candidates?: Array<{ content?: { parts?: unknown[] } }> }).candidates?.[0]?.content?.parts || [];
@@ -160,15 +169,16 @@ function extractResponseText(providerKind: ProviderKind, data: unknown): string 
       const item = part as { text?: string; thought?: boolean; functionCall?: unknown };
       if (!item.functionCall && !item.thought) text += item.text ?? "";
     }
-    return stripHallucinatedTimestamps(text);
+    return stripHallucinatedTimestamps(stripThinkingMarkup(text));
   }
-  const d = data as { choices?: Array<{ message?: { content?: unknown }; text?: string }>; output?: { text?: string }; response?: string };
+  const d = data as { choices?: Array<{ message?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown }; text?: string }>; output?: { text?: string }; response?: string };
+  // 有 reasoning_content/reasoning 时只认 content（忽略推理），避免思维链串进消息。
   const messageText = textFromUnknownContent(d.choices?.[0]?.message?.content).trim();
   const text = messageText
     || (typeof d.choices?.[0]?.text === "string" ? d.choices[0].text.trim() : "")
     || (typeof d.output?.text === "string" ? d.output.text.trim() : "")
     || (typeof d.response === "string" ? d.response.trim() : "");
-  return stripHallucinatedTimestamps(text);
+  return stripHallucinatedTimestamps(stripThinkingMarkup(text));
 }
 
 // ── 内嵌：lib/push-preview-split 的弹窗预览分条 ──

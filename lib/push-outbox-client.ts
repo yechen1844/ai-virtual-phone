@@ -171,7 +171,14 @@ export async function consumeServerOutbox(options?: { silent?: boolean; force?: 
                     const sessionId = meta.sessionId || entry.session_id || "";
                     const session = sessionId ? loadChatSessions().find(s => s.id === sessionId) : undefined;
                     if (!session) {
-                        console.warn("[PushOutbox] session not found, keep entry pending:", entry.id, sessionId);
+                        // 会话匹配不上就直接 continue 会让该 outbox 永久 pending、消息写不进聊天。
+                        // 落地一条含上下文的可定位日志（id/sessionId/触发键/可用会话列表），
+                        // 便于确认是「该设备本地确实没有这个会话」还是「sessionId 字段缺失/格式不一致」。
+                        const knownIds = loadChatSessions().map(s => s.id);
+                        console.warn(
+                            "[PushOutbox] session not found, keep entry pending",
+                            { entryId: entry.id, sessionId, triggerKey: entry.trigger_key || null, knownSessionCount: knownIds.length, knownSessionIds: knownIds.slice(0, 10) },
+                        );
                         continue;
                     }
 
