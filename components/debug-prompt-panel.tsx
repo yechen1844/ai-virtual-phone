@@ -177,26 +177,30 @@ export function DebugPromptPanel() {
         const sessions = loadChatSessions();
         const chars = loadCharacters();
         const charNameById = new Map(chars.map(c => [c.id, c.name]));
-        return sessions
+return sessions
             // 星露谷会话单独走「星露谷」独立预览标签，不在聊天页的 char 下拉混入
             .filter(s => !s.id?.startsWith("sess_stardew_"))
+            // 不列出已删除角色的残留单聊，也不列出没有任何有效角色的空群聊
+            .filter(session => session.isGroup
+                ? (session.participantIds || []).some(id => charNameById.has(id))
+                : charNameById.has(session.contactId))
             .map(session => {
-            if (session.isGroup) {
-                const fallbackName = (session.participantIds || [])
-                    .map(id => charNameById.get(id) || id)
-                    .slice(0, 3)
-                    .join("、");
+                if (session.isGroup) {
+                    const fallbackName = (session.participantIds || [])
+                        .map(id => charNameById.get(id))
+                        .filter(Boolean)
+                        .slice(0, 3)
+                        .join("、");
+                    return {
+                        session,
+                        label: `群聊 · ${session.groupName || fallbackName || "未命名群聊"}`,
+                    };
+                }
                 return {
                     session,
-                    label: `群聊 · ${session.groupName || fallbackName || "未命名群聊"}`,
+                    label: charNameById.get(session.contactId) || session.alias || session.contactId,
                 };
-            }
-            // 星露谷会话已在上方 filter 掉，这里只处理普通私聊
-            return {
-                session,
-                label: charNameById.get(session.contactId) || session.alias || session.contactId,
-            };
-        });
+            });
     }, [enabled, chatState?.session?.id]);
     const activeChatSession = chatSessionOptions.find(option => option.session.id === selectedChatSessionId)?.session
         ?? chatState?.session
