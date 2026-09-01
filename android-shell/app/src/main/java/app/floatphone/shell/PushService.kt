@@ -7,10 +7,12 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.webkit.CookieManager
 import androidx.core.app.NotificationCompat
+import androidx.media.session.MediaSessionCompat
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -59,13 +61,26 @@ class PushService : Service() {
     private var notifId = 100
     private var shellSubRegistered = false
 
+    // 保活增强用的“活跃媒体会话”：不申请音频焦点、不实际播放任何声音，
+    // 只让系统认为有个正在使用的媒体服务 → 整体存活优先级更高。
+    // 正因为从不 requestAudioFocus / 从不 start 播放器，前台网页放歌/语音完全不受影响。
+    private var mediaSession: MediaSessionCompat? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         running = true
         createChannels()
-        startForeground(NOTIF_FG_ID, buildKeepAliveNotification("等待连接…"))
+        mediaSession = MediaSessionCompat(this, "float").apply { setActive(true) }
+        startForeground(
+            NOTIF_FG_ID,
+            buildKeepAliveNotification("等待连接…"),
+            if (Build.VERSION.SDK_INT >= 29)
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            else 0,
+        )
         thread(name = "shell-push-loop") { connectionLoop() }
     }
 
@@ -75,6 +90,8 @@ class PushService : Service() {
         stopped = true
         running = false
         socket?.cancel()
+        mediaSession?.release()
+        mediaSession = null
         super.onDestroy()
     }
 
@@ -273,15 +290,22 @@ class PushService : Service() {
         PendingIntent.FLAG_IMMUTABLE,
     )
 
-    private fun buildKeepAliveNotification(text: String): Notification =
-        NotificationCompat.Builder(this, CH_KEEPALIVE)
+    private fun buildKeepAliveNotification(text: String): Notification {
+        val showMediaSnap = mediaSession != null
+        val builder = NotificationCompat.Builder(this, CH_KEEPALIVE)
             .setSmallIcon(R.drawable.ic_stat)
-            .setContentTitle("小手机")
+            .setContentTitle("float")
             .setContentText(text)
             .setOngoing(true)
             .setContentIntent(contentIntent())
             .setPriority(NotificationCompat.PRIORITY_MIN)
-            .build()
+        // 对外呈现为一个“后台媒体会话”型常驻通知，帮助系统更多保留本进程；
+        // 不夹带播放按钮，也不抢焦点——纯外形。
+        if (showMediaSnap) {
+            builder.setStyle(NotificationCompat.MediaStyle().setMediaSession(mediaSession?.sessionToken))
+        }
+        return builder.build()
+    }
 
     private fun updateKeepAlive(text: String) {
         getSystemService(NotificationManager::class.java)
