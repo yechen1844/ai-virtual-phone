@@ -1399,6 +1399,25 @@ function OfflinePushSettingsPage({ onBack }: { onBack: () => void }) {
                                     />
                                 </div>
                             </div>
+                            {isShellApp && (
+                                <div className="menu-item">
+                                    <ProfileSettingsIcon icon={Satellite} color={BINDING_ACCENTS.api} />
+                                    <div className="menu-label-group">
+                                        <span className="menu-label">安卓后台通知</span>
+                                        <span className="menu-desc">用安卓原生通道接收推送（APK 专用开关）</span>
+                                    </div>
+                                    <div className="menu-right flex items-center gap-2">
+                                        {offlinePushState === "on" && (
+                                            <button className="ui-btn ui-btn-outline py-1 px-2 ts-11" style={{ whiteSpace: "nowrap" }} onClick={() => void handleOfflinePushTest()} disabled={offlinePushBusy}>测试</button>
+                                        )}
+                                        <Toggle
+                                            checked={offlinePushState === "on"}
+                                            disabled={offlinePushBusy || !isShellApp}
+                                            onChange={enabled => void handleOfflinePushToggle(enabled)}
+                                        />
+                                    </div>
+                                </div>
+                            )}
                             <div className="menu-item">
                                 <ProfileSettingsIcon icon={Moon} color={BINDING_ACCENTS.memory} />
                                 <div className="menu-label-group">
