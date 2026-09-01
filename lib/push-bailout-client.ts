@@ -9,6 +9,12 @@ import { buildProviderRequest, toLlmRequestMessages, type LlmRequestPayload } fr
 import { loadChatMessages, loadChatSessions, loadFollowUpSchedule, type ChatMessage, type ChatSession } from "./chat-storage";
 import { hasAccountPushSubscription, isWithinPushQuietHours, loadPushQuietHours, peekAccountPushSubscribed } from "./push-client";
 import { isPersonalPushCloudActive, pushJobsFetch } from "./personal-push-cloud";
+
+/** 壳（APK）判定：直接探测壳注入的原生桥——壳下用壳的原生通道，不存在 SW 订阅之说，跳过相关校验。 */
+function isShellLike(): boolean {
+    if (typeof window === "undefined") return false;
+    try { return !!(window as unknown as Record<string, unknown>)?.AndroidShell; } catch { return false; }
+}
 import {
     buildOfflineShortcutContinuation,
     maybeAppendShortcutCapability,
@@ -397,7 +403,7 @@ function buildQuietWindowMeta(): { startMin: number; endMin: number; tzOffsetMin
 export async function armIdleReconnectBailout(rule: IdleReconnectRule): Promise<BailoutArmResult> {
     if (!bailoutEnabled()) return { ok: false, reason: "当前环境不支持服务端离线预约" };
     try {
-        if (!(await hasAccountPushSubscription())) return { ok: false, reason: "当前账号没有可用的离线推送订阅" };
+        if (!(await hasAccountPushSubscription()) && !isShellLike()) return { ok: false, reason: "当前账号没有可用的离线推送订阅" };
         const session = loadChatSessions().find(s => s.id === rule.sessionId);
         if (!session || session.isGroup || session.contactId !== rule.characterId) return { ok: false, reason: "找不到对应的单聊会话" };
         const history = loadChatMessages(session.id);
@@ -484,7 +490,7 @@ export async function armIdleReconnectBailout(rule: IdleReconnectRule): Promise<
 export async function armTimedWakeBailout(schedule: TimedWakeSchedule): Promise<BailoutArmResult> {
     if (!bailoutEnabled()) return { ok: false, reason: "当前环境不支持服务端离线预约" };
     try {
-        if (!(await hasAccountPushSubscription())) return { ok: false, reason: "当前账号没有可用的离线推送订阅" };
+        if (!(await hasAccountPushSubscription()) && !isShellLike()) return { ok: false, reason: "当前账号没有可用的离线推送订阅" };
         if (isWithinPushQuietHours(schedule.fireAt)) return { ok: false, reason: "触发时间落在推送安静时段内" };
         const session = loadChatSessions().find(s => s.id === schedule.sessionId);
         if (!session || session.isGroup || session.contactId !== schedule.characterId) return { ok: false, reason: "找不到对应的单聊会话" };

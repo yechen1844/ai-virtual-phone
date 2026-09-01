@@ -175,7 +175,7 @@ export function UserProfilePanel({ onClose, className }: UserProfilePanelProps) 
         setIdentity(resolveUserIdentity());
         const settings = loadChatAppSettings();
         const browserGranted = isBrowserNotificationGranted();
-        setNotifEnabled(settings.browserNotificationsEnabled === true && browserGranted);
+        setNotifEnabled(settings.browserNotificationsEnabled === true && (browserGranted || isShellEnvironment()));
         setEnterToSendEnabled(settings.enterToSendEnabled === true);
         setCallVibrationEnabled(settings.callVibrationEnabled !== false);
         if (settings.browserNotificationsEnabled === true && !browserGranted) {
