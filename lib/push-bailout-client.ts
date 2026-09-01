@@ -367,7 +367,10 @@ async function postBailoutJob(input: {
 /** 撤销任意兜底预约（精确键）。 */
 export function cancelBailoutKey(triggerKey: string): void {
     if (!bailoutEnabled()) return;
-    if (peekAccountPushSubscribed() === false) return;
+    // 壳（APK）没有浏览器 Web Push 订阅、门控缓存常为 false；若因此跳过撤销，
+    // 服务端 job 永远删不掉 → 前端生成了后端还会重复生成（撞车）。与预约函数
+    // 的 isShellLike 放行对齐。
+    if (peekAccountPushSubscribed() === false && !isShellLike()) return;
     void pushJobsFetch({
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
@@ -379,7 +382,9 @@ export function cancelBailoutKey(triggerKey: string): void {
  *  返回 Promise 以便调用方在重挂前先等撤销落地。 */
 export async function cancelBailoutPrefix(triggerPrefix: string, excludeKey?: string): Promise<void> {
     if (!bailoutEnabled()) return;
-    if (peekAccountPushSubscribed() === false) return;
+    // 壳（APK）无浏览器 Web Push 订阅、门控缓存常为 false；放行撤销，否则服务端
+    // job 删不掉 → 前端生成了后端还重复生成（撞车）。与预约函数 isShellLike 放行对齐。
+    if (peekAccountPushSubscribed() === false && !isShellLike()) return;
     await pushJobsFetch({
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
@@ -637,7 +642,7 @@ export function installScheduledBailoutRefresher(): void {
 /** 撤销追问兜底预约：带 count 只撤该轮的精确键，不带则撤该会话全部。 */
 export function cancelFollowUpBailout(sessionId: string, count?: number): void {
     if (!bailoutEnabled()) return;
-    if (peekAccountPushSubscribed() === false) return; // 账号没订阅→从没挂过单，别浪费请求
+    if (peekAccountPushSubscribed() === false && !isShellLike()) return; // 账号没订阅→从没挂过单，别浪费请求（壳放行）
     void pushJobsFetch({
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
