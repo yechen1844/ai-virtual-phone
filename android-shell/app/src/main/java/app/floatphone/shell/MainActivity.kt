@@ -107,6 +107,8 @@ class MainActivity : AppCompatActivity() {
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, false)
 
         webView.addJavascriptInterface(ShellBridge(), "AndroidShell")
+        webView.addJavascriptInterface(FloatBleBridge(this, webView), "FloatBle")
+        requestBlePermissions()
 
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
@@ -210,6 +212,20 @@ class MainActivity : AppCompatActivity() {
         } else {
             PushService.start(this)
         }
+    }
+
+    // 蓝牙 BLE 运行时权限（Android 12+ 用 SCAN/CONNECT，老版本用定位）
+    private fun requestBlePermissions() {
+        val perms = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= 31) {
+            if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED)
+                perms.add(Manifest.permission.BLUETOOTH_SCAN)
+            if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED)
+                perms.add(Manifest.permission.BLUETOOTH_CONNECT)
+        } else if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            perms.add(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        if (perms.isNotEmpty()) requestPermissions(perms.toTypedArray(), 4001)
     }
 
     // ── 沉浸式全屏：隐藏状态栏 + 导航栏，让 float 全屏沉浸 ──
