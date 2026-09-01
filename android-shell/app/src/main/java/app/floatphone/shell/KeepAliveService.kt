@@ -9,6 +9,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.Color
 import android.graphics.PixelFormat
 import android.media.MediaPlayer
 import android.net.Uri
@@ -67,7 +68,7 @@ class KeepAliveService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (Settings.canDrawOverlays(this)) ensureBall()
+        if (Settings.canDrawOverlays(this)) showBall()
         return START_STICKY
     }
 
@@ -108,7 +109,7 @@ class KeepAliveService : Service() {
             text = "🎮"
             textSize = 28f
             gravity = Gravity.CENTER
-            setBackgroundColor(0xCC2C2C50)
+            setBackgroundColor(Color.argb(204, 44, 44, 80))
         }
         val origin = IntArray(2)
         tv.setOnTouchListener { v, e ->
