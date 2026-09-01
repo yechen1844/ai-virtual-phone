@@ -98,9 +98,12 @@ export async function hasAccountPushSubscription(): Promise<boolean> {
     }
 }
 
-/** 是否运行在安卓壳（FloatShell App）的 WebView 里。壳自带长连接推送通道，不走 Web Push。 */
+/** 是否运行在安卓壳（FloatShell App）的 WebView 里。壳自带长连接推送通道，不走 Web Push。
+ *  优先按原生桥 window.AndroidShell 判断（最可靠，永不误判为浏览器），UA 仅作兜底。 */
 export function isShellEnvironment(): boolean {
-    return typeof navigator !== "undefined" && navigator.userAgent.includes("FloatShell/");
+    if (typeof window === "undefined") return false;
+    const shell = (window as unknown as Record<string, unknown>).AndroidShell;
+    return Boolean(shell) || (typeof navigator !== "undefined" && navigator.userAgent.includes("FloatShell/"));
 }
 
 function isPushSupported(): boolean {

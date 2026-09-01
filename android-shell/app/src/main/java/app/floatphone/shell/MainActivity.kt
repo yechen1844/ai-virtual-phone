@@ -112,8 +112,10 @@ class MainActivity : AppCompatActivity() {
         webView.addJavascriptInterface(FloatBleBridge(this, webView), "FloatBle")
         webView.addJavascriptInterface(FloatKeepAliveJs(), "FloatKeepAlive")
         requestBlePermissions()
-        // 启动本地保活（无需登录/网络）；悬浮球依赖已装，默认不弹出
+        // 本地保活（无需登录/网络）
         KeepAliveService.start(this)
+        // 离线推送：需要就自动启动（连上由前端喂给壳的 Supabase 配置）
+        ensurePushService()
 
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
