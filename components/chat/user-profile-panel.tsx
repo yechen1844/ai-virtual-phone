@@ -454,6 +454,16 @@ export function UserProfilePanel({ onClose, className }: UserProfilePanelProps) 
                             </div>
                             <Toggle checked={notifEnabled} disabled={notifChecking} onChange={handleNotificationToggle} />
                         </div>
+                        {isShellApp && (
+                            <div className="flex items-center gap-3 py-3 w-full">
+                                <Bell size={18} className="text-[var(--c-icon)] opacity-70" strokeWidth={1.25}/>
+                                <div className="flex flex-col flex-1 text-left gap-0.5">
+                                    <span className="ts-14 font-semibold text-[var(--c-text-title)]">安卓后台通知</span>
+                                    <span className="ts-11 text-[var(--c-text)] opacity-70">用安卓原生通道弹新消息横幅（APK 专用，无需浏览器权限）</span>
+                                </div>
+                                <Toggle checked={notifEnabled} disabled={notifChecking || !isShellApp} onChange={handleNotificationToggle} />
+                            </div>
+                        )}
                     </div>
 
                     {/* 高级工具 */}
@@ -1399,25 +1409,6 @@ function OfflinePushSettingsPage({ onBack }: { onBack: () => void }) {
                                     />
                                 </div>
                             </div>
-                            {isShellApp && (
-                                <div className="menu-item">
-                                    <ProfileSettingsIcon icon={Satellite} color={BINDING_ACCENTS.api} />
-                                    <div className="menu-label-group">
-                                        <span className="menu-label">安卓后台通知</span>
-                                        <span className="menu-desc">用安卓原生通道接收推送（APK 专用开关）</span>
-                                    </div>
-                                    <div className="menu-right flex items-center gap-2">
-                                        {offlinePushState === "on" && (
-                                            <button className="ui-btn ui-btn-outline py-1 px-2 ts-11" style={{ whiteSpace: "nowrap" }} onClick={() => void handleOfflinePushTest()} disabled={offlinePushBusy}>测试</button>
-                                        )}
-                                        <Toggle
-                                            checked={offlinePushState === "on"}
-                                            disabled={offlinePushBusy || !isShellApp}
-                                            onChange={enabled => void handleOfflinePushToggle(enabled)}
-                                        />
-                                    </div>
-                                </div>
-                            )}
                             <div className="menu-item">
                                 <ProfileSettingsIcon icon={Moon} color={BINDING_ACCENTS.memory} />
                                 <div className="menu-label-group">
