@@ -215,9 +215,15 @@ export async function ensurePersonalPushSubscription(): Promise<{ ok: boolean; e
     }
 }
 
+/** 壳（APK）判定：直接探测壳必注入的原生桥，避免 UA/其它判断失败。 */
+function inShell(): boolean {
+    if (typeof window === "undefined") return false;
+    try { return !!(window as unknown as Record<string, unknown>)?.AndroidShell; } catch { return false; }
+}
+
 export async function getOfflinePushState(): Promise<OfflinePushState> {
     // 壳（APK）：用壳自己的原生通道承载离线推送，状态由本机构建。
-    if (isShellEnvironment()) {
+    if (inShell()) {
         try { return localStorage.getItem("float_offline_push") === "1" ? "on" : "off"; } catch { return "off"; }
     }
     if (!isPushSupported()) return "unsupported";
@@ -239,7 +245,7 @@ export async function getOfflinePushState(): Promise<OfflinePushState> {
 
 export async function enableOfflinePush(): Promise<{ ok: boolean; error?: string }> {
     // 壳（APK）：由壳的原生通道承担，开启即本地标记，不依赖浏览器 SW / Notification API。
-    if (isShellEnvironment()) {
+    if (inShell()) {
         try { localStorage.setItem("float_offline_push", "1"); } catch { /* ignore */ }
         return { ok: true };
     }
@@ -312,7 +318,7 @@ export async function enableOfflinePush(): Promise<{ ok: boolean; error?: string
 
 export async function disableOfflinePush(): Promise<{ ok: boolean; error?: string }> {
     // 壳（APK）：清除本地标记即可关闭。
-    if (isShellEnvironment()) {
+    if (inShell()) {
         try { localStorage.removeItem("float_offline_push"); } catch { /* ignore */ }
         return { ok: true };
     }
