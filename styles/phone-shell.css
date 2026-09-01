@@ -1124,18 +1124,9 @@
        .app-root 被裁掉，底部栏随之顶回可视区。上移量可在「状态栏」弹窗里按设备调节，
        让它约等于真实状态栏高度即可铺满。0 = 不上移（iOS 等能全屏的浏览器保持 0）。 */
     margin-top: calc(-1 * var(--status-bar-drop, 0px));
-    /* 键盘避让改为「内容留白」而非「整壳位移」：顶栏保持不动、不产生合成层。
-       之前这里用 will-change:transform + translate3d 把整台手机做成持续复合层，
-       软键盘开合时整壳重组装 → 偶发全屏黑。--mobile-keyboard-lift 仍由 JS 算出
-       （输入框需抬起量），但作用对象换成下方 slot 到屏内容的 padding（见下）。 */
-    transform: none;
-    will-change: auto;
-  }
-
-  /* 键盘期间：把屏内容底部让出 lift，输入框自然浮到键盘上方；顶栏天然在原位不随之位移 */
-  html.kb-open .phone-shell,
-  html[data-glass-busy="1"] .phone-shell {
-    padding-bottom: var(--mobile-keyboard-lift, 0px);
+    transform: translate3d(0, calc(-1 * var(--mobile-keyboard-lift, 0px)), 0);
+    transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: transform;
   }
 
   .phone-shell-wrap .phone-case {
