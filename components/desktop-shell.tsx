@@ -3520,14 +3520,11 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
       if (!covering) return;
       covering = false;
       // 键盘收起动画做完后再放开 blur，避免收起途中重开 blur → 二次重合成黑屏。
-      // 治标加固：恢复延迟从 300ms 抬到 700ms，兜住各种 WebView 较长的键盘回落
-      // 动画（尤其慢速机/高负载帧），期间 blur 恒为 0。桌面宽屏保留毛玻璃，靠这里
-      // 双保险；移动端已由 globals.css 的「移动端禁用毛玻璃」治本规则兜底。
       if (settleTimer) window.clearTimeout(settleTimer);
       settleTimer = window.setTimeout(() => {
         settleTimer = 0;
         setBusy(false);
-      }, 700);
+      }, 300);
     };
 
     // 输入框聚焦即提前判定覆盖：键盘即将弹出，先关 blur 顶住黑帧，避免首个 resize 事件到来前那一帧黑屏。
