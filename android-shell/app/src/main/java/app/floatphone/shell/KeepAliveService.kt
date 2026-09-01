@@ -68,7 +68,7 @@ class KeepAliveService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (Settings.canDrawOverlays(this)) showBall()
+        // 悬浮球默认不显示：只保留依赖，要显示时由网页 window.FloatKeepAlive.showBall() 触发
         return START_STICKY
     }
 

@@ -112,9 +112,8 @@ class MainActivity : AppCompatActivity() {
         webView.addJavascriptInterface(FloatBleBridge(this, webView), "FloatBle")
         webView.addJavascriptInterface(FloatKeepAliveJs(), "FloatKeepAlive")
         requestBlePermissions()
-        // 启动本地保活（无需登录/网络）；有悬浮窗权限则弹出悬浮球
+        // 启动本地保活（无需登录/网络）；悬浮球依赖已装，默认不弹出
         KeepAliveService.start(this)
-        requestOverlayPermission()
 
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
