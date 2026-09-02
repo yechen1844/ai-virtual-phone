@@ -263,9 +263,15 @@ export async function requestBackgroundChatReply(sessionId: string): Promise<{ o
 export function cancelFollowUp(sessionId: string) {
     clearFollowUpSchedule(sessionId);
     cancelFollowUpBailout(sessionId);
-    // 用户发了消息：冷场重连计数清零，按新周期重挂服务端预约
+    // 用户发了消息：冷场重连计数清零，按新周期重挂服务端预约。
+    // armIdleReconnectBailout 内部要同步 buildChatPromptMessages 重建完整 LLM 快照，
+    // 在壳(APK)下 isShellLike 放行后每次发送都会执行——若在发送的关键路径里直接跑，
+    // 微任务会在绘制前执行，造成发送那一瞬卡顿。挪到 setTimeout(宏任务) 绘制后再重挂，
+    // 既保证快照及时刷新，又不阻塞发送帧。
     const idleRule = resetIdleReconnectForSession(sessionId);
-    if (idleRule) void armIdleReconnectBailout({ ...idleRule, consecutiveCount: 0 });
+    if (idleRule) {
+        window.setTimeout(() => { void armIdleReconnectBailout({ ...idleRule, consecutiveCount: 0 }); }, 0);
+    }
     // If an API call is already in-flight, mark it for cancellation
     if (firingSet.has(sessionId)) {
         cancelledWhileFiring.add(sessionId);
