@@ -331,7 +331,7 @@ class MainActivity : AppCompatActivity() {
          */
         @JavascriptInterface
         fun downloadBlob(base64: String, filename: String, mimeType: String) {
-            runCatching {
+            try {
                 val safeName = android.webkit.URLUtil.guessFileName(
                     filename ?: "download",
                     null,
@@ -364,7 +364,9 @@ class MainActivity : AppCompatActivity() {
                     this@MainActivity.sendBroadcast(Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri.fromFile(outFile)))
                 }
             } catch (e: Exception) {
-                Toast.makeText(this@MainActivity, "下载失败：${e.message}", Toast.LENGTH_LONG).show()
+                try {
+                    Toast.makeText(this@MainActivity, "下载失败：${e.message}", Toast.LENGTH_LONG).show()
+                } catch (_: Exception) { /* 忽略 */ }
             }
         }
 
