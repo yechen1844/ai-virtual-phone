@@ -177,10 +177,10 @@ export function DebugPromptPanel() {
         const sessions = loadChatSessions();
         const chars = loadCharacters();
         const charNameById = new Map(chars.map(c => [c.id, c.name]));
-return sessions
+        // 不列出已删除角色的残留单聊，也不列出没有任何有效角色的空群聊。
+        return sessions
             // 星露谷会话单独走「星露谷」独立预览标签，不在聊天页的 char 下拉混入
             .filter(s => !s.id?.startsWith("sess_stardew_"))
-            // 不列出已删除角色的残留单聊，也不列出没有任何有效角色的空群聊
             .filter(session => session.isGroup
                 ? (session.participantIds || []).some(id => charNameById.has(id))
                 : charNameById.has(session.contactId))

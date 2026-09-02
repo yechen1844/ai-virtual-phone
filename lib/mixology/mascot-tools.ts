@@ -22,6 +22,7 @@ import {
     type MixMaterialKind,
     type MixSlotEntry,
     type MixTicketVar,
+    normalizeMixConnectorNames,
 } from "./types";
 import {
     MIX_CABINET_UPDATED_EVENT,
@@ -32,9 +33,11 @@ import {
     loadMixRecipes,
     saveMixMaterial,
     saveMixRecipe,
+    findMixConnector,
 } from "./storage";
 
 import { buildMixCraftSpec } from "./crafting-guides";
+import { isMixCardFreeform, MIX_CARD_FIELD_KEYS, normalizeMixCardProfile } from "./card-freeform";
 import { normalizePartCondition } from "./hall-parts";
 
 /** 写库成功后通知已打开的特调 App 重读列表，否则界面要等用户自己操作才刷新 */
@@ -118,9 +121,15 @@ function describeMaterial(material: MixMaterial): string {
     switch (material.kind) {
         case "character": {
             const c = material as MixCharacterCard;
-            field("基础信息", c.baseInfo); field("性格", c.personality); field("外貌", c.appearance);
-            field("背景", c.background); field("世界观", c.worldview); field("初始认知", c.cognition);
-            field("关系与身份", c.relations); field("当前剧情", c.plot); field("附加设定", c.extra);
+            if (isMixCardFreeform(c)) {
+                // 一框式：两段正文原样给出（## 小节是作者自己排的），改它要用 profileText / worldText
+                lines.push("资料写法：一框式（profileMode = freeform；改资料请传 profileText / worldText 整段正文）");
+                field("角色资料", c.profileText); field("世界与剧情", c.worldText);
+            } else {
+                field("基础信息", c.baseInfo); field("性格", c.personality); field("外貌", c.appearance);
+                field("背景", c.background); field("世界观", c.worldview); field("初始认知", c.cognition);
+                field("关系与身份", c.relations); field("当前剧情", c.plot); field("附加设定", c.extra);
+            }
             c.openings.forEach((o, i) => field(`开场白${i + 1}`, o));
             if (c.examples?.length) field("示例对话", c.examples.map((e) => `${e.role}：${e.text}`).join("\n"));
             field("开场画布", c.canvas);
@@ -149,6 +158,9 @@ function describeMaterial(material: MixMaterial): string {
         case "mechanism":
             field("钩子逻辑", material.script); field("界面代码", material.panelHtml);
             field("摆放", material.layout ? mixPanelLayoutSummary(material.layout) : undefined);
+            if (material.connectors?.length) {
+                field("需要的连接器", material.connectors.map((n) => `${n}${findMixConnector(n) ? "（用户本机已配）" : "（用户本机未配，需到酒柜「连接器」里创建）"}`).join("\n"));
+            }
             break;
         default:
             field(`${MIX_KIND_LABELS[material.kind]}内容`, (material as { content?: string }).content);
@@ -196,6 +208,10 @@ const CONTENT_FIELDS: FieldSpec[] = [
     { key: "relations", kinds: ["character"] },
     { key: "plot", kinds: ["character"] },
     { key: "extra", kinds: ["character"] },
+    // 一框式资料：profileMode="freeform" 时两段正文各一个字段，上面九个分框字段不再使用
+    { key: "profileMode", kinds: ["character"] },
+    { key: "profileText", kinds: ["character"] },
+    { key: "worldText", kinds: ["character"] },
     { key: "canvas", kinds: ["character"] },
     { key: "openings", kinds: ["character"] },
     { key: "examples", kinds: ["character"] },
@@ -209,6 +225,8 @@ const CONTENT_FIELDS: FieldSpec[] = [
     { key: "script", kinds: ["mechanism"] },
     { key: "panelHtml", kinds: ["mechanism"] },
     { key: "layout", kinds: ["mechanism"] },
+    // 界面要用的连接器名字（字符串数组）；mix.call 只放行声明过的
+    { key: "connectors", kinds: ["mechanism"] },
 ];
 
 function normalizeOpenings(value: unknown): string[] | { err: string } {
@@ -300,6 +318,15 @@ function applyContentFields(target: Record<string, unknown>, kind: MixMaterialKi
                 target.layout = normalized;
                 break;
             }
+            case "connectors": {
+                const names = normalizeMixConnectorNames(args[spec.key]);
+                if (Array.isArray(args[spec.key]) && (args[spec.key] as unknown[]).length && !names.length) {
+                    return "connectors 必须是名字数组，名字只能用小写字母、数字、-、_（如 [\"tts\"]）。";
+                }
+                if (names.length) target.connectors = names;
+                else delete target.connectors;
+                break;
+            }
             case "historyFeed": {
                 const v = args[spec.key];
                 if (v !== "latest" && v !== "all" && v !== "none") return 'historyFeed 只能是 "latest"（只回传最近一轮，默认）、"all"（全部轮次回传）或 "none"（完全不回传）。';
@@ -307,11 +334,31 @@ function applyContentFields(target: Record<string, unknown>, kind: MixMaterialKi
                 else target.historyFeed = v;
                 break;
             }
+            case "profileMode": {
+                const v = args[spec.key];
+                if (v !== "form" && v !== "freeform") return 'profileMode 只能是 "form"（分框填写，默认）或 "freeform"（一框式：角色资料 / 世界与剧情各一段正文）。';
+                target.profileMode = v;
+                break;
+            }
             default: {
                 const value = args[spec.key];
                 if (typeof value !== "string") return `字段 ${spec.key} 必须是字符串。`;
                 target[spec.key] = value;
             }
+        }
+    }
+    if (kind === "character") {
+        // 资料模式归一：传了整段正文而没说模式，就视为改用一框式；
+        // 一框式的卡再传分框字段会被静默忽略，所以直接拒绝并指路。
+        const gaveText = args.profileText !== undefined || args.worldText !== undefined;
+        if (gaveText && args.profileMode === undefined && target.profileMode !== "freeform") target.profileMode = "freeform";
+        const gaveFields = MIX_CARD_FIELD_KEYS.filter((key) => args[key] !== undefined);
+        if (target.profileMode === "freeform" && gaveFields.length) {
+            return `这张卡的资料是一框式的，${gaveFields.join("/")} 这些分框字段不会生效。请改传 profileText（角色资料整段）/ worldText（世界与剧情整段），或先传 profileMode:"form" 切回分框再改。`;
+        }
+        Object.assign(target, normalizeMixCardProfile(target as unknown as MixCharacterCard));
+        for (const key of [...MIX_CARD_FIELD_KEYS, "profileMode", "profileText", "worldText"] as const) {
+            if (target[key] === undefined) delete target[key];
         }
     }
     return null;
@@ -355,9 +402,17 @@ function qualityHints(material: Record<string, unknown>, kind: MixMaterialKind):
     const canvas = len("canvas");
     if (!canvas) hints.push("没有开场画布——按「画布制作规格」补一份完整门面页");
     else if (canvas < 6000) hints.push(`开场画布只有 ${canvas} 字符，体量不够——画布是一整页好几屏长的门面长页（通常 4~5 个模块，模块内可用折叠/点击交互收纳内容），把每个模块做深做厚，别缩水成一张信息卡`);
-    for (const [key, label] of [["personality", "性格"], ["background", "背景"], ["worldview", "世界观"], ["relations", "关系与身份"]] as const) {
-        if (len(key) === 0) hints.push(`${label}还空着`);
-        else if (len(key) < 60) hints.push(`${label}偏薄（${len(key)} 字），用具体行为细节撑起来`);
+    if (material.profileMode === "freeform") {
+        // 一框式看整段：两段各自的体量约等于分框时四五个框的总和
+        for (const [key, label] of [["profileText", "角色资料"], ["worldText", "世界与剧情"]] as const) {
+            if (len(key) === 0) hints.push(`${label}还空着`);
+            else if (len(key) < 240) hints.push(`${label}偏薄（${len(key)} 字），用 ## 小节分开写性格/背景/世界观/关系等，各自用具体细节撑起来`);
+        }
+    } else {
+        for (const [key, label] of [["personality", "性格"], ["background", "背景"], ["worldview", "世界观"], ["relations", "关系与身份"]] as const) {
+            if (len(key) === 0) hints.push(`${label}还空着`);
+            else if (len(key) < 60) hints.push(`${label}偏薄（${len(key)} 字），用具体行为细节撑起来`);
+        }
     }
     return hints.length ? `\n质量提示（建议用 更新材料 补足）：\n- ${hints.join("\n- ")}` : "";
 }

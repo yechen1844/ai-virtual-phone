@@ -300,14 +300,14 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [selectionPresetId, setSelectionPresetId] = useState<string | null>(null);
     const [confirmDeleteSelected, setConfirmDeleteSelected] = useState(false);
-const [bulkTagOpen, setBulkTagOpen] = useState(false); // 批量「设范围（tag）」选择面板
+    const [bulkTagOpen, setBulkTagOpen] = useState(false); // 批量「设范围（tag）」选择面板
 
     // ── 按 App 筛选（高亮/仅显示/仅折叠/同类折叠） ──
     const [appFilterOpen, setAppFilterOpen] = useState(false);
     const [appFilterMode, setAppFilterMode] = useState<AppFilterMode>("highlight");
     const [appFilterTags, setAppFilterTags] = useState<Set<string>>(new Set()); // 选中的大类 tag 集合（可多选）
     const [expandedCollapseGroups, setExpandedCollapseGroups] = useState<Set<string>>(new Set()); // 已展开的折叠组 key
-const [draggedPromptIndex, setDraggedPromptIndex] = useState<number | null>(null); // 电脑端 HTML5 拖拽源 index
+    const [draggedPromptIndex, setDraggedPromptIndex] = useState<number | null>(null); // 电脑端 HTML5 拖拽源 index
     const [dragOverIndex, setDragOverIndex] = useState<number | null>(null); // 电脑端拖拽悬停目标 index
 
     const toggleFilterTag = useCallback((tag: string) => {
@@ -833,7 +833,7 @@ const [draggedPromptIndex, setDraggedPromptIndex] = useState<number | null>(null
         await downloadFile(blob, `${preset.name || "preset"}-entries.json`);
     }, [actionableSelectedIds, presets, editingId]);
 
-const bulkDuplicateSelected = useCallback(() => {
+    const bulkDuplicateSelected = useCallback(() => {
         const preset = presets.find(p => p.id === editingId);
         if (!preset || selectedIds.size === 0) return;
         const displayed = buildDisplayedPrompts(preset);
@@ -1484,7 +1484,7 @@ const bulkDuplicateSelected = useCallback(() => {
                                                     <Download size={15} strokeWidth={1.8} />
                                                     <span>导出</span>
                                                 </button>
-<button type="button" className="msfb-btn" onClick={() => bulkDuplicateSelected()} disabled={selectedIds.size === 0}>
+                                                <button type="button" className="msfb-btn" onClick={() => bulkDuplicateSelected()} disabled={selectedIds.size === 0}>
                                                     <Copy size={15} strokeWidth={1.8} />
                                                     <span>复制</span>
                                                 </button>
@@ -1631,7 +1631,7 @@ const bulkDuplicateSelected = useCallback(() => {
                                                     data-active={isEditing}
                                                     data-selected={selectMode && isPromptSelected ? "true" : undefined}
                                                     data-disabled={!effectiveEnabled}
-data-drag-over={dragOverIndex === index ? "true" : undefined}
+                                                    data-drag-over={dragOverIndex === index ? "true" : undefined}
                                                     data-app-match={(() => {
                                                         if (appFilterTags.size === 0) return undefined;
                                                         if (appFilterMode === "only-show") return undefined;

@@ -341,6 +341,7 @@ async function exportIndexedDbSource(
 }
 
 async function readKvRecords(source: KvSource): Promise<{ records: { key: string; value: string }[]; error?: string }> {
+  // 读不到真实存储时必须失败，绝不静默退回内存缓存：否则会生成「导出成功」但缺数据的备份
   const byKey = new Map<string, { key: string; value: string }>();
   let readError: string | undefined;
   const db = await openDb("AiPhoneKvDB");

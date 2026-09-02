@@ -37,9 +37,7 @@ import { RelationLinkDialog, RelationPairSheet } from "@/components/character/re
 import { loadMomentsConfig, saveMomentsConfig } from "@/lib/moments-storage";
 import {
   clearFollowUpSchedule,
-  deleteChatSession,
   loadChatSessions,
-  removeChatContact,
 } from "@/lib/chat-storage";
 import { clearRequestsForCharacter } from "@/lib/friend-request-storage";
 import { clearChatOfflineTurns } from "@/lib/chat-offline-storage";
@@ -318,21 +316,20 @@ export function PhoneCharacterApp({ onClose, onNotice }: PhoneCharacterAppProps)
               setView({ type: "detail", id: existing.id, isEditing: false });
               onNotice(`已切换到 V${activeVersion}，未创建新版本`);
             }}
-onDelete={() => {
-              if (view.id) {
-                // 删除角色卡时一并清理相关私聊记录：
-                // 私聊会话与消息、联系人、好友申请、追发计划、线下聊天记录
+            onDelete={async () => {
+              const characterId = view.id;
+              if (characterId) {
+                // 删除角色卡时一并清理相关私聊记录：追发计划、线下轮次等自有扩展数据
                 for (const session of loadChatSessions()) {
                   if (session.isGroup) continue;
-                  if (session.contactId !== view.id) continue;
+                  if (session.contactId !== characterId) continue;
                   clearFollowUpSchedule(session.id);
                   clearChatOfflineTurns(session.id);
-                  deleteChatSession(session.id);
                 }
-                removeChatContact(view.id);
-                clearRequestsForCharacter(view.id);
-                clearCharacterVersions(view.id);
-                updateChars(characters.filter((c) => c.id !== view.id));
+                await removeCharacterChatReferences(characterId);
+                clearRequestsForCharacter(characterId);
+                clearCharacterVersions(characterId);
+                updateChars(characters.filter((c) => c.id !== characterId));
               }
               setView({ type: "list", id: null, isEditing: false });
               onNotice("已删除档案");
