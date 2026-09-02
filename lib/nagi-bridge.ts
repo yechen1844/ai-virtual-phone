@@ -145,7 +145,7 @@ export function getStardewTools(userName?: string): StardewToolDef[] {
     { name: "stardew_face", description: "设置面朝方向：0=上 1=右 2=下 3=左。", parameterSchema: '{"type":"object","properties":{"direction":{"type":"integer","enum":[0,1,2,3]}},"required":["direction"],"additionalProperties":false}' },
     { name: "stardew_use_item", description: "使用/放置当前手持物品（种子、物体等）。", parameterSchema: "{}" },
     { name: "stardew_press_key", description: "模拟按键。可用：confirm, cancel, skip, ok, F1-F12。", parameterSchema: '{"type":"object","properties":{"key":{"type":"string"},"count":{"type":"integer","default":1}},"required":["key"],"additionalProperties":false}' },
-    { name: "stardew_run_script", description: "【优先·一键脚本】一键执行星露谷自动化脚本，一次完成整类任务（能用就用它，比一步步手动操作高效）。\n【无需坐标·全自动】mine_run(挖矿:自动传送进矿洞逐层挖石头并自动撤退)、water_crops(浇水)、chop_trees(砍树)、pet_animals(撸动物)、keg_manager(酿酒)、furnace_manager(熔炉)、fish_run(钓鱼,args可传 --location Beach --max-fish 30)、combat_run(打怪,args传 --mode guard|offense)、auto_plant(自动种地:只在农场扫描可种的土地自动翻地播种浇水)、auto_clear(自动清理:扫描当前区域的石头/杂草/树自动清除)、auto_harvest(自动收割:扫描当前区域成熟作物自动收,args可加 --sell 自动出售)。\n【需要坐标·半自动】farm_row(种田:必须传起点和长度,args传 '<x> <y> <len>'，如 \"55 24 12\")、clear_area(清指定区域:必须传左上和右下角,args传 '<x1> <y1> <x2> <y2>')、harvest(收割指定区域:必须传区域坐标'<x1> <y1> <x2> <y2>')、shop_buy(购物:必须传--items 'id:count,...'，如 \"493:10\")。\n【如何获得坐标】需要坐标时，先调 stardew_get_state 查看当前位置与大致地图范围，或 stardew_get_surroundings 查看周围格子坐标，把读到的可用坐标填入 args。\n【特别注意】能在农场/当前区域自动完成的，优先用 auto_* 与 mine_run/water_crops 等无须坐标的一键脚本；只有明确要种/清/收某块特定区域时才用带坐标的脚本。参数 script 为脚本名，args 为可选命令行参数。", parameterSchema: '{"type":"object","properties":{"script":{"type":"string"},"args":{"type":"string"}},"required":["script"],"additionalProperties":false}' },
+    { name: "stardew_run_script", description: "【优先·一键脚本】一键完成整类农活，能自动就别一步步手操，这些脚本【都不需要坐标】。\n【自动脚本·直接用】auto_plant(自动种地：只在农场扫描可种地，自动翻地+播种+浇水。种地就用它，别用 farm_row)、auto_clear(自动清当前区域石头/杂草/树)、auto_harvest(自动收成熟作物，args 加 --sell 自动卖)、mine_run(自动进矿洞挖矿)、water_crops(浇水)、chop_trees(砍树)、pet_animals(撸动物)、keg_manager(酿酒)、furnace_manager(熔炉)、fish_run(钓鱼,可 --location Beach --max-fish 30)、combat_run(打怪,--mode guard|offense)。\n【坐标专用·仅当明确要种/清/收某块特定区域时才用】farm_row(需 args=\"<x> <y> <长度>\"，如 \"55 24 12\")、clear_area(需 args=\"<x1> <y1> <x2> <y2>\")、harvest(需 args=\"<x1> <y1> <x2> <y2>\")、shop_buy(需 args=\"--items 'id:count,...'\")。用到它们时才先 stardew_get_surroundings 读坐标填 args；一般任务不要用带坐标的脚本。参数 script 为脚本名，args 为可选命令行参数。", parameterSchema: '{"type":"object","properties":{"script":{"type":"string"},"args":{"type":"string"}},"required":["script"],"additionalProperties":false}' },
     { name: "stardew_sleep", description: "上床睡觉结束今天。自动找床，不需要先回家。检查结果：state=slept 表示过夜了；state=ready 表示已上床但需等所有人就绪——此时不要再移动/warp/起床，否则会卡死所有人。", parameterSchema: "{}" },
     { name: "stardew_get_machines", description: "扫描当前地点所有机器（酒桶/熔炉等）的状态。", parameterSchema: "{}" },
     { name: "stardew_get_animals", description: "查看所有农场动物：是否已摸、好感度、心情、产品就绪。", parameterSchema: "{}" },
@@ -513,6 +513,8 @@ const STARDEW_RULE =
   "优先选【无需坐标】的自动脚本:auto_plant(自动种地)、auto_clear(自动清理)、auto_harvest(自动收割)、" +
   "mine_run(挖矿)、water_crops(浇水)、chop_trees(砍树)、pet_animals(撸动物)、keg_manager(酿酒)、" +
   "furnace_manager(熔炉)、fish_run(钓鱼)、combat_run(打怪)。" +
+  "【去 user 身边】当 user 叫你过去/汇合时，直接调 stardew_go_to_user 一键传送到 user 身边，**不需要坐标**、" +
+  "不需要先查坐标也别用 warp/move_to 手填坐标。" +
   "只有需要精确定位特定区域时才用带坐标的脚本(farm_row/clear_area/harvest/shop_buy)，并用 stardew_get_state 或 " +
   "stardew_get_surroundings 先读出坐标再填 args。" +
   "只有脚本无法完成（如送礼、特定剧情交互）时才回退到一步手动(warp/move_to/use_tool/select_item/press_key)。";
