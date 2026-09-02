@@ -509,15 +509,17 @@ async function handleStardewScreenshotsInResults(session: any, results: unknown[
 
 // 星露谷操作偏好：整类农活优先一键脚本，尽量别一步步手动操作（更快更少出错）。
 const STARDEW_RULE =
-  "【游戏操作偏好】凡能用 stardew_run_script(一键脚本) 一次性完成的整类任务，必须优先用它，" +
-  "优先选【无需坐标】的自动脚本:auto_plant(自动种地)、auto_clear(自动清理)、auto_harvest(自动收割)、" +
-  "mine_run(挖矿)、water_crops(浇水)、chop_trees(砍树)、pet_animals(撸动物)、keg_manager(酿酒)、" +
-  "furnace_manager(熔炉)、fish_run(钓鱼)、combat_run(打怪)。" +
-  "【去 user 身边】当 user 叫你过去/汇合时，直接调 stardew_go_to_user 一键传送到 user 身边，**不需要坐标**、" +
-  "不需要先查坐标也别用 warp/move_to 手填坐标。" +
-  "只有需要精确定位特定区域时才用带坐标的脚本(farm_row/clear_area/harvest/shop_buy)，并用 stardew_get_state 或 " +
-  "stardew_get_surroundings 先读出坐标再填 args。" +
-  "只有脚本无法完成（如送礼、特定剧情交互）时才回退到一步手动(warp/move_to/use_tool/select_item/press_key)。";
+  "【星露谷操作流程】\n" +
+  "一、优先用一键脚本(整类农活直接用 stardew_run_script，自动、无需坐标):\n" +
+  "  · auto_plant 自动种地(只在农场翻转地+播种+浇水)、auto_clear 一键清理当前区域的石头/杂草/树(挖矿是 mine_run)、" +
+  "auto_harvest 自动收成熟作物、mine_run 自动进矿洞挖矿、water_crops 浇水、chop_trees 砍树、pet_animals 撸动物、" +
+  "keg_manager 酿酒、furnace_manager 熔炉、fish_run 钓鱼、combat_run 打怪。\n" +
+  "二、只有当你明确要“种/清/收某一块特定坐标区域”时，才用带坐标的脚本(farm_row/clear_area/harvest/shop_buy)。\n" +
+  "  · 用法：先调用 stardew_get_surroundings(周围格子坐标) 或 stardew_get_state(自己坐标) 读出目标坐标，" +
+  "再把坐标填到 stardew_run_script 的 args 里(如 args=\"55 24 12\")。\n" +
+  "三、带坐标的脚本【不要禁用】——需要精确定位时就正常用，只是日常农活优先自动脚本。\n" +
+  "四、user 叫你过去/汇合时，直接调 stardew_go_to_user 一键传送到 user 身边(无需坐标、不必先查坐标)。\n" +
+  "五、只有脚本做不了(如送礼、特定剧情交互)时才一步步手动(warp/move_to/use_tool/select_item/press_key)。";
 
 /** 把农工当前状态注入到 history 末尾（作为 system 消息），让 char 不必先调 get_state。
  *  注意：星露谷的续写判定已在 chat-engine 按 appId=stardew 关闭，因此 state 可安全追加在末尾。 */
