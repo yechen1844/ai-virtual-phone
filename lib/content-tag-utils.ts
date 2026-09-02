@@ -282,7 +282,14 @@ export function getTagsLabel(tags: string[], profiles: TagProfile[] = CONTENT_SC
 
 export function matchesActiveTags(requiredTags: string[] | null | undefined, activeTags: string[]): boolean {
     if (!requiredTags || requiredTags.length === 0) return true;
-    return requiredTags.every((tag) => activeTags.includes(tag));
+    // 第一个 tag 视为「应用大类」（如 chat / moments / stardew），必须命中；
+    // 其余是「次级范围」（如 text / video / offline / followup）。次级范围按 **OR** 判定：
+    // 只要其中任一个在当前激活范围内，该条目即生效。这样「聊天 · 文字 · 视频」这类
+    // 组合范围在文字或视频消息中都能触发，而不会因为一次只激活一个次级范围而失效。
+    const [appTag, ...scopeTags] = requiredTags;
+    if (!activeTags.includes(appTag)) return false;
+    if (scopeTags.length === 0) return true;
+    return scopeTags.some((tag) => activeTags.includes(tag));
 }
 
 export function filterTagScopedItems<T extends { tags?: string[] }>(items: T[], activeTags: string[]): T[] {

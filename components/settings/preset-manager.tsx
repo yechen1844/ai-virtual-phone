@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useContext, useCallback, useMemo } from "react";
-import { Plus, Upload, Download, Trash2, RotateCcw, ChevronLeft, ChevronDown, GripVertical, MessageSquare, AlertCircle, Maximize2, Copy, Replace, CheckSquare, Check, Filter, MoreHorizontal } from "lucide-react";
+import { Plus, Upload, Download, Trash2, RotateCcw, ChevronLeft, ChevronDown, GripVertical, MessageSquare, AlertCircle, Maximize2, Copy, CopyPlus, Replace, CheckSquare, Check, Filter, MoreHorizontal } from "lucide-react";
 import {
     loadPresets,
     savePresets,
@@ -16,7 +16,6 @@ import {
     resolveEnabledGenerationParameters,
 } from "@/lib/generation-parameters";
 import {
-    areTagsEqual,
     CONTENT_SCOPE_TAG_GROUPS,
     getPromptTags as getScopedPromptTags,
     getTagsLabel,
@@ -49,14 +48,10 @@ function matchesSelectedAppTags(p: Prompt, tags: Set<string>): boolean {
     return false;
 }
 
-function getPromptTagGroup(p: Prompt, tagGroups = CONTENT_SCOPE_TAG_GROUPS) {
-    const tags = getPromptTags(p);
-    return findTagGroupForTags(tagGroups, tags) ?? tagGroups[0];
-}
-
-function getPromptTagMinor(p: Prompt, group = getPromptTagGroup(p)) {
-    const tags = getPromptTags(p);
-    return group.minors.find(minor => areTagsEqual(minor.tags, tags)) ?? group.minors[0];
+/** 按「应用大类」匹配：只看标签里的第一个 tag（base），兼容「文字+视频」这类多选组合范围。 */
+function findTagGroupByBase(groups: TagGroupProfile[], tags: string[]): TagGroupProfile | undefined {
+    if (tags.length === 0) return undefined;
+    return groups.find(group => group.tags.length > 0 && group.tags[0] === tags[0]);
 }
 
 function getPromptTagsLabel(p: Prompt, tagProfiles = flattenTagGroups(CONTENT_SCOPE_TAG_GROUPS)): string {
@@ -301,6 +296,9 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
     const [selectionPresetId, setSelectionPresetId] = useState<string | null>(null);
     const [confirmDeleteSelected, setConfirmDeleteSelected] = useState(false);
     const [bulkTagOpen, setBulkTagOpen] = useState(false); // 批量「设范围（tag）」选择面板
+    const [bulkTagGroupId, setBulkTagGroupId] = useState<string>("universal"); // 批量设范围：选中的大类
+    const [bulkTagSelected, setBulkTagSelected] = useState<string[]>([]); // 批量设范围：选中的次级范围 tag
+    const [copyToPresetOpen, setCopyToPresetOpen] = useState(false); // 多选复制到其它预设的面板
 
     // ── 按 App 筛选（高亮/仅显示/仅折叠/同类折叠） ──
     const [appFilterOpen, setAppFilterOpen] = useState(false);
@@ -864,6 +862,29 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
         );
         updatePreset(preset.id, { prompts: newPrompts });
         setBulkTagOpen(false);
+    }, [presets, editingId, selectedIds]);
+
+    // 多选：把选中的条目复制到另一个预设（追加到目标预设末尾，重命名并生成新 identifier）
+    const copySelectedToPreset = useCallback((targetPreset: PresetConfig) => {
+        const source = presets.find(p => p.id === editingId);
+        if (!source || selectedIds.size === 0) return;
+        const selected = buildDisplayedPrompts(source).filter(p => selectedIds.has(p.identifier));
+        if (selected.length === 0) return;
+        const targetPrompts = buildDisplayedPrompts(targetPreset);
+        const usedIds = new Set(targetPrompts.map(p => p.identifier));
+        const copies: Prompt[] = selected.map(p => {
+            let id = `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+            while (usedIds.has(id)) id = `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+            usedIds.add(id);
+            return { ...p, identifier: id, name: `${p.name || "提示词"}（副本）` };
+        });
+        const nextPrompts = [...targetPrompts, ...copies];
+        const nextOrder = nextPrompts.map(p => ({ identifier: p.identifier, enabled: p.enabled }));
+        updatePreset(targetPreset.id, { prompts: nextPrompts, prompt_order: nextOrder });
+        setCopyToPresetOpen(false);
+        setSelectedIds(new Set());
+        setSelectMode(false);
+        setSelectionPresetId(null);
     }, [presets, editingId, selectedIds]);
 
     const deleteSelectedPrompts = useCallback(() => {
@@ -1488,9 +1509,13 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                     <Copy size={15} strokeWidth={1.8} />
                                                     <span>复制</span>
                                                 </button>
-                                                <button type="button" className="msfb-btn" onClick={() => setBulkTagOpen(true)} disabled={selectedIds.size === 0}>
+                                                <button type="button" className="msfb-btn" onClick={() => { setBulkTagGroupId("universal"); setBulkTagSelected([]); setBulkTagOpen(true); }} disabled={selectedIds.size === 0}>
                                                     <Filter size={15} strokeWidth={1.8} />
                                                     <span>设范围</span>
+                                                </button>
+                                                <button type="button" className="msfb-btn" onClick={() => setCopyToPresetOpen(true)} disabled={selectedIds.size === 0 || presets.filter(p => p.id !== editingId).length === 0}>
+                                                    <CopyPlus size={15} strokeWidth={1.8} />
+                                                    <span>复制到</span>
                                                 </button>
                                                 <button type="button" className="msfb-btn msfb-danger" onClick={() => setConfirmDeleteSelected(true)} disabled={actionableSelectedIds.size === 0}>
                                                     <Trash2 size={15} strokeWidth={1.8} />
@@ -1560,10 +1585,9 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                 ? (preset.prompt_order.find(e => e.identifier === prompt.identifier)?.enabled ?? prompt.enabled)
                                                 : prompt.enabled;
                                             const promptTags = getPromptTags(prompt);
-                                            const matchedTagGroup = findTagGroupForTags(tagGroups, promptTags);
-                                            const isCustomPromptTags = promptTags.length > 0 && !matchedTagGroup;
-                                            const selectedTagGroup = matchedTagGroup ?? tagGroups[0];
-                                            const selectedTagMinor = matchedTagGroup ? getPromptTagMinor(prompt, selectedTagGroup) : selectedTagGroup.minors[0];
+                                            const baseTagGroup = findTagGroupByBase(tagGroups, promptTags) ?? tagGroups[0];
+                                            const baseTag = baseTagGroup.tags.length > 0 ? baseTagGroup.tags[0] : "";
+                                            const secondaryMinors = baseTagGroup.minors.filter(minor => minor.tags.length > 1);
 
                                             return (
                                                 <SwipeActionRow
@@ -1892,49 +1916,55 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                                     </div>
                                                                     <div className="flex flex-col gap-[2px] min-w-0">
                                                                         <label className="menu-desc ts-11 ml-[2px]">适用范围</label>
-                                                                        <div className="grid grid-cols-2 gap-2">
-                                                                            <select
-                                                                                value={isCustomPromptTags ? "__custom__" : selectedTagGroup.id}
-                                                                                onChange={(e) => {
-                                                                                    const group = tagGroups.find(item => item.id === e.target.value);
-                                                                                    const firstMinor = group?.minors[0];
-                                                                                    if (!firstMinor) return;
-                                                                                    updatePrompt(
-                                                                                        preset,
-                                                                                        prompt.identifier,
-                                                                                        current => ({ ...current, ...setPromptTags(firstMinor.tags) }),
+                                                                        <select
+                                                                            value={baseTagGroup.id}
+                                                                            onChange={(e) => {
+                                                                                const group = tagGroups.find(item => item.id === e.target.value);
+                                                                                if (!group) return;
+                                                                                const newBase = group.tags.length > 0 ? group.tags[0] : "";
+                                                                                updatePrompt(
+                                                                                    preset,
+                                                                                    prompt.identifier,
+                                                                                    current => ({ ...current, ...setPromptTags(newBase ? [newBase] : []) }),
+                                                                                );
+                                                                            }}
+                                                                            className="ui-select ts-13 px-2 py-[6px] rounded-[6px]"
+                                                                        >
+                                                                            {tagGroups.map((group) => (
+                                                                                <option key={group.id} value={group.id}>{group.label}</option>
+                                                                            ))}
+                                                                        </select>
+                                                                        {secondaryMinors.length > 0 && (
+                                                                            <div className="flex flex-wrap gap-2 pt-1">
+                                                                                {secondaryMinors.map((minor) => {
+                                                                                    const minorTags = minor.tags.slice(1);
+                                                                                    const checked = minorTags.every(t => promptTags.includes(t));
+                                                                                    return (
+                                                                                        <label key={minor.id} className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs font-bold transition-all active:scale-95 ${checked ? "border-[var(--c-icon-active)] bg-[var(--c-icon-active)] text-white" : "border-black/10 bg-white text-gray-800 hover:bg-gray-50"}`}>
+                                                                                            <input type="checkbox" className="accent-[var(--c-icon-active)]" checked={checked} onChange={() => {
+                                                                                                const others = new Set(promptTags.filter(t => t !== baseTag));
+                                                                                                if (checked) minorTags.forEach(t => others.delete(t));
+                                                                                                else minorTags.forEach(t => others.add(t));
+                                                                                                const next = baseTag ? [baseTag, ...Array.from(others)] : Array.from(others);
+                                                                                                updatePrompt(
+                                                                                                    preset,
+                                                                                                    prompt.identifier,
+                                                                                                    current => ({ ...current, ...setPromptTags(next) }),
+                                                                                                );
+                                                                                            }} />
+                                                                                            {minor.label}
+                                                                                        </label>
                                                                                     );
-                                                                                }}
-                                                                                className="ui-select ts-13 px-2 py-[6px] rounded-[6px]"
-                                                                            >
-                                                                                {isCustomPromptTags ? (
-                                                                                    <option value="__custom__">自定义</option>
-                                                                                ) : null}
-                                                                                {tagGroups.map((group) => (
-                                                                                    <option key={group.id} value={group.id}>{group.label}</option>
-                                                                                ))}
-                                                                            </select>
-                                                                            <select
-                                                                                value={isCustomPromptTags ? "__custom__" : selectedTagMinor.id}
-                                                                                onChange={(e) => {
-                                                                                    const minor = selectedTagGroup.minors.find(item => item.id === e.target.value);
-                                                                                    if (!minor) return;
-                                                                                    updatePrompt(
-                                                                                        preset,
-                                                                                        prompt.identifier,
-                                                                                        current => ({ ...current, ...setPromptTags(minor.tags) }),
-                                                                                    );
-                                                                                }}
-                                                                                className="ui-select ts-13 px-2 py-[6px] rounded-[6px]"
-                                                                            >
-                                                                                {isCustomPromptTags ? (
-                                                                                    <option value="__custom__">自定义</option>
-                                                                                ) : null}
-                                                                                {selectedTagGroup.minors.map((minor) => (
-                                                                                    <option key={minor.id} value={minor.id}>{minor.label}</option>
-                                                                                ))}
-                                                                            </select>
-                                                                        </div>
+                                                                                })}
+                                                                            </div>
+                                                                        )}
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => updatePrompt(preset, prompt.identifier, current => ({ ...current, ...setPromptTags([]) }))}
+                                                                            className="ui-btn mt-1 w-full"
+                                                                        >
+                                                                            清除范围（不限）
+                                                                        </button>
                                                                     </div>
                                                                 </div>
                                                             </div>
@@ -2243,36 +2273,85 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                 );
             })()}
 {bulkTagOpen && editingId && (() => {
+                const bulkGroup = tagGroups.find(g => g.id === bulkTagGroupId) ?? tagGroups[0];
+                const bulkBaseTag = bulkGroup.tags.length > 0 ? bulkGroup.tags[0] : "";
+                const bulkSecondaryMinors = bulkGroup.minors.filter(m => m.tags.length > 1);
+                const applyBulk = () => {
+                    const tags = bulkBaseTag ? [bulkBaseTag, ...Array.from(new Set(bulkTagSelected))] : [];
+                    bulkSetTag(tags);
+                };
                 return (
                     <BottomSheet title={`批量设置起效范围（已选 ${selectedIds.size} 项）`} onClose={() => setBulkTagOpen(false)}>
                         <div className="flex flex-col gap-4">
                             <div className="menu-desc ts-12">
-                                将选中的条目「起效范围」统一覆盖为下面选定的单项范围（覆盖原 tag，不合并）。
+                                选择一个大类，再勾选需要生效的次级范围（可多选）。应用到全部选中条目。
                             </div>
-                            {tagGroups.map(group => (
-                                <div key={group.id}>
-                                    <div className="menu-label ts-12 mb-2">{group.label}</div>
-                                    <div className="flex flex-wrap gap-2">
-                                        {group.minors.map(minor => (
-                                            <button
-                                                key={minor.id}
-                                                type="button"
-                                                onClick={() => bulkSetTag(minor.tags)}
-                                                className={`inline-flex items-center justify-center gap-1 rounded-full border px-3 py-1.5 text-xs font-bold transition-all active:scale-95 ${minor.tags.length === 0 ? "border-black/10 bg-white text-gray-800 hover:bg-gray-50" : "border-[var(--c-icon-active)] bg-[var(--c-icon-active)] text-white"}`}
-                                            >
+                            <select
+                                value={bulkTagGroupId}
+                                onChange={(e) => { setBulkTagGroupId(e.target.value); setBulkTagSelected([]); }}
+                                className="ui-select ts-13 px-2 py-[6px] rounded-[6px]"
+                            >
+                                {tagGroups.map(group => (
+                                    <option key={group.id} value={group.id}>{group.label}</option>
+                                ))}
+                            </select>
+                            {bulkSecondaryMinors.length > 0 && (
+                                <div className="flex flex-wrap gap-2">
+                                    {bulkSecondaryMinors.map(minor => {
+                                        const minorTags = minor.tags.slice(1);
+                                        const checked = minorTags.every(t => bulkTagSelected.includes(t));
+                                        return (
+                                            <label key={minor.id} className={`inline-flex items-center gap-1 rounded-full border px-3 py-1.5 text-xs font-bold transition-all active:scale-95 ${checked ? "border-[var(--c-icon-active)] bg-[var(--c-icon-active)] text-white" : "border-black/10 bg-white text-gray-800 hover:bg-gray-50"}`}>
+                                                <input type="checkbox" className="accent-[var(--c-icon-active)]" checked={checked} onChange={() => {
+                                                    if (checked) setBulkTagSelected(prev => prev.filter(t => !minorTags.includes(t)));
+                                                    else setBulkTagSelected(prev => Array.from(new Set([...prev, ...minorTags])));
+                                                }} />
                                                 {minor.label}
-                                            </button>
-                                        ))}
-                                    </div>
+                                            </label>
+                                        );
+                                    })}
                                 </div>
-                            ))}
+                            )}
+                            <button
+                                type="button"
+                                onClick={applyBulk}
+                                disabled={!bulkBaseTag && bulkTagSelected.length === 0}
+                                className="ui-btn w-full"
+                            >
+                                应用范围{bulkBaseTag ? `（${bulkBaseTag}${bulkTagSelected.length > 0 ? " + " + bulkTagSelected.map(resolveContentTagLabel).join("、") : ""}）` : ""}
+                            </button>
                             <button
                                 type="button"
                                 onClick={() => bulkSetTag([])}
                                 className="ui-btn w-full"
                             >
-                                通用（不限范围 / 清除 tag）
+                                清除范围（不限 App / 移除 tag）
                             </button>
+                        </div>
+                    </BottomSheet>
+                );
+            })()}
+            {copyToPresetOpen && (() => {
+                const targets = presets.filter(p => p.id !== editingId);
+                return (
+                    <BottomSheet title={`复制 ${selectedIds.size} 个条目到其它预设`} onClose={() => setCopyToPresetOpen(false)}>
+                        <div className="flex flex-col gap-3">
+                            <div className="menu-desc ts-12">
+                                选择目标预设，会把当前选中的条目追加到该预设末尾（副本形式，不影响源预设）。
+                            </div>
+                            {targets.length === 0 ? (
+                                <div className="menu-desc ts-13 p-3 text-center">没有其它预设可选</div>
+                            ) : targets.map(target => (
+                                <button
+                                    key={target.id}
+                                    type="button"
+                                    onClick={() => copySelectedToPreset(target)}
+                                    className="ui-btn w-full flex items-center justify-between"
+                                >
+                                    <span className="truncate">{target.name || "未命名预设"}</span>
+                                    <span className="menu-desc ts-11 whitespace-nowrap">{target.prompts.length} 条</span>
+                                </button>
+                            ))}
                         </div>
                     </BottomSheet>
                 );
