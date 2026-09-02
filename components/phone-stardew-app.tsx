@@ -426,7 +426,8 @@ function StardewChatPage({ charId, charName, onNotice, syncCfg, onRemoteSendUser
                 // 同时本地也写入一条，否则遥控端自己看不到自己发的消息。
                 pushChatMessage({ sessionId: session.id, role: "user", content: text, status: "sent" });
                 recordStardewMessage(charId, { role: "user", content: text });
-                await onRemoteSendUser(syncCfg, session.id, charId, text);
+                // 不等待云端写入，避免发消息卡顿；本地消息立即显示，云端同步后台进行
+                void onRemoteSendUser(syncCfg, session.id, charId, text).catch(err => console.warn("[StardewSync] 同步 user 消息失败:", err));
                 onNotice?.("已发送，等待游玩端回复");
             } else {
                 // 游玩端（或未开同步）：发进游戏 + 写本地会话
@@ -453,7 +454,8 @@ function StardewChatPage({ charId, charName, onNotice, syncCfg, onRemoteSendUser
             sessionRef.current = session;
             if (syncCfg.enabled && syncCfg.role === "remote") {
                 // 遥控端：请求游玩端对已同步的 user 消息生成回复，回复经 fanout 拉回
-                await onRemoteRequestReply(syncCfg, session.id, charId);
+                // 不等待云端写入，避免按钮卡顿；回复由同步轮询拉取后显示
+                void onRemoteRequestReply(syncCfg, session.id, charId).catch(err => console.warn("[StardewSync] 请求回复失败:", err));
             } else {
                 // 游玩端（或未开同步）：本机生成（含工具）
                 ensureStardewToolsRegistered();

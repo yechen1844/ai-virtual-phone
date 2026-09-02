@@ -62,6 +62,7 @@ function localNonce(): string {
 
 /** 遥控端：把 user 消息写入云端（仅同步，不触发生成）。 */
 export async function remoteSendUser(cfg: StardewSyncConfig, sessionId: string, characterId: string, content: string): Promise<void> {
+  if (!cfg.enabled) return; // 同步关闭时不做任何云端写入，避免发消息卡顿
   const data: SyncedUserMessage = {
     sessionId, characterId, role: "user", content, createdAt: new Date().toISOString(), source: "remote",
   };
@@ -70,6 +71,7 @@ export async function remoteSendUser(cfg: StardewSyncConfig, sessionId: string, 
 
 /** 遥控端：按「回复」按钮时，请求游玩端对已同步的 user 消息生成回复。 */
 export async function remoteRequestReply(cfg: StardewSyncConfig, sessionId: string, characterId: string): Promise<void> {
+  if (!cfg.enabled) return; // 同步关闭时不做任何云端写入
   const data: SyncedReplyRequest = {
     sessionId, characterId, createdAt: new Date().toISOString(), source: "remote",
   };
