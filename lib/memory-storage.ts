@@ -56,7 +56,10 @@ function runRequest<T>(req: IDBRequest<T>): Promise<T> {
 
 export async function saveMemoryEntry(entry: MemoryEntry): Promise<void> {
     const db = await openDb();
-    if (!db) return;
+    if (!db) {
+        console.warn("[Memory] float 记忆库（ai_phone_memory_db_v1）打不开，写入被静默跳过:", entry?.characterId, entry?.id);
+        return;
+    }
     try {
         const tx = db.transaction(STORE_NAME, "readwrite");
         tx.objectStore(STORE_NAME).put(entry);

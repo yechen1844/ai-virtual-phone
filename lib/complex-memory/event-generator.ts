@@ -258,7 +258,11 @@ async function generateEventForWindow(
   await saveEvent(event);
 
   if (config.mirrorToFloatEnabled && !opts?.suppressMirror) {
-    await mirrorEventToFloat(event, { earliest, latest, entryCount: formatted.count });
+    try {
+      await mirrorEventToFloat(event, { earliest, latest, entryCount: formatted.count });
+    } catch (err) {
+      console.warn("[ComplexMemory] 事件镜像 float 失败（不影响事件本身入库）:", err);
+    }
   }
 
   return event;
