@@ -12,7 +12,7 @@
 
 import { loadSyncConfig, saveSyncConfig, type StardewSyncConfig } from "./config";
 import { writeSyncObject, listSyncObjects, readSyncObject } from "./cloud";
-import { pushChatMessage, loadChatMessages, deleteChatMessage, CHAT_MESSAGE_PUSHED_EVENT, CHAT_MESSAGES_DELETED_EVENT, type ChatMessage } from "../chat-storage";
+import { upsertImportedChatMessage, loadChatMessages, deleteChatMessage, CHAT_MESSAGE_PUSHED_EVENT, CHAT_MESSAGES_DELETED_EVENT, type ChatMessage } from "../chat-storage";
 import { stardewReplyLatestPending } from "../nagi-bridge";
 
 export type SyncedUserMessage = {
@@ -55,24 +55,6 @@ const USER_PREFIX = "upsert/user";
 const REQ_PREFIX = "upsert/reply-request";
 const FANOUT_SESSION_PREFIX = "fanout/session"; // 实际按会话分目录
 const DELETES_PREFIX = "deletes/session";
-
-/**
- * 拉取落库期间抑制 fanout 发布器的开关：
- * 当一端从云端把"另一端发来的消息"落库时，这些 pushChatMessage 会触发本端发布器，
- * 若不抑制会把"别人发来的消息"再写回 fanout，另一端又拉回来 → 无限循环 / 重复复制。
- * 只有"本机真实产生的消息"才允许发布到 fanout。
- */
-let suppressFanoutPublish = false;
-
-async function withSuppressedFanout<T>(run: () => Promise<T>): Promise<T> {
-  const prev = suppressFanoutPublish;
-  suppressFanoutPublish = true;
-  try {
-    return await run();
-  } finally {
-    suppressFanoutPublish = prev;
-  }
-}
 
 function localNonce(): string {
   return `n-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -134,14 +116,15 @@ export async function remotePullFanout(cfg: StardewSyncConfig, sessionId?: strin
       if (!msg || !msg.messageId) continue;
       const local = loadChatMessages(msg.sessionId).find(m => m.id === msg.messageId);
       if (local) continue;
-      // 拉取落库期间抑制发布器：这些是"别人发来的消息"，不能回写 fanout。
-      await withSuppressedFanout(async () => {
-        pushChatMessage({
-          sessionId: msg.sessionId, role: msg.role as any, content: msg.content,
-          mediaType: msg.mediaType as any, mediaData: msg.mediaData as any,
-          statusPanel: msg.statusPanel, innerMonologue: msg.innerMonologue,
-          status: "sent", createdAt: msg.createdAt,
-        });
+      // 用 upsertImportedChatMessage：按云端 messageId 幂等落库——
+      // 已存在则跳过，不会像 pushChatMessage 那样每次生成新 id 导致反复落库复制；
+      // 且它不触发 CHAT_MESSAGE_PUSHED_EVENT，天然不会回写 fanout。
+      upsertImportedChatMessage({
+        id: msg.messageId,
+        sessionId: msg.sessionId, role: msg.role as any, content: msg.content,
+        mediaType: msg.mediaType as any, mediaData: msg.mediaData as any,
+        statusPanel: msg.statusPanel, innerMonologue: msg.innerMonologue,
+        status: "sent", createdAt: msg.createdAt,
       });
       inserted += 1;
       if (obj.ts > water) water = obj.ts;
@@ -163,15 +146,19 @@ export async function playPullUsers(cfg: StardewSyncConfig, sessionId?: string):
     const fresh = await listFresh(cfg, prefix, cfg.lastSyncedAt);
     for (const obj of fresh) {
       const u = await readSyncObject<SyncedUserMessage>(cfg, obj.path);
-      if (!u || !u.content) continue;
-      const nonce = `${u.createdAt}-${u.content}`;
-      if (seen.has(nonce)) continue;
-      seen.add(nonce);
-      // 拉取落库期间抑制发布器：遥控端发来的 user 不能回写 fanout（否则遥控端再拉回 → 循环）。
-      await withSuppressedFanout(async () => {
-        pushChatMessage({ sessionId: u.sessionId, role: "user", content: u.content, status: "sent", createdAt: u.createdAt });
-      });
-      inserted += 1;
+        if (!u || !u.content) continue;
+        const nonce = `${u.createdAt}-${u.content}`;
+        if (seen.has(nonce)) continue;
+        seen.add(nonce);
+        // 用稳定派生 id 幂等落库：同一云端 user 消息无论轮询多少次都只落一条，
+        // 避免 pushChatMessage 每次生成新 id 导致游玩端无限复制。
+        const stableId = `stardew_user_${u.sessionId}_${u.createdAt}_${u.content}`.replace(/[^0-9A-Za-z_-]/g, "_");
+        upsertImportedChatMessage({
+          id: stableId,
+          sessionId: u.sessionId, role: "user", content: u.content,
+          status: "sent", createdAt: u.createdAt,
+        });
+        inserted += 1;
     }
   }
   return inserted;
@@ -217,8 +204,6 @@ export function attachPlayFanoutPublisher(cfg: StardewSyncConfig): () => void {
   const onMessage = (e: Event) => {
     const msg = (e as CustomEvent).detail?.message as ChatMessage | undefined;
     if (!msg || !msg.sessionId) return;
-    // 拉取落库期间不发布：把"从云端拉来的消息"再写回 fanout 会造成循环/重复。
-    if (suppressFanoutPublish) return;
     // 只转发星露谷会话 + 非群主聊天会话；其它（群聊/朋友圈等）不同步
     const isStardew = msg.sessionId.startsWith("sess_stardew_");
     const isMainChat = !msg.sessionId.startsWith("sess_stardew_") && !msg.sessionId.startsWith("sess_group_");
