@@ -325,6 +325,50 @@ class MainActivity : AppCompatActivity() {
         }
 
         /**
+         * 网页下载 Blob（前端把文件转成 base64 传过来）。壳里 WebView 不会把
+         * blob:/data: 交回浏览器下载，必须由原生解码后写进公共「下载」目录，
+         * 否则所有 from-Blob 的导出（备份/主题/预设/音乐/报告等）在 APK 里全丢。
+         */
+        @JavascriptInterface
+        fun downloadBlob(base64: String, filename: String, mimeType: String) {
+            runCatching {
+                val safeName = android.webkit.URLUtil.guessFileName(
+                    filename ?: "download",
+                    null,
+                    if (!mimeType.isNullOrBlank()) mimeType else "application/octet-stream",
+                )
+                val bytes = android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
+                val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                if (!dir.exists()) dir.mkdirs()
+                val outFile = java.io.File(dir, safeName)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    // Android 10+：用 MediaStore 写公共 Downloads，无需任何存储权限
+                    val values = android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, safeName)
+                        put(android.provider.MediaStore.MediaColumns.MIME_TYPE, if (!mimeType.isNullOrBlank()) mimeType else "application/octet-stream")
+                        put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                    }
+                    val resolver = this@MainActivity.contentResolver
+                    val uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    if (uri != null) {
+                        resolver.openOutputStream(uri)?.use { it.write(bytes) }
+                    } else {
+                        outFile.writeBytes(bytes)
+                    }
+                } else {
+                    // Android 9 及以下：直接写公共下载目录（Manifest 已带 WRITE_EXTERNAL_STORAGE）
+                    outFile.writeBytes(bytes)
+                }
+                Toast.makeText(this@MainActivity, "已保存到「下载」目录：$safeName", Toast.LENGTH_LONG).show()
+                runCatching {
+                    this@MainActivity.sendBroadcast(Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri.fromFile(outFile)))
+                }
+            } catch (e: Exception) {
+                Toast.makeText(this@MainActivity, "下载失败：${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+
+        /**
          * 后台推送：网页在后台收到 char 新消息时调用，用安卓原生通道弹系统通知。
          * 不依赖浏览器 Notification API / ServiceWorker / Supabase。
          */
