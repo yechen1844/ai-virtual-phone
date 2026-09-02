@@ -139,11 +139,13 @@ export async function remotePullFanout(cfg: StardewSyncConfig, sessionId?: strin
 
 /** 游玩端：拉取购买端 user 消息（落库，不生成）。sessionId 为空 = 全量扫描。 */
 export async function playPullUsers(cfg: StardewSyncConfig, sessionId?: string): Promise<number> {
+  const read = await readSyncObject<{ lastSyncedAt: string }>(cfg, "sync/state/play.userlock");
+  let water = read?.lastSyncedAt ?? cfg.lastSyncedAt;
   let inserted = 0;
   const seen = new Set<string>();
   const prefixes = await resolveSessionPrefixes(cfg, USER_PREFIX, sessionId);
   for (const prefix of prefixes) {
-    const fresh = await listFresh(cfg, prefix, cfg.lastSyncedAt);
+    const fresh = await listFresh(cfg, prefix, water);
     for (const obj of fresh) {
       const u = await readSyncObject<SyncedUserMessage>(cfg, obj.path);
         if (!u || !u.content) continue;
@@ -159,7 +161,13 @@ export async function playPullUsers(cfg: StardewSyncConfig, sessionId?: string):
           status: "sent", createdAt: u.createdAt,
         });
         inserted += 1;
+        if (obj.ts > water) water = obj.ts;
     }
+  }
+  // 推进 play 侧水位：只拉增量，避免每轮从头重扫全量云对象。
+  if (inserted > 0) {
+    saveSyncConfig({ ...cfg, lastSyncedAt: water });
+    await writeSyncObject(cfg, "state/play", "userlock", { lastSyncedAt: water });
   }
   return inserted;
 }
