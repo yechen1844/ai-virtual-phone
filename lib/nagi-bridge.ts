@@ -10,11 +10,12 @@
 //    但短期上下文（shortTermMemory）仍会带该 char 的近期时间线（用户明确希望共享短期记忆）。
 // 4. 云端中转：从 Cloudflare Worker 拉取游戏消息 → 写入星露谷会话 → char 回复 → 推回云端。
 
-import { loadChatSessions, saveChatSessions, pushChatMessage, loadChatMessages, createOrGetSession, reassignChatSessionMessages, deleteChatSession, DEFAULT_VISION_IMAGE_PROMPT_LIMIT, type ChatSession, type ChatMessage, type StateValue } from "./chat-storage";
+import { loadChatSessions, saveChatSessions, pushChatMessage, loadChatMessages, deleteChatMessage, createOrGetSession, reassignChatSessionMessages, deleteChatSession, DEFAULT_VISION_IMAGE_PROMPT_LIMIT, type ChatSession, type ChatMessage, type StateValue } from "./chat-storage";
 import { recordStardewMessage } from "./stardew-memory";
 import { generateChatCompletion, flattenCompletionResult } from "./chat-engine";
 import { parseAIResponse } from "./rich-message-parser";
 import { loadCharacters } from "./character-storage";
+import { resolveUserIdentity } from "./settings-storage";
 import { kvGet, kvSet } from "./kv-db";
 import {
   createRestTool,
@@ -105,6 +106,7 @@ async function fireStardewAutonomy(characterId: string, session: any): Promise<v
           pushChatMessage({ sessionId: session.id, role: "system", content: notice, mediaType: "tool_notice", status: "sent" });
         }
       },
+      onToolExecution: (results) => { void handleStardewScreenshotsInResults(session, results); },
     });
     if ((cr as any)?.reasoning) stardewReasoning = (cr as any).reasoning;
     const text = flattenCompletionResult(cr);
@@ -128,7 +130,8 @@ async function fireStardewAutonomy(characterId: string, session: any): Promise<v
 
 export type StardewToolDef = { name: string; description: string; parameterSchema: string };
 
-export function getStardewTools(): StardewToolDef[] {
+export function getStardewTools(userName?: string): StardewToolDef[] {
+  const playerName = userName || "user";
   return [
     { name: "stardew_get_state", description: "查看玩家当前游戏状态：位置、时间、季节、金钱、体力、背包。用于了解农场现状。", parameterSchema: "{}" },
     { name: "stardew_get_surroundings", description: "查看玩家周围环境：附近有哪些 NPC、怪物、可交互物体、作物。参数 radius 为扫描半径（默认 5）。", parameterSchema: '{"type":"object","properties":{"radius":{"type":"number","description":"扫描半径"}},"additionalProperties":false}' },
@@ -154,6 +157,9 @@ export function getStardewTools(): StardewToolDef[] {
     { name: "stardew_sell", description: "把物品出售到出货箱（需在农场）。参数 name 指定要卖的东西；不填则卖出全部。", parameterSchema: '{"type":"object","properties":{"name":{"type":"string"}},"additionalProperties":false}' },
     { name: "stardew_store", description: "把背包物品存到箱子。参数 x、y 为箱子坐标，name 为要存的物品名（可选）。", parameterSchema: '{"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"name":{"type":"string"}},"required":["x","y"],"additionalProperties":false}' },
     { name: "stardew_emote", description: "让角色做一个表情动作。参数 emotion 可选。", parameterSchema: '{"type":"object","properties":{"emotion":{"type":"string"}},"additionalProperties":false}' },
+    { name: "stardew_get_user_surroundings", description: `查看 user（${playerName}）周围的环境：user 附近有哪些 NPC/怪物/可交互物体/作物。参数 radius 为扫描半径（默认5）。这读的是 user 那个星露谷，不是你自己。`, parameterSchema: '{"type":"object","properties":{"radius":{"type":"number","description":"扫描半径(默认5)"}},"additionalProperties":false}' },
+    { name: "stardew_screenshot_self", description: "给「你自己（农工）的星露谷窗口」拍一张当前游戏截图，用于看清自己眼前的环境/农田/当前位置。", parameterSchema: "{}" },
+    { name: "stardew_screenshot_user", description: `给「user（${playerName}）的星露谷窗口」拍一张当前游戏截图，用于确认 user 此刻的位置/状态。` , parameterSchema: "{}" },
   ];
 }
 
@@ -195,9 +201,13 @@ export function ensureStardewToolsRegistered(): void {
     stardew_sell:             { endpoint: `${BUTLER_URL}/nb/sell`, method: "POST" },
     stardew_store:            { endpoint: `${BUTLER_URL}/nb/store`, method: "POST" },
     stardew_emote:            { endpoint: `${BUTLER_URL}/nb/emote`, method: "POST" },
+    // —— user(host,7842) 侧：读 user 的状态/周围走 /ub/*；截图走 /nb/screenshotctl(控制提示)+onToolExecution 拉真实图
+    stardew_get_user_surroundings: { endpoint: `${BUTLER_URL}/ub/surroundings`, method: "GET" },
+    stardew_screenshot_self:       { endpoint: `${BUTLER_URL}/nb/screenshotctl?target=self`, method: "GET" },
+    stardew_screenshot_user:       { endpoint: `${BUTLER_URL}/nb/screenshotctl?target=user`, method: "GET" },
   };
 
-  const defs = getStardewTools();
+  const defs = getStardewTools(resolveStardewUserName());
   for (const def of defs) {
     const found = existing.find((t) => t.name === def.name);
     const mapping = endpointMap[def.name];
@@ -385,9 +395,114 @@ async function readStardewStateText(): Promise<string> {
   try {
     const sur: any = await cloudFetch("/nb/surroundings?radius=5");
     const tiles = sur?.tiles ?? sur?.surroundings;
-    if (tiles) lines.push(`周围：${JSON.stringify(tiles).slice(0, 220)}`);
+    if (tiles) lines.push(`周围：${JSON.stringify(tiles).slice(0, 500)}`);
   } catch { /* 忽略 */ }
   return lines.length > 1 ? lines.join("\n") : "";
+}
+
+/** float 里 user 的身份名（用于星露谷里明确"user 是谁"，避免 char 把 user 误当成自己）。 */
+function resolveStardewUserName(): string {
+  if (typeof window === "undefined") return "用户";
+  try {
+    const id = resolveUserIdentity();
+    return (id && typeof id.name === "string" && id.name.trim()) ? id.name.trim() : "用户";
+  } catch {
+    return "用户";
+  }
+}
+
+/** 读取 user(host,7842) 的状态，只取位置/金钱/体力（排除时间、背包、周围）。 */
+async function readUserStateText(): Promise<string> {
+  const userName = resolveStardewUserName();
+  const lines: string[] = [`【user状态（${userName}）】`];
+  try {
+    const state: any = await cloudFetch("/ub/state");
+    const info = state?.info ?? state?.player ?? state ?? {};
+    if (info.location || info.currentLocation) {
+      const loc = info.location ?? info.currentLocation;
+      lines.push(`位置：${typeof loc === "string" ? loc : (loc.name ?? JSON.stringify(loc))}`);
+    }
+    if (typeof info.money === "number") lines.push(`金钱：${info.money}`);
+    if (info.stamina != null) lines.push(`体力：${info.stamina}`);
+  } catch { /* 读不到就"暂不清楚" */ }
+  if (lines.length === 1) lines.push("位置：暂不清楚");
+  lines.push(`说明：这是「${userName}」（float 里的 user）的状态，不是你自己（农工）的。`);
+  return lines.join("\n");
+}
+
+/** 取一张星露谷游戏窗口截图（self=char 自己的游戏 7843；user=你的 host 游戏 7842），返回 dataURL；失败返回 null。 */
+async function fetchStardewScreenshotDataUrl(target: "self" | "user"): Promise<string | null> {
+  try {
+    const res = await fetch(`${BUTLER_URL}/nb/screenshot?target=${target}`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    if (!blob || blob.size < 100) return null;
+    return await new Promise<string | null>((resolvePromise) => {
+      const reader = new FileReader();
+      reader.onload = () => resolvePromise(typeof reader.result === "string" ? reader.result : null);
+      reader.onerror = () => resolvePromise(null);
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 处理星露谷截图工具：把最新截图落成图片消息，并瘦身到"最新 2 张"（self 最新 + user 最新），
+ * 这样视觉管道只会给模型注入最近两张截图，避免上下文被截图堆满。
+ */
+async function handleStardewScreenshot(session: any, toolName: string): Promise<void> {
+  if (!session?.id || typeof window === "undefined") return;
+  const target: "self" | "user" = toolName.endsWith("_user") ? "user" : "self";
+  const dataUrl = await fetchStardewScreenshotDataUrl(target);
+  if (!dataUrl) {
+    pushChatMessage({ sessionId: session.id, role: "system", content: "⚠️ 截图失败（游戏窗口没在运行？）", mediaType: "tool_notice", status: "sent" });
+    return;
+  }
+  const userName = resolveStardewUserName();
+  const label = target === "user"
+    ? `【截图·user ${userName} 的星露谷画面】`
+    : "【截图·你自己（农工）的星露谷画面】";
+  pushChatMessage({
+    sessionId: session.id,
+    role: "assistant",
+    content: label,
+    mediaType: "image",
+    mediaUrl: dataUrl,
+    status: "sent",
+  });
+  // 只保留最早也是"最新各 1 张"：把超出 2 张的旧截图消息删掉
+  pruneStardewScreenshots(session.id, 2);
+}
+
+function pruneStardewScreenshots(sessionId: string, keep: number): void {
+  if (typeof window === "undefined" || !sessionId) return;
+  try {
+    const msgs = loadChatMessages(sessionId)
+      .filter(m => m.mediaType === "image" && typeof m.content === "string" && m.content.includes("星露谷画面"))
+      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+    const drop = msgs.length - keep;
+    for (let i = 0; i < drop; i += 1) {
+      try { deleteChatMessage(msgs[i].id); } catch { /* 忽略单条删除失败 */ }
+    }
+  } catch { /* 忽略 */ }
+}
+
+/** 供生成回调复用：识别截图工具结果并落图。 */
+async function handleStardewScreenshotsInResults(session: any, results: unknown[] | undefined): Promise<void> {
+  if (!Array.isArray(results) || !session?.id) return;
+  for (const r of results) {
+    if (r && typeof r === "object" && typeof (r as { name?: unknown }).name === "string") {
+      const name = (r as { name: string }).name as string;
+      if (name === "stardew_screenshot_self" || name === "stardew_screenshot_user") {
+        await handleStardewScreenshot(session, name);
+      }
+    }
+  }
 }
 
 // 星露谷操作偏好：整类农活优先一键脚本，尽量别一步步手动操作（更快更少出错）。
@@ -408,6 +523,15 @@ async function injectStardewState(session: any, history: any[]): Promise<any[]> 
     }
   } catch (e) {
     console.warn("[NagiBridge] 状态注入失败:", e);
+  }
+  // 注入 user(host) 的位置/金钱/体力，明确是谁，避免 char 把 user 误当成自己。
+  try {
+    const userText = await readUserStateText();
+    if (userText && session?.id) {
+      injected.push({ sessionId: session.id, role: "system", content: userText, status: "sent" as const });
+    }
+  } catch (e) {
+    console.warn("[NagiBridge] user 状态注入失败:", e);
   }
   if (session?.id) {
     injected.push({ sessionId: session.id, role: "system", content: STARDEW_RULE, status: "sent" as const });
@@ -443,6 +567,7 @@ async function generateStardewReply(session: any, history: any[]): Promise<strin
           });
         }
       },
+      onToolExecution: (results) => { void handleStardewScreenshotsInResults(session, results); },
     });
     if ((cr as any)?.reasoning) stardewReasoning = (cr as any).reasoning;
     const reply = flattenCompletionResult(cr);
