@@ -508,15 +508,64 @@ export function getSummariesForInjection(
     return result;
 }
 
-/** 当摘要总字数超过上限时，提炼为当前的 1/3。保留旧摘要不删除。 */
+/**
+ * 计算"最远提炼覆盖位置"：所有提炼摘要把位置 ≤ distilledUpTo 的普通摘要覆盖了，
+ * 覆盖范围内的普通摘要在注入时不显示、也不计入下一轮提炼源（但保留在存储中不删）。
+ */
+function getFarthestDistilledCoverage(allSummaries: ReadingSummary[]): number {
+    let max = 0;
+    for (const s of allSummaries) {
+        if (s.isDistilled && typeof s.distilledUpTo === "number" && s.distilledUpTo > max) {
+            max = s.distilledUpTo;
+        }
+    }
+    return max;
+}
+
+/**
+ * 返回"应参与下一轮提炼"的摘要：= 最新一条提炼摘要 + 所有未被既有提炼覆盖的普通摘要。
+ * 这样提炼后的旧普通摘要不会反复计入字数、也不会被重复提炼（避免越堆越多），
+ * 但它们始终保留在存储中，供"全部摘要"标签与云备份查看。
+ */
+export function getDistillableSummaries(allSummaries: ReadingSummary[]): ReadingSummary[] {
+    const coverage = getFarthestDistilledCoverage(allSummaries);
+    const distilled = allSummaries.filter(s => s.isDistilled);
+    // 提炼摘要若有多条，只取最新一条（前面更早的提炼已被后续提炼覆盖）
+    const latestDistilled = distilled.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
+    const uncoveredNormal = allSummaries.filter(s =>
+        !s.isDistilled
+        && encodeReadingPosition(s.chapterIndex, s.endParagraph) > coverage,
+    );
+    const out: ReadingSummary[] = [];
+    if (latestDistilled) out.push(latestDistilled);
+    out.push(...uncoveredNormal);
+    return out;
+}
+
+/** 待提炼摘要的总字数（仅统计可提炼部分，不含已被覆盖的旧普通摘要）。 */
+export function getDistillableSummaryChars(allSummaries: ReadingSummary[]): number {
+    return getDistillableSummaries(allSummaries).reduce((sum, s) => sum + s.content.length, 0);
+}
+
+/**
+ * 当摘要总字数超过上限时，提炼为当前的 1/3。保留旧摘要不删除。
+ * - 提炼失败（空返回/异常）会按 attempt 重试；重试仍失败只记 warn、返回 null，绝不删除任何已生成摘要。
+ * - 传 { force: true } 可忽略字数上限强制提炼（供「立即提炼」使用）。
+ */
 export async function distillSummariesIfNeeded(
     bookId: string,
     characterId: string,
     maxChars: number,
+    options?: { force?: boolean },
 ): Promise<ReadingSummary | null> {
+    const force = options?.force === true;
     const summaries = await loadSummaries(bookId);
-    const totalChars = getTotalSummaryChars(summaries);
-    if (totalChars <= maxChars) return null;
+    // 只对"可提炼摘要"（最新提炼 + 未被覆盖的普通摘要）做源与阈值判断，
+    // 避免提炼后被覆盖的旧摘要反复计入、导致每加一点就重复提炼。
+    const distillable = getDistillableSummaries(summaries);
+    const totalChars = getDistillableSummaryChars(summaries);
+    if (!force && totalChars <= maxChars) return null;
+    if (distillable.length === 0) return null;
 
     const bindings = loadBindingConfig();
     const slot = resolveBinding(bindings, characterId, "reading");
@@ -525,43 +574,56 @@ export async function distillSummariesIfNeeded(
     const apiConfig = loadApiConfigs().find(c => c.id === apiConfigId);
     if (!apiConfig) return null;
 
-    const targetChars = Math.floor(totalChars / 3);
-    const summaryText = summaries.map(s => {
+    const targetChars = Math.max(1, Math.floor((force ? Math.max(totalChars, 1) : totalChars) / 3));
+    const summaryText = distillable.map(s => {
         if (s.isDistilled) return s.content;
         return `【第${s.chapterIndex + 1}章】${s.content}`;
     }).join("\n");
 
     const prompt = `以下是一部长篇小说的阅读摘要记录，按时间顺序排列。请将这些摘要提炼为一份更简洁的版本，总字数约${targetChars}字，保留最重要的情节转折和人物发展，删去次要细节。只输出提炼后的摘要文本，不要输出任何其他内容：\n\n${summaryText}`;
 
-    try {
-        const result = await simpleLLMCall(apiConfig, [
-            { role: "user", content: prompt },
-        ], { label: "阅读摘要·提炼" });
+    // 提炼失败重试：最多 MAX_ATTEMPTS 次。失败不丢旧摘要，但会返回 null 让调用方决定是否提示重试。
+    const MAX_ATTEMPTS = 2;
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+        try {
+            const result = await simpleLLMCall(apiConfig, [
+                { role: "user", content: prompt },
+            ], { label: "阅读摘要·提炼" });
 
-        if (!result.content || result.content.trim().length === 0) return null;
+            if (!result.content || result.content.trim().length === 0) {
+                lastError = new Error("提炼返回空内容");
+                if (attempt < MAX_ATTEMPTS - 1) continue;
+                break;
+            }
 
-        // 提炼摘要覆盖到最后一条摘要的位置
-        const lastSummary = summaries[summaries.length - 1];
-        const distilledUpTo = lastSummary
-            ? encodeReadingPosition(lastSummary.chapterIndex, lastSummary.endParagraph)
-            : 0;
+            // 提炼摘要覆盖到最后一条可提炼摘要的位置
+            const lastSummary = distillable[distillable.length - 1];
+            const distilledUpTo = lastSummary
+                ? encodeReadingPosition(lastSummary.chapterIndex, lastSummary.endParagraph)
+                : 0;
 
-        const distilled: ReadingSummary = {
-            id: `rs_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-            bookId,
-            chapterIndex: -1,
-            startParagraph: -1,
-            endParagraph: lastSummary?.endParagraph ?? -1,
-            content: result.content.trim(),
-            isDistilled: true,
-            distilledUpTo,
-            createdAt: new Date().toISOString(),
-        };
+            const distilled: ReadingSummary = {
+                id: `rs_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                bookId,
+                chapterIndex: -1,
+                startParagraph: -1,
+                endParagraph: lastSummary?.endParagraph ?? -1,
+                content: result.content.trim(),
+                isDistilled: true,
+                distilledUpTo,
+                createdAt: new Date().toISOString(),
+            };
 
-        await saveSummary(distilled);
-        return distilled;
-    } catch (err) {
-        console.warn("[Reading] Summary distillation failed:", err);
-        return null;
+            await saveSummary(distilled);
+            return distilled;
+        } catch (err) {
+            lastError = err;
+            if (attempt < MAX_ATTEMPTS - 1) continue;
+            break;
+        }
     }
+    // 重试完仍失败：只 warn 上报，绝不删除已生成摘要。
+    console.warn("[Reading] Summary distillation failed after retries:", lastError);
+    return null;
 }

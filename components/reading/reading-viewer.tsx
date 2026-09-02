@@ -20,7 +20,7 @@ import {
     saveSummary,
     getTotalSummaryChars,
 } from "@/lib/reading-storage";
-import { generateAnnotationBatch, generateReadingChat, distillSummariesIfNeeded, formatReadingSummary, getSummariesForInjection, parseReadingDiscussResponse, type ReadingDiscussAction, type ReadingDiscussContext } from "@/lib/reading-engine";
+import { generateAnnotationBatch, generateReadingChat, distillSummariesIfNeeded, formatReadingSummary, getDistillableSummaryChars, getSummariesForInjection, parseReadingDiscussResponse, type ReadingDiscussAction, type ReadingDiscussContext } from "@/lib/reading-engine";
 import { loadChatMessages, pushChatMessage, deleteChatMessage, editChatMessage, loadChatContacts, createOrGetSession, isReadingDiscussMessage } from "@/lib/chat-storage";
 import type { ChatMessage, ChatSession } from "@/lib/chat-storage";
 import { loadCharacters } from "@/lib/character-storage";
@@ -689,13 +689,47 @@ export function ReadingViewer({ book, onBack }: Props) {
     const [summaries, setSummaries] = useState<ReadingSummary[]>([]);
     const [showSummaryDialog, setShowSummaryDialog] = useState(false);
     const [summaryDialogTab, setSummaryDialogTab] = useState<"injected" | "all" | "distilled">("injected");
+    const [summaryActionMsg, setSummaryActionMsg] = useState<{ ok: boolean; text: string } | null>(null);
+    // 防止"自动生成途中切书"时，旧书的异步 refresh/提炼结果盖到当前书上
+    const bookIdRef = useRef(book.id);
+    useEffect(() => { bookIdRef.current = book.id; }, [book.id]);
+
+    // 切书时立即清空上一本书的摘要缓存，避免显示串书（旧书摘要短暂渲染到新书）
+    useEffect(() => {
+        setSummaries([]);
+        setSummaryActionMsg(null);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [book.id]);
 
     const refreshSummaries = useCallback(async () => {
-        const loaded = await loadSummaries(book.id);
+        const bid = book.id;
+        const loaded = await loadSummaries(bid);
+        if (bookIdRef.current !== bid) return; // 已切到别的书，丢弃旧书结果
         setSummaries(loaded);
     }, [book.id]);
 
     useEffect(() => { refreshSummaries(); }, [refreshSummaries]);
+
+    // 手动提炼：忽略字数上限强制提炼。提炼失败不丢失任何已生成摘要。
+    const handleManualDistill = useCallback(async () => {
+        if (!companionId) { setSummaryActionMsg({ ok: false, text: "请先绑定伴读角色，才能提炼摘要。" }); return; }
+        setSummaryActionMsg({ ok: true, text: "正在提炼摘要…" });
+        const bid = book.id;
+        try {
+            const maxChars = readingConfig.maxSummariesChars > 0 ? readingConfig.maxSummariesChars : 5000;
+            const distilled = await distillSummariesIfNeeded(bid, companionId, maxChars, { force: true });
+            if (bookIdRef.current !== bid) return; // 提炼途中切书，不动当前书 UI
+            await refreshSummaries();
+            setSummaryActionMsg(distilled
+                ? { ok: true, text: "提炼完成：已生成「前情提要」，原有分段摘要仍保留。注入时读到提炼覆盖之后才用前情提要。" }
+                : { ok: false, text: "提炼未成功（可能是未绑定 API / 模型未返回）。已生成的摘要在存储里没丢，可稍后再试。" });
+        } catch (e) {
+            console.warn("[Reading] Manual distill error:", e);
+            if (bookIdRef.current !== bid) return;
+            setSummaryActionMsg({ ok: false, text: `提炼失败：${e instanceof Error ? e.message : String(e)}（已有摘要不受影响）` });
+            await refreshSummaries();
+        }
+    }, [book.id, companionId, readingConfig.maxSummariesChars, refreshSummaries]);
 
     const getReadingSummaryForContext = useCallback(async (chapterIdx: number, paragraphIdx: number): Promise<string> => {
         const all = await loadSummaries(book.id);
@@ -2378,7 +2412,7 @@ export function ReadingViewer({ book, onBack }: Props) {
                             type="button"
                             className="reading-footer-icon-btn"
                             onClick={() => setShowSummaryDialog(true)}
-                            title={summaries.length > 0 ? `查看情节摘要（${getTotalSummaryChars(summaries)}字）` : "暂无摘要：完成一次批注后自动生成"}
+                            title={summaries.length > 0 ? `查看情节摘要（现${getDistillableSummaryChars(summaries)}字）` : "暂无摘要：完成一次批注后自动生成"}
                         >
                             <FileText size={22} strokeWidth={1.7} />
                             <span>摘要</span>
@@ -2804,12 +2838,40 @@ export function ReadingViewer({ book, onBack }: Props) {
             )}
             {showSummaryDialog && (
                 <ContentDialog
-                    title={`情节摘要（${getTotalSummaryChars(summaries)}字 / 上限${readingConfig.maxSummariesChars}字）`}
+                    title={`情节摘要（现${getDistillableSummaryChars(summaries)}字 / 上限${readingConfig.maxSummariesChars}字 · 已提炼${summaries.filter(s => s.isDistilled).length}次）`}
                     confirmLabel=""
                     cancelLabel=""
                     onConfirm={() => setShowSummaryDialog(false)}
                     onCancel={() => setShowSummaryDialog(false)}
                 >
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "0.75rem", flexWrap: "wrap" }}>
+                        <button
+                            type="button"
+                            disabled={generating || !companionId}
+                            onClick={() => { void handleManualDistill(); }}
+                            style={{
+                                padding: "0.35rem 0.8rem",
+                                borderRadius: "0.375rem",
+                                border: "1px solid var(--c-accent)",
+                                background: "var(--c-accent)",
+                                color: "#fff",
+                                fontSize: "0.8125rem",
+                                cursor: companionId && !generating ? "pointer" : "not-allowed",
+                                opacity: companionId && !generating ? 1 : 0.5,
+                            }}
+                        >
+                            立即提炼
+                        </button>
+                        {summaryActionMsg && (
+                            <span style={{
+                                fontSize: "0.75rem",
+                                color: summaryActionMsg.ok ? "var(--c-text-2)" : "var(--c-warning, #c88719)",
+                                lineHeight: 1.5,
+                            }}>
+                                {summaryActionMsg.text}
+                            </span>
+                        )}
+                    </div>
                     <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.75rem" }}>
                         {(["injected", "all", "distilled"] as const).map(tab => (
                             <button
