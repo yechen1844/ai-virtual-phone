@@ -1,8 +1,9 @@
-import { readFileSync, appendFileSync, existsSync } from 'node:fs';
+import { readFileSync, appendFileSync, existsSync, writeFileSync, unlinkSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { exec } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
 
 const args = process.argv.slice(2);
 const cfgIdx = args.indexOf('--config');
@@ -191,6 +192,60 @@ async function readBody(req) {
   return raw ? JSON.parse(raw) : {};
 }
 
+/** 按监听端口找对应星露谷进程的主窗口，只截取该窗口，返回 PNG Buffer（截不到返回 null）。 */
+function captureGameWindowPng(port) {
+  return new Promise((resolvePromise) => {
+    const tmpPng = join(tmpdir(), `nagi_shot_${port}_${Date.now()}.png`);
+    const ps = `
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Drawing
+$c = Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $c) { Write-Output 'ERR_NO_CONN'; exit 0 }
+$p = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue
+if (-not $p) { Write-Output 'ERR_NO_PROC'; exit 0 }
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class SW {
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);
+}
+public struct RECT { public int Left, Top, Right, Bottom; }
+"@
+$h = $p.MainWindowHandle
+if ($h -eq [IntPtr]::Zero) { Write-Output 'ERR_NO_WINDOW'; exit 0 }
+$r = [SW+RECT]::new()
+[SW]::GetWindowRect($h, [ref]$r) | Out-Null
+$w = [Math]::Max(1, $r.Right - $r.Left)
+$hh = [Math]::Max(1, $r.Bottom - $r.Top)
+$bmp = New-Object System.Drawing.Bitmap($w, $hh)
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$dc = $g.GetHdc()
+try { [SW]::PrintWindow($h, $dc, 2) | Out-Null } finally { $g.ReleaseHdc($dc) }
+$g.Dispose()
+$bmp.Save('${tmpPng}', [System.Drawing.Imaging.ImageFormat]::Png)
+$bmp.Dispose()
+Write-Output 'OK'
+    `;
+    exec(`powershell -NoProfile -ExecutionPolicy Bypass -Command "${ps.replace(/"/g, '\\\"')}"`, { timeout: 20000, maxBuffer: 1024 * 1024 * 12 }, (err, stdout, stderr) => {
+      if (err || !stdout.includes('OK')) {
+        log(`截图失败 port=${port}: ${String(stdout || stderr || err || '').slice(0, 120)}`);
+        try { if (existsSync(tmpPng)) unlinkSync(tmpPng); } catch {}
+        return resolvePromise(null);
+      }
+      try {
+        if (!existsSync(tmpPng)) return resolvePromise(null);
+        const buf = readFileSync(tmpPng);
+        try { unlinkSync(tmpPng); } catch {}
+        resolvePromise(buf);
+      } catch (e) {
+        log(`截图读取失败: ${e.message}`);
+        resolvePromise(null);
+      }
+    });
+  });
+}
+
 const channelServer = createServer(async (req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
@@ -317,6 +372,58 @@ const replyServer = createServer(async (req, res) => {
       } catch (e) {
         return sendJson(res, 502, { ok: false, error: String((e && e.message) || e) });
       }
+    }
+    // 星露谷截图控制：给模型的工具结果只返回简短提示（不把 PNG 字节塞进上下文）；
+    // 真实图片由 onToolExecution 调用 /nb/screenshot?target=... 单独拉取。
+    if (url.pathname === '/nb/screenshotctl' && req.method === 'GET') {
+      const target = String(url.searchParams.get('target') || 'self');
+      return sendJson(res, 200, { ok: true, notice: `已按你的要求给「${target === 'user' ? 'user' : '你'}」截图，画面已保存供你看。` });
+    }
+    // 星露谷截图：按 target/port 抓对应游戏窗口，返回 PNG。
+    // target=self => char 自己的游戏(7843)；target=user => 你的 host 游戏(replyPushUrl)。
+    if (url.pathname === '/nb/screenshot' && req.method === 'GET') {
+      const target = String(url.searchParams.get('target') || 'self');
+      const urlPort = Number(url.searchParams.get('port'));
+      const defaultPort = target === 'user'
+        ? Number(new URL(replyPushUrl).port || 0)
+        : Number(new URL(nagiUrl).port || 7843);
+      const port = urlPort || defaultPort;
+      if (!port) return sendJson(res, 400, { ok: false, error: '无法确定目标端口' });
+      const png = await captureGameWindowPng(port);
+      if (!png) return sendJson(res, 502, { ok: false, error: '截图失败（原窗口没在运行？）' });
+      res.writeHead(200, {
+        'content-type': 'image/png',
+        'cache-control': 'no-store',
+        'access-control-allow-origin': '*',
+      });
+      res.end(png);
+      return;
+    }
+    // 星露谷 user(host,7842) 侧工具转发：float 的 stardew_get_user_* 经此代理到用户主机 NagiBridge。
+    // 与 /nb/*（char 自己的游戏 7843）分开，保证 "user" 相关的状态/周围读的是 host 游戏。
+    if (url.pathname.startsWith('/ub/') && (req.method === 'GET' || req.method === 'POST') && replyPushUrl) {
+      const targetPath = url.pathname.slice(4); // 去掉前缀 '/ub/'
+      const targetUrl = `${replyPushUrl}/${targetPath}${url.search}`;
+      let bodyObj;
+      if (req.method === 'POST') {
+        const raw = await readBody(req).catch(() => null);
+        bodyObj = raw;
+      }
+      const targetRes = await fetch(targetUrl, {
+        method: req.method,
+        headers: bodyObj !== undefined ? { 'content-type': 'application/json' } : undefined,
+        body: bodyObj !== undefined ? JSON.stringify(bodyObj) : undefined,
+        signal: AbortSignal.timeout(8000),
+      });
+      const text = await targetRes.text();
+      res.writeHead(targetRes.status, {
+        'content-type': targetRes.headers.get('content-type') || 'application/json',
+        'access-control-allow-origin': '*',
+        'access-control-allow-methods': 'GET, POST, OPTIONS',
+        'access-control-allow-headers': 'content-type',
+      });
+      res.end(text);
+      return;
     }
     // 星露谷工具转发：float 的 stardew_* 工具经此代理到 NagiBridge（绕开浏览器直连的 CORS 预检）
     if (url.pathname.startsWith('/nb/') && (req.method === 'GET' || req.method === 'POST')) {

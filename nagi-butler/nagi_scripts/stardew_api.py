@@ -285,22 +285,49 @@ def precheck_area(tiles, radius=10):
 
 def screenshot(save_path=None):
     import subprocess
+    import re
     if save_path is None:
         save_path = os.path.join(os.path.expanduser("~"), "nagi", "screen_check.png")
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    # 只截「当前游戏」的窗口（按 NAGI_URL 端口反查哪个星露谷进程），而不是整块主屏——
+    # 整屏会有另一个星露谷 / 其它窗口遮挡，截图归属会乱。
+    m = re.search(r":(\d+)", BASE_URL)
+    port = m.group(1) if m else "7842"
     ps_script = f'''
-Add-Type -AssemblyName System.Windows.Forms
+Import-Module NetTCPConnection
 Add-Type -AssemblyName System.Drawing
-$bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-$bmp = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
-$gfx = [System.Drawing.Graphics]::FromImage($bmp)
-$gfx.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+$c = Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $c) {{ Write-Output 'ERR_NO_CONN'; exit 0 }}
+$p = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue
+if (-not $p) {{ Write-Output 'ERR_NO_PROC'; exit 0 }}
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class SW {{
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);
+}}
+public struct RECT {{ public int Left, Top, Right, Bottom; }}
+"@
+$h = $p.MainWindowHandle
+if ($h -eq [IntPtr]::Zero) {{ Write-Output 'ERR_NO_WINDOW'; exit 0 }}
+$r = [SW+RECT]::new()
+[SW]::GetWindowRect($h, [ref]$r) | Out-Null
+$w = [Math]::Max(1, $r.Right - $r.Left)
+$hh = [Math]::Max(1, $r.Bottom - $r.Top)
+$bmp = New-Object System.Drawing.Bitmap($w, $hh)
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$dc = $g.GetHdc()
+try {{ [SW]::PrintWindow($h, $dc, 2) | Out-Null }} finally {{ $g.ReleaseHdc($dc) }}
+$g.Dispose()
 $bmp.Save("{save_path}")
-$gfx.Dispose()
 $bmp.Dispose()
+Write-Output 'OK'
 '''
-    subprocess.run(["powershell", "-NoProfile", "-Command", ps_script],
-                   capture_output=True, timeout=10)
+    subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
+                   capture_output=True, timeout=20)
+    if not os.path.exists(save_path):
+        return None
     return save_path
 
 
