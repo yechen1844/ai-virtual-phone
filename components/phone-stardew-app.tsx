@@ -422,7 +422,10 @@ function StardewChatPage({ charId, charName, onNotice, syncCfg, onRemoteSendUser
             const session = getOrCreateStardewSession(charId);
             sessionRef.current = session;
             if (syncCfg.enabled && syncCfg.role === "remote") {
-                // 遥控端：只把 user 消息同步给游玩端（不本地生成、不直接进游戏）
+                // 遥控端：把 user 消息同步给游玩端（不本地生成、不直接进游戏）。
+                // 同时本地也写入一条，否则遥控端自己看不到自己发的消息。
+                pushChatMessage({ sessionId: session.id, role: "user", content: text, status: "sent" });
+                recordStardewMessage(charId, { role: "user", content: text });
                 await onRemoteSendUser(syncCfg, session.id, charId, text);
                 onNotice?.("已发送，等待游玩端回复");
             } else {

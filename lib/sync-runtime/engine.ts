@@ -197,6 +197,10 @@ export function attachPlayFanoutPublisher(cfg: StardewSyncConfig): () => void {
     const isStardew = msg.sessionId.startsWith("sess_stardew_");
     const isMainChat = !msg.sessionId.startsWith("sess_stardew_") && !msg.sessionId.startsWith("sess_group_");
     if (!isStardew && !isMainChat) return;
+    // user 消息走 upsert/user 单向同步（遥控端→游玩端），不写回 fanout；
+    // 若把 user 也写 fanout，游玩端把遥控端拉来的 user 落库又会触发本事件，
+    // 遥控端 remotePullFanout 会把它当新消息再拉回 → 无限重复/复制。
+    if (msg.role === "user") return;
 
     const data: SyncedFanoutMessage = {
       sessionId: msg.sessionId,
