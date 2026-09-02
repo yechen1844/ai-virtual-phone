@@ -298,6 +298,8 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
     const [bulkTagOpen, setBulkTagOpen] = useState(false); // 批量「设范围（tag）」选择面板
     const [bulkTagGroupId, setBulkTagGroupId] = useState<string>("universal"); // 批量设范围：选中的大类
     const [bulkTagSelected, setBulkTagSelected] = useState<string[]>([]); // 批量设范围：选中的次级范围 tag
+    const [bulkScopeMenuOpen, setBulkScopeMenuOpen] = useState(false); // 批量设范围：次级下拉展开
+    const bulkScopeMenuRef = useRef<HTMLDivElement | null>(null);
     const [copyToPresetOpen, setCopyToPresetOpen] = useState(false); // 多选复制到其它预设的面板
 
     // ── 按 App 筛选（高亮/仅显示/仅折叠/同类折叠） ──
@@ -307,6 +309,35 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
     const [expandedCollapseGroups, setExpandedCollapseGroups] = useState<Set<string>>(new Set()); // 已展开的折叠组 key
     const [draggedPromptIndex, setDraggedPromptIndex] = useState<number | null>(null); // 电脑端 HTML5 拖拽源 index
     const [dragOverIndex, setDragOverIndex] = useState<number | null>(null); // 电脑端拖拽悬停目标 index
+
+    // 单条目「次级范围」多选下拉的展开状态（一次只有一条条目处于编辑态）
+    const [scopeMenuOpen, setScopeMenuOpen] = useState(false);
+    const scopeMenuRef = useRef<HTMLDivElement | null>(null);
+    useEffect(() => {
+        if (!scopeMenuOpen) return;
+        const onPointerDown = (e: Event) => {
+            if (scopeMenuRef.current && !scopeMenuRef.current.contains(e.target as Node)) setScopeMenuOpen(false);
+        };
+        document.addEventListener("mousedown", onPointerDown);
+        document.addEventListener("touchstart", onPointerDown);
+        return () => {
+            document.removeEventListener("mousedown", onPointerDown);
+            document.removeEventListener("touchstart", onPointerDown);
+        };
+    }, [scopeMenuOpen]);
+
+    useEffect(() => {
+        if (!bulkScopeMenuOpen) return;
+        const onPointerDown = (e: Event) => {
+            if (bulkScopeMenuRef.current && !bulkScopeMenuRef.current.contains(e.target as Node)) setBulkScopeMenuOpen(false);
+        };
+        document.addEventListener("mousedown", onPointerDown);
+        document.addEventListener("touchstart", onPointerDown);
+        return () => {
+            document.removeEventListener("mousedown", onPointerDown);
+            document.removeEventListener("touchstart", onPointerDown);
+        };
+    }, [bulkScopeMenuOpen]);
 
     const toggleFilterTag = useCallback((tag: string) => {
         setAppFilterTags(prev => {
@@ -1587,7 +1618,28 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                             const promptTags = getPromptTags(prompt);
                                             const baseTagGroup = findTagGroupByBase(tagGroups, promptTags) ?? tagGroups[0];
                                             const baseTag = baseTagGroup.tags.length > 0 ? baseTagGroup.tags[0] : "";
-                                            const secondaryMinors = baseTagGroup.minors.filter(minor => minor.tags.length > 1);
+                                            const baseOnlyMinor = baseTagGroup.minors.find(minor => minor.tags.length <= 1);
+                                            const checkedMinorLabels = baseTagGroup.minors
+                                                .filter(minor => minor.tags.length > 1 && minor.tags.slice(1).every(t => promptTags.includes(t)))
+                                                .map(minor => minor.label);
+                                            const isBaseOnlyActive = baseTag
+                                                ? promptTags.length === 1 && promptTags[0] === baseTag
+                                                : promptTags.length === 0;
+                                            const scopeButtonLabel = checkedMinorLabels.length > 0
+                                                ? checkedMinorLabels.join(" · ")
+                                                : (baseOnlyMinor?.label ?? "不限");
+                                            const toggleScopeMinor = (minor: { tags: string[] }) => {
+                                                const minorTags = minor.tags.slice(1);
+                                                if (minorTags.length === 0) {
+                                                    updatePrompt(preset, prompt.identifier, current => ({ ...current, ...setPromptTags(baseTag ? [baseTag] : []) }));
+                                                    return;
+                                                }
+                                                const others = new Set(promptTags.filter(t => t !== baseTag));
+                                                if (minorTags.every(t => promptTags.includes(t))) minorTags.forEach(t => others.delete(t));
+                                                else minorTags.forEach(t => others.add(t));
+                                                const next = baseTag ? [baseTag, ...Array.from(others)] : Array.from(others);
+                                                updatePrompt(preset, prompt.identifier, current => ({ ...current, ...setPromptTags(next) }));
+                                            };
 
                                             return (
                                                 <SwipeActionRow
@@ -1916,59 +1968,66 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                                     </div>
                                                                     <div className="flex flex-col gap-[2px] min-w-0">
                                                                         <label className="menu-desc ts-11 ml-[2px]">适用范围</label>
-                                                                        <select
-                                                                            value={baseTagGroup.id}
-                                                                            onChange={(e) => {
-                                                                                const group = tagGroups.find(item => item.id === e.target.value);
-                                                                                if (!group) return;
-                                                                                const newBase = group.tags.length > 0 ? group.tags[0] : "";
-                                                                                updatePrompt(
-                                                                                    preset,
-                                                                                    prompt.identifier,
-                                                                                    current => ({ ...current, ...setPromptTags(newBase ? [newBase] : []) }),
-                                                                                );
-                                                                            }}
-                                                                            className="ui-select ts-13 px-2 py-[6px] rounded-[6px]"
-                                                                        >
-                                                                            {tagGroups.map((group) => (
-                                                                                <option key={group.id} value={group.id}>{group.label}</option>
-                                                                            ))}
-                                                                        </select>
-                                                                        {secondaryMinors.length > 0 && (
-                                                                            <div className="flex flex-wrap gap-2 pt-1">
-                                                                                {secondaryMinors.map((minor) => {
-                                                                                    const minorTags = minor.tags.slice(1);
-                                                                                    const checked = minorTags.every(t => promptTags.includes(t));
-                                                                                    return (
-                                                                                        <button
-                                                                                            key={minor.id}
-                                                                                            type="button"
-                                                                                            onClick={() => {
-                                                                                                const others = new Set(promptTags.filter(t => t !== baseTag));
-                                                                                                if (checked) minorTags.forEach(t => others.delete(t));
-                                                                                                else minorTags.forEach(t => others.add(t));
-                                                                                                const next = baseTag ? [baseTag, ...Array.from(others)] : Array.from(others);
-                                                                                                updatePrompt(
-                                                                                                    preset,
-                                                                                                    prompt.identifier,
-                                                                                                    current => ({ ...current, ...setPromptTags(next) }),
-                                                                                                );
-                                                                                            }}
-                                                                                            className={`inline-flex items-center justify-center gap-1 rounded-full border px-3 py-1.5 text-xs font-bold transition-all active:scale-95 ${checked ? "border-[var(--c-icon-active)] bg-[var(--c-icon-active)] text-white" : "border-black/10 bg-white text-gray-800 hover:bg-gray-50"}`}
-                                                                                        >
-                                                                                            {minor.label}
-                                                                                        </button>
+                                                                        <div className="grid grid-cols-2 gap-2">
+                                                                            <select
+                                                                                value={baseTagGroup.id}
+                                                                                onChange={(e) => {
+                                                                                    const group = tagGroups.find(item => item.id === e.target.value);
+                                                                                    if (!group) return;
+                                                                                    const newBase = group.tags.length > 0 ? group.tags[0] : "";
+                                                                                    setScopeMenuOpen(false);
+                                                                                    updatePrompt(
+                                                                                        preset,
+                                                                                        prompt.identifier,
+                                                                                        current => ({ ...current, ...setPromptTags(newBase ? [newBase] : []) }),
                                                                                     );
-                                                                                })}
+                                                                                }}
+                                                                                className="ui-select ts-13 px-2 py-[6px] rounded-[6px]"
+                                                                            >
+                                                                                {tagGroups.map((group) => (
+                                                                                    <option key={group.id} value={group.id}>{group.label}</option>
+                                                                                ))}
+                                                                            </select>
+                                                                            <div ref={scopeMenuRef} className="relative">
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={() => setScopeMenuOpen(v => !v)}
+                                                                                    className="ui-select ts-13 px-2 py-[6px] rounded-[6px] w-full text-left flex items-center justify-between gap-1"
+                                                                                >
+                                                                                    <span className="truncate">{scopeButtonLabel}</span>
+                                                                                    <ChevronDown size={13} strokeWidth={1.8} />
+                                                                                </button>
+                                                                                {scopeMenuOpen && (
+                                                                                    <div className="absolute left-0 right-0 top-full mt-1 z-30 overflow-hidden rounded-[8px] border border-black/10 bg-white py-1 shadow-lg">
+                                                                                        {baseTagGroup.minors.map(minor => {
+                                                                                            const minorTags = minor.tags.slice(1);
+                                                                                            const checked = minorTags.length === 0
+                                                                                                ? isBaseOnlyActive
+                                                                                                : minorTags.every(t => promptTags.includes(t));
+                                                                                            return (
+                                                                                                <button
+                                                                                                    key={minor.id}
+                                                                                                    type="button"
+                                                                                                    onClick={() => toggleScopeMinor(minor)}
+                                                                                                    className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs ${checked ? "font-bold text-[var(--c-icon-active)]" : "text-gray-700"}`}
+                                                                                                >
+                                                                                                    <Check size={14} strokeWidth={2} className={checked ? "visible" : "invisible"} />
+                                                                                                    {minor.label}
+                                                                                                </button>
+                                                                                            );
+                                                                                        })}
+                                                                                        <div className="my-1 border-t border-black/5" />
+                                                                                        <button
+                                                                                            type="button"
+                                                                                            onClick={() => { setScopeMenuOpen(false); updatePrompt(preset, prompt.identifier, current => ({ ...current, ...setPromptTags([]) })); }}
+                                                                                            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-red-500"
+                                                                                        >
+                                                                                            清除范围（不限）
+                                                                                        </button>
+                                                                                    </div>
+                                                                                )}
                                                                             </div>
-                                                                        )}
-                                                                        <button
-                                                                            type="button"
-                                                                            onClick={() => updatePrompt(preset, prompt.identifier, current => ({ ...current, ...setPromptTags([]) }))}
-                                                                            className="ui-btn mt-1 w-full"
-                                                                        >
-                                                                            清除范围（不限）
-                                                                        </button>
+                                                                        </div>
                                                                     </div>
                                                                 </div>
                                                             </div>
@@ -2280,6 +2339,13 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                 const bulkGroup = tagGroups.find(g => g.id === bulkTagGroupId) ?? tagGroups[0];
                 const bulkBaseTag = bulkGroup.tags.length > 0 ? bulkGroup.tags[0] : "";
                 const bulkSecondaryMinors = bulkGroup.minors.filter(m => m.tags.length > 1);
+                const bulkBaseOnlyMinor = bulkGroup.minors.find(m => m.tags.length <= 1);
+                const bulkCheckedLabels = bulkSecondaryMinors
+                    .filter(m => m.tags.slice(1).every(t => bulkTagSelected.includes(t)))
+                    .map(m => m.label);
+                const bulkScopeLabel = bulkCheckedLabels.length > 0
+                    ? bulkCheckedLabels.join(" · ")
+                    : (bulkBaseOnlyMinor?.label ?? "不限");
                 const applyBulk = () => {
                     const tags = bulkBaseTag ? [bulkBaseTag, ...Array.from(new Set(bulkTagSelected))] : [];
                     bulkSetTag(tags);
@@ -2288,38 +2354,62 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                     <BottomSheet title={`批量设置起效范围（已选 ${selectedIds.size} 项）`} onClose={() => setBulkTagOpen(false)}>
                         <div className="flex flex-col gap-4">
                             <div className="menu-desc ts-12">
-                                选择一个大类，再勾选需要生效的次级范围（可多选）。应用到全部选中条目。
+                                选择一个大类，再在次级下拉里勾选需要生效的范围（可多选）。应用到全部选中条目。
                             </div>
-                            <select
-                                value={bulkTagGroupId}
-                                onChange={(e) => { setBulkTagGroupId(e.target.value); setBulkTagSelected([]); }}
-                                className="ui-select ts-13 px-2 py-[6px] rounded-[6px]"
-                            >
-                                {tagGroups.map(group => (
-                                    <option key={group.id} value={group.id}>{group.label}</option>
-                                ))}
-                            </select>
-                            {bulkSecondaryMinors.length > 0 && (
-                                <div className="flex flex-wrap gap-2">
-                                    {bulkSecondaryMinors.map(minor => {
-                                        const minorTags = minor.tags.slice(1);
-                                        const checked = minorTags.every(t => bulkTagSelected.includes(t));
-                                        return (
+                            <div className="grid grid-cols-2 gap-2">
+                                <select
+                                    value={bulkTagGroupId}
+                                    onChange={(e) => { setBulkTagGroupId(e.target.value); setBulkTagSelected([]); }}
+                                    className="ui-select ts-13 px-2 py-[6px] rounded-[6px]"
+                                >
+                                    {tagGroups.map(group => (
+                                        <option key={group.id} value={group.id}>{group.label}</option>
+                                    ))}
+                                </select>
+                                <div ref={bulkScopeMenuRef} className="relative">
+                                    <button
+                                        type="button"
+                                        onClick={() => setBulkScopeMenuOpen(v => !v)}
+                                        className="ui-select ts-13 px-2 py-[6px] rounded-[6px] w-full text-left flex items-center justify-between gap-1"
+                                    >
+                                        <span className="truncate">{bulkScopeLabel}</span>
+                                        <ChevronDown size={13} strokeWidth={1.8} />
+                                    </button>
+                                    {bulkScopeMenuOpen && (
+                                        <div className="absolute left-0 right-0 top-full mt-1 z-30 overflow-hidden rounded-[8px] border border-black/10 bg-white py-1 shadow-lg">
+                                            {bulkGroup.minors.map(minor => {
+                                                const minorTags = minor.tags.slice(1);
+                                                const checked = minorTags.length === 0
+                                                    ? bulkTagSelected.length === 0
+                                                    : minorTags.every(t => bulkTagSelected.includes(t));
+                                                return (
+                                                    <button
+                                                        key={minor.id}
+                                                        type="button"
+                                                        onClick={() => {
+                                                            if (minorTags.length === 0) { setBulkTagSelected([]); return; }
+                                                            if (checked) setBulkTagSelected(prev => prev.filter(t => !minorTags.includes(t)));
+                                                            else setBulkTagSelected(prev => Array.from(new Set([...prev, ...minorTags])));
+                                                        }}
+                                                        className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs ${checked ? "font-bold text-[var(--c-icon-active)]" : "text-gray-700"}`}
+                                                    >
+                                                        <Check size={14} strokeWidth={2} className={checked ? "visible" : "invisible"} />
+                                                        {minor.label}
+                                                    </button>
+                                                );
+                                            })}
+                                            <div className="my-1 border-t border-black/5" />
                                             <button
-                                                key={minor.id}
                                                 type="button"
-                                                onClick={() => {
-                                                    if (checked) setBulkTagSelected(prev => prev.filter(t => !minorTags.includes(t)));
-                                                    else setBulkTagSelected(prev => Array.from(new Set([...prev, ...minorTags])));
-                                                }}
-                                                className={`inline-flex items-center justify-center gap-1 rounded-full border px-3 py-1.5 text-xs font-bold transition-all active:scale-95 ${checked ? "border-[var(--c-icon-active)] bg-[var(--c-icon-active)] text-white" : "border-black/10 bg-white text-gray-800 hover:bg-gray-50"}`}
+                                                onClick={() => { setBulkScopeMenuOpen(false); setBulkTagSelected([]); }}
+                                                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-red-500"
                                             >
-                                                {minor.label}
+                                                清除次级（仅该类通用）
                                             </button>
-                                        );
-                                    })}
+                                        </div>
+                                    )}
                                 </div>
-                            )}
+                            </div>
                             <button
                                 type="button"
                                 onClick={applyBulk}
