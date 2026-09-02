@@ -185,11 +185,12 @@ export async function playHandleReplyRequests(cfg: StardewSyncConfig): Promise<n
   for (const dir of reqDirs) {
     const reqs = await listSyncObjects(cfg, `${REQ_PREFIX}/${dir.name}`);
     for (const r of reqs) {
+      // 按「请求对象名」去重（每个请求只处理一次）；stardewReplyLatestPending 本身幂等，
+      // 即使同一角色有多个未回复请求也不会重复回复（最后一条已是 assistant 则跳过）。
       if (doneSet.has(r.name)) continue;
       const req = await readSyncObject<SyncedReplyRequest>(cfg, r.path);
       if (!req || !req.characterId) continue;
-      if (doneSet.has(req.characterId)) continue;
-      doneSet.add(req.characterId);
+      doneSet.add(r.name);
       handled += 1;
       // 游玩端只对「最后一条是 user 且尚未回复」的消息生成回复（含工具）。
       // 遥控端发消息只同步、不生成；必须遥控端按「回复」才走到这里触发游玩端生成。

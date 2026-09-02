@@ -35,6 +35,7 @@ export function useStardewSync() {
     errorMsg: "",
   }));
   const runningRef = useRef(false);
+  const busyRef = useRef(false); // 防重入：上一轮 tick 未结束则跳过本轮，避免并发触发重复生成
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
 
@@ -74,16 +75,20 @@ export function useStardewSync() {
     // 短轮询：游玩端拉 user + 处理 reply-request；两端拉 fanout 与 deletes
     const tick = async () => {
       if (!runningRef.current) return;
-      const cur = loadSyncConfig();
-      if (!cur.enabled) { stop(); return; }
+      if (busyRef.current) return; // 上一轮还没跑完，跳过本轮，避免并发导致重复生成
+      busyRef.current = true;
       try {
+        const cur = loadSyncConfig();
+        if (!cur.enabled) { stop(); return; }
         if (cur.role === "play") await playPullUsers(cur, "");            // 拉遥控端 user（按需过滤会话）
         if (cur.role === "play") await playHandleReplyRequests(cur);       // 游玩端触发生成
-        await remotePullFanout(cur, "*");                                  // 拉下游消息
-        await applyRemoteDeletes(cur, "*");                                // 应用删除
+        if (cur.role !== "play") await remotePullFanout(cur, "*");         // 仅遥控端拉下游消息（避免与遥控端争抢同一水位）
+        await applyRemoteDeletes(cur, "*");                                // 应用删除（双端）
       } catch (e) {
         const m = e instanceof Error ? e.message : String(e);
         setUi(u => ({ ...u, state: "error", errorMsg: m }));
+      } finally {
+        busyRef.current = false;
       }
     };
     void tick();
