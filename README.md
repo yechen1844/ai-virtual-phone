@@ -2,7 +2,7 @@
 
 > **本项目为个人自部署 + 二次开发的 fork。**
 > 原始项目作者：**xiaolongbao0709**（上游仓库：[github.com/xiaolongbao0709/ai-virtual-phone](https://github.com/xiaolongbao0709/ai-virtual-phone)）。
-> 本仓库基于上游 `main` / `test` 分支二次开发，仅用于**个人自部署与自用**，包含大量针对个人场景的私有二改（安卓壳、离线推送、星露谷联动、阅读摘要、云同步等），不代表上游官方版本，也**不面向公开分发或贡献合并**。如需官方功能与最新版，请以上游仓库为准。
+> 本仓库基于上游 `main` / `test` 分支二次开发。**感兴趣可自行下载部署、分发或贡献合并，但作者自用过程中 bug 甚多，仅供大家参考**。其中包含大量针对个人场景的私有二改（安卓壳、离线推送、星露谷联动、阅读摘要、云同步等），不代表上游官方版本。如需官方功能与最新稳定版，请以上游仓库为准。
 
 一个基于 Next.js 的 AI 虚拟互动手机：在浏览器中模拟一部完整的手机，支持与你创建的 AI 角色进行仿真聊天、朋友圈互动与剧情创作。
 
@@ -279,7 +279,7 @@ npm run check:push # 校验个人云部署包
 
 ## Credits
 
-本项目为 **xiaolongbao0709** 的原始作品（上游仓库：[github.com/xiaolongbao0709/ai-virtual-phone](https://github.com/xiaolongbao0709/ai-virtual-phone)）的个人自部署 + 二次开发 fork。上游项目为独立实现，部分产品设计和系统抽象受 SillyTavern 启发，包括预设、正则处理、世界书 / lorebook / WorldInfo 等概念。
+本项目为 **xiaolongbao0709** 的原始作品（上游仓库：[github.com/xiaolongbao0709/ai-virtual-phone](https://github.com/xiaolongbao0709/ai-virtual-phone)）的个人自部署 + 二次开发 fork。感兴趣可自行下载、部署或基于此二次开发；**但作者自用过程中 bug 甚多，本 fork 仅供大家参考**，不视为稳定可用版本。上游项目为独立实现，部分产品设计和系统抽象受 SillyTavern 启发，包括预设、正则处理、世界书 / lorebook / WorldInfo 等概念。
 
 - SillyTavern: <https://github.com/SillyTavern/SillyTavern>
 
