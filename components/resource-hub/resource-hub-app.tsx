@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { hydrateKvDb, kvGet, kvSet, registerKvMigration } from "@/lib/kv-db";
 import { loadCharacters } from "@/lib/character-storage";
 import { loadChatContacts } from "@/lib/chat-storage";
+import { downloadFile } from "@/lib/download-utils";
 import {
     checkImportFileForDestination,
     downloadResourceHubFile,
@@ -1348,12 +1349,7 @@ export function ResourceHubApp({ onClose, onNotice }: { onClose: () => void; onN
                                 <button className="rh-btn" onClick={() => {
                                     try {
                                         const blob = new Blob([exportKeyBundle(identityKey)], { type: "text/plain;charset=utf-8" });
-                                        const url = URL.createObjectURL(blob);
-                                        const anchor = document.createElement("a");
-                                        anchor.href = url;
-                                        anchor.download = "小手机摊主钥匙.txt";
-                                        anchor.click();
-                                        setTimeout(() => URL.revokeObjectURL(url), 4000);
+                                        void downloadFile(blob, "小手机摊主钥匙.txt");
                                         setKeyBackupTouched(true);
                                         showToast("已开始保存，请确认文件存好了");
                                     } catch {

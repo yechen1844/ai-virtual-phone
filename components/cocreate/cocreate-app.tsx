@@ -44,6 +44,7 @@ import {
   setActiveCoCreateSession,
 } from "@/lib/cocreate-storage";
 import { generateCoCreateChapterAutoArchive, generateCoCreateReply, generateCoCreateSessionMemory } from "@/lib/cocreate-engine";
+import { downloadFile } from "@/lib/download-utils";
 import {
   deleteCoCreateLongTermMemoriesBySession,
   deleteCoCreateProjectionEntriesBySession,
@@ -1683,14 +1684,7 @@ export function CoCreateApp({ onClose, onNotice }: CoCreateAppProps) {
     }
     try {
       const blob = new Blob([buildExportText(session)], { type: "text/plain;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `${safeExportFileName(session.title)}.txt`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
+      void downloadFile(blob, `${safeExportFileName(session.title)}.txt`);
       setStatus("TXT 已导出。");
     } catch {
       setError("无法导出 TXT。");
