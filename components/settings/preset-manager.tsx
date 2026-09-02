@@ -1940,8 +1940,10 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                                                     const minorTags = minor.tags.slice(1);
                                                                                     const checked = minorTags.every(t => promptTags.includes(t));
                                                                                     return (
-                                                                                        <label key={minor.id} className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs font-bold transition-all active:scale-95 ${checked ? "border-[var(--c-icon-active)] bg-[var(--c-icon-active)] text-white" : "border-black/10 bg-white text-gray-800 hover:bg-gray-50"}`}>
-                                                                                            <input type="checkbox" className="accent-[var(--c-icon-active)]" checked={checked} onChange={() => {
+                                                                                        <button
+                                                                                            key={minor.id}
+                                                                                            type="button"
+                                                                                            onClick={() => {
                                                                                                 const others = new Set(promptTags.filter(t => t !== baseTag));
                                                                                                 if (checked) minorTags.forEach(t => others.delete(t));
                                                                                                 else minorTags.forEach(t => others.add(t));
@@ -1951,9 +1953,11 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                                                                     prompt.identifier,
                                                                                                     current => ({ ...current, ...setPromptTags(next) }),
                                                                                                 );
-                                                                                            }} />
+                                                                                            }}
+                                                                                            className={`inline-flex items-center justify-center gap-1 rounded-full border px-3 py-1.5 text-xs font-bold transition-all active:scale-95 ${checked ? "border-[var(--c-icon-active)] bg-[var(--c-icon-active)] text-white" : "border-black/10 bg-white text-gray-800 hover:bg-gray-50"}`}
+                                                                                        >
                                                                                             {minor.label}
-                                                                                        </label>
+                                                                                        </button>
                                                                                     );
                                                                                 })}
                                                                             </div>
@@ -2301,13 +2305,17 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                         const minorTags = minor.tags.slice(1);
                                         const checked = minorTags.every(t => bulkTagSelected.includes(t));
                                         return (
-                                            <label key={minor.id} className={`inline-flex items-center gap-1 rounded-full border px-3 py-1.5 text-xs font-bold transition-all active:scale-95 ${checked ? "border-[var(--c-icon-active)] bg-[var(--c-icon-active)] text-white" : "border-black/10 bg-white text-gray-800 hover:bg-gray-50"}`}>
-                                                <input type="checkbox" className="accent-[var(--c-icon-active)]" checked={checked} onChange={() => {
+                                            <button
+                                                key={minor.id}
+                                                type="button"
+                                                onClick={() => {
                                                     if (checked) setBulkTagSelected(prev => prev.filter(t => !minorTags.includes(t)));
                                                     else setBulkTagSelected(prev => Array.from(new Set([...prev, ...minorTags])));
-                                                }} />
+                                                }}
+                                                className={`inline-flex items-center justify-center gap-1 rounded-full border px-3 py-1.5 text-xs font-bold transition-all active:scale-95 ${checked ? "border-[var(--c-icon-active)] bg-[var(--c-icon-active)] text-white" : "border-black/10 bg-white text-gray-800 hover:bg-gray-50"}`}
+                                            >
                                                 {minor.label}
-                                            </label>
+                                            </button>
                                         );
                                     })}
                                 </div>

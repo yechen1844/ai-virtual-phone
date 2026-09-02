@@ -39,6 +39,11 @@ const MEMORY_WRITE_PARAMETER_SCHEMA = JSON.stringify({
             type: "string",
             description: "简短说明为什么这条信息值得长期记住",
         },
+        scope: {
+            type: "string",
+            enum: ["event", "core", "long_term"],
+            description: "写入目标：event=复杂记忆的事件记忆；core=复杂记忆的核心记忆；long_term=float 长期记忆（默认）。角色启用复杂记忆时优先用 event / core",
+        },
     },
     required: ["content"],
 });
@@ -65,6 +70,7 @@ const MEMORY_WRITE_USAGE_GUIDE = [
     "- content (string): 要写入的事实性记忆，用简洁中文描述",
     "- importance (number): 0 到 1，仅高价值信息使用较高分值",
     "- reason (string): 简短说明为什么值得记住",
+    "- scope (可选 string): event=事件记忆；core=核心记忆；long_term=长期记忆（不填默认）。角色启用「复杂记忆」时建议使用 event / core，让记忆进入复杂记忆系统的事件或核心层",
     "",
     "content 写法要求：",
     "- 用事实句，不要写“我觉得”“可能”“似乎”",
@@ -73,7 +79,7 @@ const MEMORY_WRITE_USAGE_GUIDE = [
     "- 不要带格式标记",
     "",
     "正确示例：",
-    `[执行动作:写入记忆({"content":"用户的生日是5月18日。","importance":0.9,"reason":"这是稳定且长期可复用的个人信息"})]`,
+    `[执行动作:写入记忆({"content":"用户的生日是5月18日。","importance":0.9,"reason":"这是稳定且长期可复用的个人信息","scope":"core"})]`,
     "",
     "错误示例：",
     "- 她今天有点不开心",

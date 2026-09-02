@@ -28,6 +28,7 @@ import { bridgeConnection, loadBridgeDataItems, loadBridgeShortcutActions, readA
 import { createShortcutCommand, deliverShortcutCommand, waitForShortcutCommand } from "./shortcut-command-client";
 import { loadMemoryEntriesByType, saveMemoryEntry } from "./memory-storage";
 import type { MemoryEntry } from "./memory-types";
+import type { ComplexCoreEntry, ComplexEvent } from "./complex-memory/types";
 import { loadCharacters } from "./character-storage";
 import {
     deleteCalendarScheduleItem,
@@ -88,6 +89,8 @@ export type MemoryWriteRequest = {
     content: string;
     importance: number;
     reason?: string;
+    /** 写入目标：event=复杂记忆的事件记忆；core=复杂记忆的核心记忆；long_term=float 长期记忆（默认） */
+    scope?: "event" | "core" | "long_term";
 };
 
 export type ToolExecutionContext = {
@@ -2926,6 +2929,7 @@ async function executeMemoryWriteTool(
 
     const importance = clampImportance(args.importance);
     const reason = String(args.reason ?? "").trim() || undefined;
+    const scope = args.scope === "event" || args.scope === "core" ? args.scope : undefined;
 
     const duplicate = await isDuplicateLongTermMemory(context.characterId, content);
     if (duplicate) {
@@ -2946,6 +2950,7 @@ async function executeMemoryWriteTool(
         content,
         importance,
         ...(reason ? { reason } : {}),
+        ...(scope ? { scope } : {}),
     };
 
     if (capability.mode === "confirm") {
@@ -3049,6 +3054,17 @@ async function persistMemoryWriteRequest(
     request: MemoryWriteRequest,
     options?: { approvedByUser?: boolean },
 ): Promise<ToolResult> {
+    const now = new Date().toISOString();
+
+    // 复杂记忆路由：角色启用复杂记忆 + 明确写了 event / core → 写入复杂记忆系统
+    if (request.scope === "event" || request.scope === "core") {
+        const { isComplexMemoryEnabled } = await import("./complex-memory/config");
+        if (isComplexMemoryEnabled(request.characterId)) {
+            return writeToComplexMemory(request, now, options);
+        }
+    }
+
+    // 默认：float 长期记忆
     const duplicate = await isDuplicateLongTermMemory(request.characterId, request.content);
     if (duplicate) {
         return {
@@ -3061,7 +3077,6 @@ async function persistMemoryWriteRequest(
         };
     }
 
-    const now = new Date().toISOString();
     const entry: MemoryEntry = {
         id: `mem_lt_manual_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         characterId: request.characterId,
@@ -3088,6 +3103,86 @@ async function persistMemoryWriteRequest(
         continueConversation: false,
         persistToHistory: false,
         userNotice: options?.approvedByUser ? "已写入长期记忆" : "已自动写入长期记忆",
+    };
+}
+
+/** 把 char 主动写入路由到复杂记忆系统（事件记忆 / 核心记忆），并同步一条 float 镜像。 */
+async function writeToComplexMemory(
+    request: MemoryWriteRequest,
+    now: string,
+    options?: { approvedByUser?: boolean },
+): Promise<ToolResult> {
+    const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const metadata = {
+        origin: "ai_tool",
+        sessionId: request.sessionId,
+        ...(request.reason ? { reason: request.reason } : {}),
+        ...(options?.approvedByUser ? { approvedByUser: true } : {}),
+    };
+
+    if (request.scope === "core") {
+        const { saveCoreEntry } = await import("./complex-memory/storage");
+        const entry: ComplexCoreEntry = {
+            id: `centry_${suffix}`,
+            characterId: request.characterId,
+            text: request.content,
+            category: "milestone",
+            createdAt: now,
+            sourceTrigger: "manual",
+            active: true,
+        };
+        await saveCoreEntry(entry);
+        // 同步单条 float core 镜像，供 17 个共用 float 检索接口的引擎立即可读
+        await saveMemoryEntry({
+            id: `mem_core_${suffix}`,
+            characterId: request.characterId,
+            sourceApp: "chat",
+            type: "core",
+            content: entry.text,
+            importance: 1,
+            createdAt: now,
+            updatedAt: now,
+            metadata: {
+                ...metadata,
+                complexMemoryCore: true,
+                complexCoreEntryId: entry.id,
+                category: entry.category,
+                sourceTrigger: entry.sourceTrigger,
+            },
+        });
+        return {
+            name: "写入记忆",
+            success: true,
+            data: `已写入复杂记忆·核心记忆：${request.content}`,
+            continueConversation: false,
+            persistToHistory: false,
+            userNotice: "已写入核心记忆",
+        };
+    }
+
+    const { saveEvent } = await import("./complex-memory/storage");
+    const { mirrorEventToFloat } = await import("./complex-memory/mirror");
+    const event: ComplexEvent = {
+        id: `evt_${suffix}`,
+        characterId: request.characterId,
+        timestamp: now,
+        content: request.content,
+        emotion: { valence: 0, arousal: 0 },
+        periodsRef: [],
+        voltage: 1,
+        importanceScore: request.importance,
+        lastAccessedAt: now,
+        createdAt: now,
+    };
+    await saveEvent(event);
+    await mirrorEventToFloat(event, { earliest: now, latest: now, entryCount: 1 });
+    return {
+        name: "写入记忆",
+        success: true,
+        data: `已写入复杂记忆·事件记忆：${request.content}`,
+        continueConversation: false,
+        persistToHistory: false,
+        userNotice: "已写入事件记忆",
     };
 }
 
