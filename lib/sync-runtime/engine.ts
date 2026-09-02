@@ -12,7 +12,7 @@
 
 import { loadSyncConfig, saveSyncConfig, type StardewSyncConfig } from "./config";
 import { writeSyncObject, listSyncObjects, readSyncObject } from "./cloud";
-import { upsertImportedChatMessage, loadChatMessages, deleteChatMessage, CHAT_MESSAGE_PUSHED_EVENT, CHAT_MESSAGES_DELETED_EVENT, type ChatMessage } from "../chat-storage";
+import { upsertImportedChatMessage, loadChatMessages, loadChatSessions, deleteChatMessage, deleteChatMessagesByIds, CHAT_MESSAGE_PUSHED_EVENT, CHAT_MESSAGES_DELETED_EVENT, type ChatMessage } from "../chat-storage";
 import { stardewReplyLatestPending } from "../nagi-bridge";
 
 export type SyncedUserMessage = {
@@ -290,4 +290,48 @@ export async function applyRemoteDeletes(cfg: StardewSyncConfig, sessionId?: str
     }
   }
   return removed > 0 ? removed : 0;
+}
+
+/**
+ * 清理历史同步复制出来的重复消息（一次性，启动时调用）。
+ * 同步复制的特征是：同一会话里 同 role + 同 content + 同 createdAt（upImported 落库时 createdAt 是云端值），
+ * 但 id 不同。按这三元组分组，只保留 id 最小的那条，删除其余。
+ * 不会误删用户"真实重复发送但时间不同"的消息（createdAt 不同就不算重复）。
+ * 返回删除条数。仅处理参与同步的会话（星露谷 + 主聊天）。
+ */
+export function cleanDuplicateSyncedMessages(): number {
+  if (typeof window === "undefined") return 0;
+  const sessions = loadChatSessions();
+  let removed = 0;
+  for (const session of sessions) {
+    const id = session.id;
+    if (!id) continue;
+    const isStardew = id.startsWith("sess_stardew_");
+    const isMainChat = !id.startsWith("sess_stardew_") && !id.startsWith("sess_group_");
+    if (!isStardew && !isMainChat) continue;
+
+    const msgs = loadChatMessages(id);
+    // 按 (role|content|createdAt) 分组，保留 id 最小的一条
+    const byKey = new Map<string, ChatMessage>();
+    const dupIds: string[] = [];
+    for (const m of msgs) {
+      const key = `${m.role}\u0001${m.content}\u0001${m.createdAt}`;
+      const existing = byKey.get(key);
+      if (!existing) {
+        byKey.set(key, m);
+      } else {
+        // 保留 id 字典序更小的那条；若当前更小则替换，原 existing 变重复
+        if (m.id < existing.id) {
+          byKey.set(key, m);
+          dupIds.push(existing.id);
+        } else {
+          dupIds.push(m.id);
+        }
+      }
+    }
+    if (dupIds.length > 0) {
+      removed += deleteChatMessagesByIds(id, dupIds);
+    }
+  }
+  return removed;
 }

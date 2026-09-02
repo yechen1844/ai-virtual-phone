@@ -10,7 +10,7 @@ import {
 import {
   remoteSendUser, remoteRequestReply, remotePullFanout,
   playPullUsers, playHandleReplyRequests, applyRemoteDeletes,
-  attachPlayFanoutPublisher, attachDeletePublisher,
+  attachPlayFanoutPublisher, attachDeletePublisher, cleanDuplicateSyncedMessages,
 } from "./engine";
 
 export type SyncUiState = {
@@ -67,6 +67,9 @@ export function useStardewSync() {
     const detachFanout = attachPlayFanoutPublisher(nextCfg);
     const detachDelete = attachDeletePublisher(nextCfg);
     cleanupRef.current = () => { detachFanout(); detachDelete(); };
+
+    // 启动时清理历史同步复制出来的重复消息（按 role+content+createdAt 幂等去重）
+    cleanDuplicateSyncedMessages();
 
     // 短轮询：游玩端拉 user + 处理 reply-request；两端拉 fanout 与 deletes
     const tick = async () => {
