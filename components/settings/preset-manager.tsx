@@ -1513,7 +1513,7 @@ const bulkDuplicateSelected = useCallback(() => {
                                         onDragOver={(e) => { if (draggedPromptIndex != null) e.preventDefault(); }}
                                         onDrop={(e) => { e.preventDefault(); setDraggedPromptIndex(null); setDragOverIndex(null); }}
                                     >
-                                        {promptRenderItems.flatMap((renderItem, _flatIndex) => {
+                                        {promptRenderItems.flatMap((renderItem, index) => {
                                             const toggleExpand = (gKey: string) => {
                                                 setExpandedCollapseGroups(prev => {
                                                     const next = new Set(prev);
@@ -1574,7 +1574,7 @@ const bulkDuplicateSelected = useCallback(() => {
                                                     leftSwipeDisabled={selectMode}
                                                     rightSwipeEnabled
                                                     onSwipeRight={() => handleSwipeRightSelect(prompt.identifier)}
-                                                    onTouchStart={isEditing ? undefined : (e) => onPromptTouchStart(_flatIndex, e)}
+                                                    onTouchStart={isEditing ? undefined : (e) => onPromptTouchStart(index, e)}
                                                     actions={selectMode ? null : (
                                                         <>
                                                             <button

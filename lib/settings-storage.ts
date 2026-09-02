@@ -1,5 +1,6 @@
 import type {
     PresetConfig,
+    GenerationParameterKey,
     WorldBookConfig,
     WorldBookEntry,
     RegexConfig,
@@ -327,7 +328,7 @@ export function parsePresetFromJson(text: string, fallbackName: string = "导入
         if (Array.isArray(obj.enabled_generation_parameters)) {
             preset.enabled_generation_parameters = [
                 ...new Set(obj.enabled_generation_parameters.filter(isGenerationParameterKey)),
-            ];
+            ] as GenerationParameterKey[];
         }
         // New preset globals
         if (typeof obj.top_a === "number") preset.top_a = obj.top_a;
