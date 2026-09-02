@@ -29,7 +29,7 @@ export type StardewSyncConfig = {
 export const DEFAULT_SYNC_CONFIG: StardewSyncConfig = {
   enabled: false,
   role: "play",
-  pollIntervalSeconds: 4,
+  pollIntervalSeconds: 2,
   lastSyncedAt: "",
   url: "",
   anonKey: "",
