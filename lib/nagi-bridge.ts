@@ -160,6 +160,7 @@ export function getStardewTools(userName?: string): StardewToolDef[] {
     { name: "stardew_get_user_surroundings", description: `查看 user（${playerName}）周围的环境：user 附近有哪些 NPC/怪物/可交互物体/作物。参数 radius 为扫描半径（默认5）。这读的是 user 那个星露谷，不是你自己。`, parameterSchema: '{"type":"object","properties":{"radius":{"type":"number","description":"扫描半径(默认5)"}},"additionalProperties":false}' },
     { name: "stardew_screenshot_self", description: "给「你自己（农工）的星露谷窗口」拍一张当前游戏截图，用于看清自己眼前的环境/农田/当前位置。", parameterSchema: "{}" },
     { name: "stardew_screenshot_user", description: `给「user（${playerName}）的星露谷窗口」拍一张当前游戏截图，用于确认 user 此刻的位置/状态。` , parameterSchema: "{}" },
+    { name: "stardew_go_to_user", description: `传送到 user（${playerName}）身边：读取 user 当前坐标，把你自己（农工）传送到同一世界的这个位置。需要你和 user 在同一联机世界/存档。常用于「user 叫我过去」时快速汇合。`, parameterSchema: "{}" },
   ];
 }
 
@@ -205,6 +206,7 @@ export function ensureStardewToolsRegistered(): void {
     stardew_get_user_surroundings: { endpoint: `${BUTLER_URL}/ub/surroundings`, method: "GET" },
     stardew_screenshot_self:       { endpoint: `${BUTLER_URL}/nb/screenshotctl?target=self`, method: "GET" },
     stardew_screenshot_user:       { endpoint: `${BUTLER_URL}/nb/screenshotctl?target=user`, method: "GET" },
+    stardew_go_to_user:            { endpoint: `${BUTLER_URL}/nb/goto-user`, method: "POST" },
   };
 
   const defs = getStardewTools(resolveStardewUserName());
