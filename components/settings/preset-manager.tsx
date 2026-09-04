@@ -16,6 +16,7 @@ import {
     resolveEnabledGenerationParameters,
 } from "@/lib/generation-parameters";
 import {
+    areTagsEqual,
     CONTENT_SCOPE_TAG_GROUPS,
     getPromptTags as getScopedPromptTags,
     getTagsLabel,
@@ -48,10 +49,9 @@ function matchesSelectedAppTags(p: Prompt, tags: Set<string>): boolean {
     return false;
 }
 
-/** 按「应用大类」匹配：只看标签里的第一个 tag（base），兼容「文字+视频」这类多选组合范围。 */
-function findTagGroupByBase(groups: TagGroupProfile[], tags: string[]): TagGroupProfile | undefined {
-    if (tags.length === 0) return undefined;
-    return groups.find(group => group.tags.length > 0 && group.tags[0] === tags[0]);
+function getPromptTagMinor(p: Prompt, group: TagGroupProfile) {
+    const tags = getPromptTags(p);
+    return group.minors.find(minor => areTagsEqual(minor.tags, tags)) ?? group.minors[0];
 }
 
 function getPromptTagsLabel(p: Prompt, tagProfiles = flattenTagGroups(CONTENT_SCOPE_TAG_GROUPS)): string {
@@ -307,9 +307,6 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
     const [expandedCollapseGroups, setExpandedCollapseGroups] = useState<Set<string>>(new Set()); // 已展开的折叠组 key
     const [draggedPromptIndex, setDraggedPromptIndex] = useState<number | null>(null); // 电脑端 HTML5 拖拽源 index
     const [dragOverIndex, setDragOverIndex] = useState<number | null>(null); // 电脑端拖拽悬停目标 index
-
-    // 单条目「次级范围」多选面板的展开状态（一次只有一条条目处于编辑态）
-    const [scopeMenuOpen, setScopeMenuOpen] = useState(false);
 
     const toggleFilterTag = useCallback((tag: string) => {
         setAppFilterTags(prev => {
@@ -1607,30 +1604,12 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                 ? (preset.prompt_order.find(e => e.identifier === prompt.identifier)?.enabled ?? prompt.enabled)
                                                 : prompt.enabled;
                                             const promptTags = getPromptTags(prompt);
-                                            const baseTagGroup = findTagGroupByBase(tagGroups, promptTags) ?? tagGroups[0];
-                                            const baseTag = baseTagGroup.tags.length > 0 ? baseTagGroup.tags[0] : "";
-                                            const baseOnlyMinor = baseTagGroup.minors.find(minor => minor.tags.length <= 1);
-                                            const checkedMinorLabels = baseTagGroup.minors
-                                                .filter(minor => minor.tags.length > 1 && minor.tags.slice(1).every(t => promptTags.includes(t)))
-                                                .map(minor => minor.label);
-                                            const isBaseOnlyActive = baseTag
-                                                ? promptTags.length === 1 && promptTags[0] === baseTag
-                                                : promptTags.length === 0;
-                                            const scopeButtonLabel = checkedMinorLabels.length > 0
-                                                ? checkedMinorLabels.join(" · ")
-                                                : (baseOnlyMinor?.label ?? "不限");
-                                            const toggleScopeMinor = (minor: { tags: string[] }) => {
-                                                const minorTags = minor.tags.slice(1);
-                                                if (minorTags.length === 0) {
-                                                    updatePrompt(preset, prompt.identifier, current => ({ ...current, ...setPromptTags(baseTag ? [baseTag] : []) }));
-                                                    return;
-                                                }
-                                                const others = new Set(promptTags.filter(t => t !== baseTag));
-                                                if (minorTags.every(t => promptTags.includes(t))) minorTags.forEach(t => others.delete(t));
-                                                else minorTags.forEach(t => others.add(t));
-                                                const next = baseTag ? [baseTag, ...Array.from(others)] : Array.from(others);
-                                                updatePrompt(preset, prompt.identifier, current => ({ ...current, ...setPromptTags(next) }));
-                                            };
+                                            const matchedTagGroup = findTagGroupForTags(tagGroups, promptTags);
+                                            const isCustomPromptTags = promptTags.length > 0 && !matchedTagGroup;
+                                            const selectedTagGroup = matchedTagGroup ?? tagGroups[0];
+                                            const selectedTagMinor = matchedTagGroup
+                                                ? getPromptTagMinor(prompt, selectedTagGroup)
+                                                : selectedTagGroup.minors[0];
 
                                             return (
                                                 <SwipeActionRow
@@ -1961,71 +1940,47 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                                         <label className="menu-desc ts-11 ml-[2px]">适用范围</label>
                                                                         <div className="grid grid-cols-2 gap-2">
                                                                             <select
-                                                                                value={baseTagGroup.id}
+                                                                                value={isCustomPromptTags ? "__custom__" : selectedTagGroup.id}
                                                                                 onChange={(e) => {
                                                                                     const group = tagGroups.find(item => item.id === e.target.value);
-                                                                                    if (!group) return;
-                                                                                    const newBase = group.tags.length > 0 ? group.tags[0] : "";
-                                                                                    setScopeMenuOpen(false);
+                                                                                    const firstMinor = group?.minors[0];
+                                                                                    if (!firstMinor) return;
                                                                                     updatePrompt(
                                                                                         preset,
                                                                                         prompt.identifier,
-                                                                                        current => ({ ...current, ...setPromptTags(newBase ? [newBase] : []) }),
+                                                                                        current => ({ ...current, ...setPromptTags(firstMinor.tags) }),
                                                                                     );
                                                                                 }}
                                                                                 className="ui-select ts-13 px-2 py-[6px] rounded-[6px]"
                                                                             >
+                                                                                {isCustomPromptTags ? (
+                                                                                    <option value="__custom__">自定义</option>
+                                                                                ) : null}
                                                                                 {tagGroups.map((group) => (
                                                                                     <option key={group.id} value={group.id}>{group.label}</option>
                                                                                 ))}
                                                                             </select>
-                                                                            <button
-                                                                                type="button"
-                                                                                onClick={() => setScopeMenuOpen(true)}
-                                                                                className="ui-select ts-13 px-2 py-[6px] rounded-[6px] w-full text-left flex items-center justify-between gap-1"
+                                                                            <select
+                                                                                value={isCustomPromptTags ? "__custom__" : selectedTagMinor.id}
+                                                                                onChange={(e) => {
+                                                                                    const minor = selectedTagGroup.minors.find(item => item.id === e.target.value);
+                                                                                    if (!minor) return;
+                                                                                    updatePrompt(
+                                                                                        preset,
+                                                                                        prompt.identifier,
+                                                                                        current => ({ ...current, ...setPromptTags(minor.tags) }),
+                                                                                    );
+                                                                                }}
+                                                                                className="ui-select ts-13 px-2 py-[6px] rounded-[6px]"
                                                                             >
-                                                                                <span className="truncate">{scopeButtonLabel}</span>
-                                                                                <ChevronDown size={13} strokeWidth={1.8} />
-                                                                            </button>
+                                                                                {isCustomPromptTags ? (
+                                                                                    <option value="__custom__">自定义</option>
+                                                                                ) : null}
+                                                                                {selectedTagGroup.minors.map((minor) => (
+                                                                                    <option key={minor.id} value={minor.id}>{minor.label}</option>
+                                                                                ))}
+                                                                            </select>
                                                                         </div>
-                                                                        {scopeMenuOpen && (
-                                                                            <BottomSheet title="适用范围" onClose={() => setScopeMenuOpen(false)}>
-                                                                                <div className="flex flex-col gap-1">
-                                                                                    {baseTagGroup.minors.map(minor => {
-                                                                                        const minorTags = minor.tags.slice(1);
-                                                                                        const checked = minorTags.length === 0
-                                                                                            ? isBaseOnlyActive
-                                                                                            : minorTags.every(t => promptTags.includes(t));
-                                                                                        return (
-                                                                                            <button
-                                                                                                key={minor.id}
-                                                                                                type="button"
-                                                                                                onClick={() => toggleScopeMinor(minor)}
-                                                                                                className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm rounded-[8px] ${checked ? "font-bold text-[var(--c-icon-active)] bg-[var(--c-icon-active)]/10" : "text-gray-700"}`}
-                                                                                            >
-                                                                                                <Check size={16} strokeWidth={2} className={checked ? "visible" : "invisible"} />
-                                                                                                {minor.label}
-                                                                                            </button>
-                                                                                        );
-                                                                                    })}
-                                                                                    <div className="my-1 border-t border-black/5" />
-                                                                                    <button
-                                                                                        type="button"
-                                                                                        onClick={() => updatePrompt(preset, prompt.identifier, current => ({ ...current, ...setPromptTags([]) }))}
-                                                                                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-red-500"
-                                                                                    >
-                                                                                        清除范围（不限）
-                                                                                    </button>
-                                                                                    <button
-                                                                                        type="button"
-                                                                                        onClick={() => setScopeMenuOpen(false)}
-                                                                                        className="ui-btn w-full mt-2"
-                                                                                    >
-                                                                                        完成
-                                                                                    </button>
-                                                                                </div>
-                                                                            </BottomSheet>
-                                                                        )}
                                                                     </div>
                                                                 </div>
                                                             </div>
