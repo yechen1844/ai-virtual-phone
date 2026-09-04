@@ -352,6 +352,8 @@ export type MomentsInteractionConfig = {
     bilingualTranslationEnabled: boolean;   // 朋友圈外语正文自动附简中译文
     collapseBilingualTranslation: boolean;  // 默认折叠中文译文
     bilingualTranslationPrompt: string;
+    // 角色发帖生图时默认使用角色参考图（开启后即使正文未写「使用参考图」也默认用参考图）
+    defaultUseReferenceImage: boolean;
     // 禁止自动发帖的角色（只关调度发帖；评论/点赞/手动立即发帖不受影响）
     autoPostDisabledCharacterIds: string[];
 };
@@ -368,6 +370,7 @@ export const DEFAULT_MOMENTS_CONFIG: MomentsInteractionConfig = {
     bilingualTranslationEnabled: true,
     collapseBilingualTranslation: true,
     bilingualTranslationPrompt: DEFAULT_MOMENTS_BILINGUAL_PROMPT,
+    defaultUseReferenceImage: false,
     autoPostDisabledCharacterIds: [],
 };
 

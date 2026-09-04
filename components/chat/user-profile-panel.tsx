@@ -43,6 +43,7 @@ import {
     Clock,
     FileCode2,
     Heart,
+    Image,
     MessageSquare,
     MessageSquareDashed,
     Palette,
@@ -973,6 +974,22 @@ function InlineMomentsSettings({ onBack }: { onBack: () => void }) {
                         step={5}
                         onChange={v => update({ likeProb: v / 100 })}
                     />
+                </div>
+
+                <div className="menu-group">
+                    <div className="menu-item">
+                        <ProfileSettingsIcon icon={Image} color={CONTENT_APP_ACCENTS.moments} />
+                        <div className="menu-label-group">
+                            <span className="menu-label">生图默认使用角色参考图</span>
+                            <span className="menu-desc">角色发朋友圈生图时默认使用角色参考图；关闭则与原来一致</span>
+                        </div>
+                        <div className="menu-right">
+                            <Toggle
+                                checked={config.defaultUseReferenceImage}
+                                onChange={checked => update({ defaultUseReferenceImage: checked })}
+                            />
+                        </div>
+                    </div>
                 </div>
 
                 <div className="menu-group">

@@ -1152,7 +1152,13 @@ export function parseMomentPostResponse(rawText: string): {
     const photoDescription = explicitPhotoMatch
         ? explicitPhotoMatch[2].trim()
         : legacyPhotoMatch ? legacyPhotoMatch[1].trim() : undefined;
-    const photoUseReferenceImage = explicitPhotoMatch ? explicitPhotoMatch[1] === "使用参考图" : false;
+    // 默认是否用角色参考图：若正文明确写了「不使用参考图」→ 强制 false；
+    // 否则取「朋友圈互动设置」里的 defaultUseReferenceImage（默认关，与原来一致）。
+    const defaultUseRef = loadMomentsConfig().defaultUseReferenceImage === true;
+    let photoUseReferenceImage = defaultUseRef;
+    if (explicitPhotoMatch) {
+        photoUseReferenceImage = explicitPhotoMatch[1] === "使用参考图";
+    }
 
     const content = text
         .replace(/\[照片[:：]\s*(?:使用参考图|不使用参考图)\s*[:：]\s*[\s\S]*?\]/g, "")
