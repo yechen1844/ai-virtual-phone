@@ -22,12 +22,14 @@ import {
     MIX_PANEL_MAX_Z,
     MIX_PANEL_MIN_H,
     MIX_PANEL_MIN_W,
+    type MixDialogueState,
     type MixPanelLayout,
     type MixState,
 } from "@/lib/mixology/types";
 import { normalizeMechanismStore, type MixMechanismStore } from "@/lib/mixology/mechanism-protocol";
 import { normalizeMixConnectorParams, runMixConnector, takeMixConnectorQuota } from "@/lib/mixology/connectors";
 import { findMixConnector } from "@/lib/mixology/storage";
+import { playMixAudio, stopMixAudio } from "@/lib/mixology/audio-player";
 
 /** 界面能请求的动作，就这几条 */
 type PanelCommand =
@@ -44,9 +46,127 @@ type PanelCommand =
     | { name: "grab"; cx: unknown; cy: unknown }
     | { name: "drag"; cx: unknown; cy: unknown }
     | { name: "dragEnd" }
-    | { name: "call"; id: unknown; connector: unknown; params: unknown };
+    | { name: "call"; id: unknown; connector: unknown; params: unknown }
+    | { name: "mark"; id: unknown; state: unknown }
+    | { name: "play"; id: unknown; audio: unknown; type: unknown }
+    | { name: "stop" }
+    | { name: "toast"; text: unknown };
 
 const MAX_SAY_LENGTH = 2_000;
+const MAX_TOAST_LENGTH = 120;
+const MAX_AUDIO_BYTES = 24 * 1024 * 1024;
+
+/**
+ * 界面递上来的音频转成 Blob：data: URL 字符串、ArrayBuffer、类型化数组、Blob 都收。
+ * 沙盒是不透明源，它自己造的 blob: URL 宿主打不开，所以只收"内容本身"。
+ */
+export function audioToBlob(audio: unknown, type: unknown): Blob | null {
+    const mime = typeof type === "string" && type.trim() ? type.trim() : "audio/mpeg";
+    if (audio instanceof Blob) return audio.size <= MAX_AUDIO_BYTES ? audio : null;
+    if (audio instanceof ArrayBuffer) return audio.byteLength <= MAX_AUDIO_BYTES ? new Blob([audio], { type: mime }) : null;
+    if (ArrayBuffer.isView(audio)) return audio.byteLength <= MAX_AUDIO_BYTES ? new Blob([audio as ArrayBufferView<ArrayBuffer>], { type: mime }) : null;
+    if (typeof audio === "string" && audio.startsWith("data:")) {
+        const comma = audio.indexOf(",");
+        if (comma < 0) return null;
+        const head = audio.slice(5, comma);
+        const body = audio.slice(comma + 1);
+        const dataMime = head.split(";")[0] || mime;
+        try {
+            if (/;base64$/i.test(head)) {
+                const bin = atob(body);
+                if (bin.length > MAX_AUDIO_BYTES) return null;
+                const bytes = new Uint8Array(bin.length);
+                for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+                return new Blob([bytes], { type: dataMime });
+            }
+            return new Blob([decodeURIComponent(body)], { type: dataMime });
+        } catch {
+            return null;
+        }
+    }
+    return null;
+}
+
+/**
+ * mix.play：宿主替界面放音频。对白按钮的点击落在宿主上，iframe 没有手势、iOS 会拦它的
+ * play()，所以音频一律递给宿主放（点击时宿主已经 prime 过自己的播放元素）。
+ * 播放状态由宿主直接回报给对白按钮：开始出声标 playing，放完/失败恢复。
+ */
+function handlePlay(
+    command: { id: unknown; audio: unknown; type: unknown },
+    materialId: string,
+    onMark: ((materialId: string, id: string, state: MixDialogueState) => void) | undefined,
+    onToast: ((text: string) => void) | undefined,
+): void {
+    const id = String(command.id ?? "").trim();
+    const blob = audioToBlob(command.audio, command.type);
+    if (!blob) {
+        onToast?.("机括递上来的音频格式不对（要 data: URL、ArrayBuffer 或 Blob，24MB 以内）。");
+        if (id) onMark?.(materialId, id, "");
+        return;
+    }
+    playMixAudio(blob, {
+        onStart: () => { if (id) onMark?.(materialId, id, "playing"); },
+        onEnd: () => { if (id) onMark?.(materialId, id, ""); },
+        onError: (message) => { if (id) onMark?.(materialId, id, ""); onToast?.(message); },
+    });
+}
+
+// ── 对白按钮：宿主 → 界面的事件通道 ─────────────────────
+// 宿主在每句「对白」后画的小图标被点了，把这句话递给声明了对白按钮的那件机括。
+// 面板组件挂载后在这里登记；面板还没挂上（按钮位面板关着刚被打开）或 iframe
+// 还没 boot 时先排队，挂上/boot 后补发，点一下不会石沉大海。
+
+export type MixDialogueEvent = {
+    /** 这句对白在这一局里的唯一 id（回报状态用） */
+    id: string;
+    /** 对白文字（不含「」） */
+    text: string;
+    turnId?: string;
+};
+
+const dialogueListeners = new Map<string, (event: MixDialogueEvent) => void>();
+const dialoguePending = new Map<string, MixDialogueEvent[]>();
+const DIALOGUE_PENDING_MAX = 5;
+
+export function sendMixDialogue(materialId: string, event: MixDialogueEvent): void {
+    const listener = dialogueListeners.get(materialId);
+    if (listener) { listener(event); return; }
+    const queue = dialoguePending.get(materialId) ?? [];
+    queue.push(event);
+    dialoguePending.set(materialId, queue.slice(-DIALOGUE_PENDING_MAX));
+}
+
+/** 面板侧：登记监听，boot 之前的事件先攒着，boot 后一并递进 iframe */
+function useDialogueFeed(materialId: string, post: (payload: Record<string, unknown>) => void) {
+    const bootedRef = useRef(false);
+    const queueRef = useRef<MixDialogueEvent[]>([]);
+    const flush = useCallback(() => {
+        for (const event of queueRef.current) post({ type: "dialogue", event });
+        queueRef.current = [];
+    }, [post]);
+    useEffect(() => {
+        const listener = (event: MixDialogueEvent) => {
+            if (bootedRef.current) post({ type: "dialogue", event });
+            else queueRef.current = [...queueRef.current, event].slice(-DIALOGUE_PENDING_MAX);
+        };
+        dialogueListeners.set(materialId, listener);
+        for (const event of dialoguePending.get(materialId) ?? []) listener(event);
+        dialoguePending.delete(materialId);
+        return () => {
+            if (dialogueListeners.get(materialId) === listener) dialogueListeners.delete(materialId);
+        };
+    }, [materialId, post]);
+    const onBoot = useCallback(() => { bootedRef.current = true; flush(); }, [flush]);
+    return onBoot;
+}
+
+function normalizeMark(command: { id: unknown; state: unknown }): { id: string; state: MixDialogueState } | null {
+    const id = String(command.id ?? "").trim();
+    if (!id) return null;
+    const state = command.state === "busy" || command.state === "playing" ? command.state : "";
+    return { id, state };
+}
 
 /**
  * 界面请宿主代调一个连接器（mix.call）。沙盒自己发不了请求，这里是唯一的出口：
@@ -147,7 +267,17 @@ export function buildPanelDoc(html: string, state: MixState, store: MixMechanism
         calls[id] = { resolve: resolve, reject: reject };
         send("call", { id: id, connector: String(name == null ? "" : name), params: params || {} });
       });
-    }
+    },
+    // 对白按钮的状态回报：宿主把那颗图标画成转圈（busy）/ 播放中（playing）/ 恢复（""）。
+    // id 就是 onMixDialogue 收到的那个 id
+    mark: function(id, state){ send("mark", { id: String(id == null ? "" : id), state: state || "" }); },
+    // 让宿主放一段音频（对白按钮的点击在宿主那边，iframe 自己 play 会被 iOS 拦）。
+    // audio 收 data: URL 字符串、ArrayBuffer、Uint8Array 或 Blob；type 是 MIME（默认 audio/mpeg）。
+    // 传了 id（onMixDialogue 收到的那个），那颗按钮会自动标成播放中、放完自动恢复。
+    play: function(id, audio, type){ send("play", { id: id == null ? "" : String(id), audio: audio, type: type || "" }); },
+    stop: function(){ send("stop", {}); },
+    // 给玩家弹一句短提示（出错、缺连接器之类）；无界面的机括靠它说话
+    toast: function(text){ send("toast", { text: String(text == null ? "" : text) }); }
   };
   var callSeq = 0, calls = {};
 
@@ -204,6 +334,14 @@ export function buildPanelDoc(html: string, state: MixState, store: MixMechanism
       delete calls[data.callId];
       if (data.ok) pending.resolve({ status: data.status, data: data.data });
       else { var err = new Error(data.error || "连接器调用失败"); err.missing = !!data.missing; pending.reject(err); }
+      return;
+    }
+    // 玩家点了某句对白后面的按钮（材料声明了 dialogueButton 才会有）：
+    // 界面定义 window.onMixDialogue({ id, text, turnId }) 接收，之后可用 mix.mark(id, 状态) 回报
+    if (data.type === "dialogue") {
+      if (typeof window.onMixDialogue === "function") {
+        try { window.onMixDialogue(data.event || {}); } catch (e) {}
+      }
       return;
     }
     window.MIX_STATE = data.state || {};
@@ -265,6 +403,8 @@ export function MixMechanismPanel({
     onSay,
     onBox,
     connectors,
+    onMark,
+    onToast,
 }: {
     materialId: string;
     name: string;
@@ -279,6 +419,10 @@ export function MixMechanismPanel({
     onBox: (materialId: string, box: Box) => void;
     /** 材料声明要用的连接器名字；mix.call 只放行这些 */
     connectors?: string[];
+    /** 界面用 mix.mark 回报某句对白按钮的状态 */
+    onMark?: (materialId: string, id: string, state: MixDialogueState) => void;
+    /** 界面用 mix.toast 给玩家弹一句短提示 */
+    onToast?: (text: string) => void;
 }) {
     const frameRef = useRef<HTMLIFrameElement | null>(null);
     const rootRef = useRef<HTMLDivElement | null>(null);
@@ -367,6 +511,7 @@ export function MixMechanismPanel({
     /** 最新的 state/store：boot 补推发生在消息回调里，闭包里的是旧引用，得走 ref */
     const latestSyncRef = useRef({ state, store });
     latestSyncRef.current = { state, store };
+    const onDialogueBoot = useDialogueFeed(materialId, post);
 
     /** 把一次几何变化落到面板上；拖完（commit）才写进对局 */
     const applyBox = useCallback((next: Box, commit: boolean) => {
@@ -434,6 +579,7 @@ export function MixMechanismPanel({
                     const fresh = latestSyncRef.current;
                     syncedRef.current = JSON.stringify(fresh);
                     post({ ...fresh });
+                    onDialogueBoot();
                     break;
                 }
                 case "setStore":
@@ -560,6 +706,22 @@ export function MixMechanismPanel({
                 case "call":
                     void handleConnectorCall(command, materialId, connectors, post);
                     break;
+                case "mark": {
+                    const mark = normalizeMark(command);
+                    if (mark) onMark?.(materialId, mark.id, mark.state);
+                    break;
+                }
+                case "play":
+                    handlePlay(command, materialId, onMark, onToast);
+                    break;
+                case "stop":
+                    stopMixAudio();
+                    break;
+                case "toast": {
+                    const text = String(command.text ?? "").trim().slice(0, MAX_TOAST_LENGTH);
+                    if (text) onToast?.(text);
+                    break;
+                }
                 default:
                     // 白名单以外一律不理会
                     break;
@@ -567,7 +729,7 @@ export function MixMechanismPanel({
         };
         window.addEventListener("message", onMessage);
         return () => window.removeEventListener("message", onMessage);
-    }, [materialId, onStore, onState, onSay, onBox, canDrag, applyBox, scale, post, connectors]);
+    }, [materialId, onStore, onState, onSay, onBox, canDrag, applyBox, scale, post, connectors, onMark, onDialogueBoot, onToast]);
 
     const style: React.CSSProperties = {
         left: `${box.x}%`,
@@ -683,6 +845,8 @@ export function MixMechanismInline({
     onState,
     onSay,
     connectors,
+    onMark,
+    onToast,
 }: {
     materialId: string;
     name: string;
@@ -696,6 +860,10 @@ export function MixMechanismInline({
     onSay: (text: string) => void;
     /** 材料声明要用的连接器名字；mix.call 只放行这些 */
     connectors?: string[];
+    /** 界面用 mix.mark 回报某句对白按钮的状态 */
+    onMark?: (materialId: string, id: string, state: MixDialogueState) => void;
+    /** 界面用 mix.toast 给玩家弹一句短提示 */
+    onToast?: (text: string) => void;
 }) {
     const frameRef = useRef<HTMLIFrameElement | null>(null);
     const stageRef = useRef<HTMLDivElement | null>(null);
@@ -739,6 +907,7 @@ export function MixMechanismInline({
     /** 最新的 state/store：boot 补推发生在消息回调里，闭包里的是旧引用，得走 ref */
     const latestSyncRef = useRef({ state, store });
     latestSyncRef.current = { state, store };
+    const onDialogueBoot = useDialogueFeed(materialId, post);
 
     useEffect(() => {
         const onMessage = (event: MessageEvent) => {
@@ -752,6 +921,7 @@ export function MixMechanismInline({
                     const fresh = latestSyncRef.current;
                     syncedRef.current = JSON.stringify(fresh);
                     post({ ...fresh });
+                    onDialogueBoot();
                     break;
                 }
                 case "setStore":
@@ -795,6 +965,22 @@ export function MixMechanismInline({
                 case "call":
                     void handleConnectorCall(command, materialId, connectors, post);
                     break;
+                case "mark": {
+                    const mark = normalizeMark(command);
+                    if (mark) onMark?.(materialId, mark.id, mark.state);
+                    break;
+                }
+                case "play":
+                    handlePlay(command, materialId, onMark, onToast);
+                    break;
+                case "stop":
+                    stopMixAudio();
+                    break;
+                case "toast": {
+                    const text = String(command.text ?? "").trim().slice(0, MAX_TOAST_LENGTH);
+                    if (text) onToast?.(text);
+                    break;
+                }
                 default:
                     // 位置类命令（box/grab/drag/setOpen…）在内嵌形态下没有意义，一律不理会
                     break;
@@ -802,7 +988,7 @@ export function MixMechanismInline({
         };
         window.addEventListener("message", onMessage);
         return () => window.removeEventListener("message", onMessage);
-    }, [materialId, onStore, onState, onSay, post, connectors]);
+    }, [materialId, onStore, onState, onSay, post, connectors, onMark, onDialogueBoot, onToast]);
 
     const designWidth = designPx === null ? 0 : designPx;
     const scale = designWidth && width > 0 ? width / designWidth : 1;

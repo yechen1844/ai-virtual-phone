@@ -367,9 +367,23 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
             const materials = isPng
                 ? parseMixMaterialsFromPng(await file.arrayBuffer())
                 : parseMixMaterialsFromJson(await file.text());
-            materials.forEach(saveMixMaterial);
-            refresh();
-            showToast(materials.length > 1 ? `已导入 ${materials.length} 件材料。` : `「${materials[0].name}」已入柜。`);
+            const finish = () => {
+                materials.forEach(saveMixMaterial);
+                refresh();
+                showToast(materials.length > 1 ? `已导入 ${materials.length} 件材料。` : `「${materials[0].name}」已入柜。`);
+            };
+            // 文件里带信任模式的机括：入柜前明示（它不进沙盒，能碰本机数据）
+            const trustedOnes = materials.filter((m) => m.kind === "mechanism" && m.trusted);
+            if (trustedOnes.length) {
+                setConfirm({
+                    title: "文件里有信任模式的机括",
+                    body: <>{trustedOnes.map((m) => `「${m.name}」`).join("、")}的代码<b>会直接在对局页面里运行，不进沙盒</b>：能画进正文、能联网，也能读写这台小手机上的数据。<br />只在你信任来源时导入。</>,
+                    confirmText: "我知道，导入",
+                    run: finish,
+                });
+                return;
+            }
+            finish();
         } catch (error) {
             showToast(error instanceof Error ? error.message : "导入失败");
         }
@@ -963,6 +977,37 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
                                     </button>
                                 </>
                             ) : null}
+                            {/* 官方件不可改：想改就复制一份自建的——进酒柜、直接打开编辑器 */}
+                            {isMixBuiltinId(detail.id) ? (
+                                <button
+                                    type="button"
+                                    className="mix-icon-btn"
+                                    onClick={() => {
+                                        const now = Date.now();
+                                        const copy = {
+                                            ...detail,
+                                            id: createMixId("mixmat"),
+                                            name: `${detail.name.replace(/^官方\s*·\s*/, "")} 副本`,
+                                            author: undefined,
+                                            tags: (detail.tags ?? []).filter((t) => t !== "官方"),
+                                            publishedId: undefined,
+                                            publishedAt: undefined,
+                                            imported: undefined,
+                                            createdAt: now,
+                                            updatedAt: now,
+                                        } as MixMaterial;
+                                        saveMixMaterial(copy);
+                                        refresh();
+                                        setDetail(null);
+                                        setEditor({ kind: copy.kind, initial: copy });
+                                        showToast(`已复制为自建材料「${copy.name}」，可以随意改了。`);
+                                    }}
+                                    aria-label="复制为自建"
+                                    title="复制为自建：得到一份可编辑的副本"
+                                >
+                                    <Copy size={16} />
+                                </button>
+                            ) : null}
                             {!isMixBuiltinId(detail.id) && !detail.imported ? (
                                 <>
                                     <button
@@ -1229,13 +1274,26 @@ export function MixologyApp({ onClose }: { onClose: () => void }) {
                                             preview={mixMatHasAutoCover(material) ? <MixMatAutoCover material={material} /> : undefined}
                                             badge={isMixBuiltinId(material.id) ? "官方" : undefined}
                                             onClick={() => {
-                                                setBarSlots((prev) => {
-                                                    const current = mixSlotEntries(prev, slotPicker);
-                                                    // 已经在这一格里就不重复加
-                                                    if (current.some((e) => e.materialId === material.id)) return prev;
-                                                    return { ...prev, [slotPicker]: [...current, { materialId: material.id }] };
-                                                });
-                                                setSlotPicker(null);
+                                                const add = () => {
+                                                    setBarSlots((prev) => {
+                                                        const current = mixSlotEntries(prev, slotPicker);
+                                                        // 已经在这一格里就不重复加
+                                                        if (current.some((e) => e.materialId === material.id)) return prev;
+                                                        return { ...prev, [slotPicker]: [...current, { materialId: material.id }] };
+                                                    });
+                                                    setSlotPicker(null);
+                                                };
+                                                // 信任模式的机括不进沙盒：装进配方前让人知道自己在装什么（与插件安装同一规矩）
+                                                if (material.kind === "mechanism" && material.trusted) {
+                                                    setConfirm({
+                                                        title: "这件机括是信任模式",
+                                                        body: <>「{material.name}」的代码<b>直接在对局页面里运行，不进沙盒</b>：它能画进正文、能自己联网，也能读写这台小手机上的数据。<br />只在你信任作者、清楚它做了什么时装入。</>,
+                                                        confirmText: "我知道，装入",
+                                                        run: add,
+                                                    });
+                                                    return;
+                                                }
+                                                add();
                                             }}
                                             key={material.id}
                                         />

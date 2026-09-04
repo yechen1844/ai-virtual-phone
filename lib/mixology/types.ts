@@ -395,9 +395,11 @@ export type MixPanelLayout = {
  * header / inputbar-left / inputbar-right = 宿主在标题栏或输入栏画一颗图标按钮，
  *   点击开合面板（按钮由宿主渲染，样式统一、位置精确，沙盒碰不到宿主排版）；
  * flow-top / flow-bottom = 面板作为一张内嵌卡直接进滚动流（画布之下 / 轮次流末尾），
- *   随内容滚动，autoHeight 常开，不可拖不可缩。
+ *   随内容滚动，autoHeight 常开，不可拖不可缩；
+ * hidden = 不画任何东西，界面代码在看不见的沙盒里后台跑——只靠对白按钮 / 钩子驱动、
+ *   用 mix.play / mix.toast 与玩家交互的机括（比如「朗读」）用它。
  */
-export const MIX_PANEL_SLOTS = ["float", "header", "inputbar-left", "inputbar-right", "flow-top", "flow-bottom"] as const;
+export const MIX_PANEL_SLOTS = ["float", "header", "inputbar-left", "inputbar-right", "flow-top", "flow-bottom", "hidden"] as const;
 export type MixPanelSlot = (typeof MIX_PANEL_SLOTS)[number];
 
 export const MIX_PANEL_SLOT_LABELS: Record<MixPanelSlot, string> = {
@@ -407,6 +409,7 @@ export const MIX_PANEL_SLOT_LABELS: Record<MixPanelSlot, string> = {
     "inputbar-right": "输入栏右侧按钮",
     "flow-top": "正文顶部",
     "flow-bottom": "正文尾部",
+    hidden: "无界面（后台运行）",
 };
 
 /** 拖丢了捡不回来，所以无论怎么拖都至少留这么多在画面里（百分比） */
@@ -543,7 +546,38 @@ export type MixMechanismMaterial = MixMaterialMeta & {
      * 只有在这里声明过的名字才调得动——材料拿不到没声明的接口，玩家也一眼知道它要什么。
      */
     connectors?: string[];
+    /**
+     * 对白按钮：装了这件机括的对局里，宿主在每句「对白」后面画一颗小图标，
+     * 点击把这句话递进常驻界面（window.onMixDialogue）。按钮由宿主画、样式统一，
+     * 界面只管收到之后做什么（比如请连接器合成语音）。需要有 panelHtml 才收得到。
+     */
+    dialogueButton?: MixDialogueButton;
+    /**
+     * 信任模式：script 直接在对局页面里执行（不进沙盒），像聊天插件一样拿到裸 DOM——
+     * 每轮正文、每轮下方、悬浮层都可以随意画，也能自己 fetch。代价是它看得到整台小手机的
+     * 数据。装入配方 / 入柜 / 导入时都会向玩家明示。panelHtml 在此模式下不用，界面由代码画。
+     */
+    trusted?: boolean;
 };
+
+export type MixDialogueButton = {
+    /** 画在按钮上的一两个 emoji 或单字 */
+    icon: string;
+    /** 长按/悬停提示，选填 */
+    title?: string;
+};
+
+/** 对白按钮的状态（界面用 mix.mark 回报）：busy 转圈、playing 高亮、空串恢复 */
+export type MixDialogueState = "busy" | "playing" | "";
+
+export function normalizeMixDialogueButton(value: unknown): MixDialogueButton | undefined {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const record = value as Record<string, unknown>;
+    const icon = typeof record.icon === "string" ? record.icon.trim().slice(0, 4) : "";
+    if (!icon) return undefined;
+    const title = typeof record.title === "string" ? record.title.trim().slice(0, 24) : "";
+    return title ? { icon, title } : { icon };
+}
 
 /** 连接器名字：机括按它找连接器。只收短的标识符，免得大小写/空格对不上 */
 export const MIX_CONNECTOR_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
@@ -690,7 +724,7 @@ export type MixTurn = {
     text: string;
     /**
      * 这一轮的原始输出（assistant 侧）：进剥离/滤网/机括之前的完整原文，
-     * 含机括标记行与被滤网洗掉的字；状态栏补写的块也并在里面（它算这一轮产出的一部分）。
+     * 含机括标记行与被滤网洗掉的字。
      * 「编辑原始输出」展示并回写的就是这一份；老数据没有这个字段，
      * 编辑时退回用产物拼装（mixTurnRawText 的兜底路径）。
      */
