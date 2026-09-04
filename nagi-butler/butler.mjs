@@ -193,16 +193,30 @@ async function readBody(req) {
 }
 
 /** 按监听端口找对应星露谷进程的主窗口，只截取该窗口，返回 PNG Buffer（截不到返回 null）。 */
-function captureGameWindowPng(port) {
+function captureGameWindowPng(port, target) {
   return new Promise((resolvePromise) => {
     const tmpPng = join(tmpdir(), `nagi_shot_${port}_${Date.now()}.png`);
     const ps = `
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
+function Get-GameWindow {
+  Get-Process -ErrorAction SilentlyContinue | Where-Object { ($_.ProcessName -match 'StardewModdingAPI|Stardew Valley|^Stardew$') -and $_.MainWindowHandle -ne [IntPtr]::Zero } | Sort-Object Id
+}
+$pick = $null
 $c = Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $c) { Write-Output 'ERR_NO_CONN'; exit 0 }
-$p = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue
-if (-not $p) { Write-Output 'ERR_NO_PROC'; exit 0 }
+if ($c -and $c.OwningProcess -ne 4) {
+  $p = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue
+  if ($p -and $p.MainWindowHandle -ne [IntPtr]::Zero) { $pick = $p }
+}
+if (-not $pick) {
+  $wins = @(Get-GameWindow)
+  if ($wins.Count -eq 1) { $pick = $wins[0] }
+  elseif ($wins.Count -ge 2) {
+    if ('${target}' -eq 'user') { $pick = $wins[$wins.Count - 1] }
+    else { $pick = $wins[0] }
+  }
+}
+if (-not $pick) { Write-Output 'ERR_NO_WINDOW'; exit 0 }
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -212,7 +226,7 @@ public class SW {
 }
 public struct RECT { public int Left, Top, Right, Bottom; }
 "@
-$h = $p.MainWindowHandle
+$h = $pick.MainWindowHandle
 if ($h -eq [IntPtr]::Zero) { Write-Output 'ERR_NO_WINDOW'; exit 0 }
 $r = [SW+RECT]::new()
 [SW]::GetWindowRect($h, [ref]$r) | Out-Null
@@ -389,7 +403,7 @@ const replyServer = createServer(async (req, res) => {
         : Number(new URL(nagiUrl).port || 7843);
       const port = urlPort || defaultPort;
       if (!port) return sendJson(res, 400, { ok: false, error: '无法确定目标端口' });
-      const png = await captureGameWindowPng(port);
+      const png = await captureGameWindowPng(port, target);
       if (!png) return sendJson(res, 502, { ok: false, error: '截图失败（原窗口没在运行？）' });
       res.writeHead(200, {
         'content-type': 'image/png',
@@ -398,6 +412,29 @@ const replyServer = createServer(async (req, res) => {
       });
       res.end(png);
       return;
+    }
+    // 传送到 user(host,7842) 身边：读 user 当前坐标，把 char(7843) 传送到同一世界的该坐标。
+    // 需要 char 与 user 在同一联机世界/存档（坐标空间一致）。
+    if (url.pathname === '/nb/goto-user' && (req.method === 'GET' || req.method === 'POST') && replyPushUrl) {
+      try {
+        const uRes = await fetch(`${replyPushUrl}/state`, { signal: AbortSignal.timeout(8000) });
+        const u = await uRes.json().catch(() => null);
+        const px = u?.player?.x, py = u?.player?.y;
+        const loc = u?.location?.name ?? (typeof u?.location === 'string' ? u.location : '');
+        if (typeof px !== 'number' || typeof py !== 'number') {
+          return sendJson(res, 502, { ok: false, error: '读不到 user 坐标：请确认 user 游戏已进入存档' });
+        }
+        const wRes = await fetch(`${nagiUrl}/warp`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ location: loc, x: px, y: py }),
+          signal: AbortSignal.timeout(15000),
+        });
+        const w = await wRes.json().catch(() => ({}));
+        return sendJson(res, 200, { ok: true, userX: px, userY: py, location: loc, warp: w });
+      } catch (e) {
+        return sendJson(res, 500, { ok: false, error: String(e?.message || e) });
+      }
     }
     // 星露谷 user(host,7842) 侧工具转发：float 的 stardew_get_user_* 经此代理到用户主机 NagiBridge。
     // 与 /nb/*（char 自己的游戏 7843）分开，保证 "user" 相关的状态/周围读的是 host 游戏。

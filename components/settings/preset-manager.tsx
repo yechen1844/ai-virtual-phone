@@ -702,15 +702,34 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
         const preset = presets.find(p => p.id === editingId);
         if (!preset) return;
         const fromRenderItem = promptRenderItems[fromRenderIndex];
-        const toRenderItem = promptRenderItems[toRenderIndex];
-        if (fromRenderItem?.type !== "item" || toRenderItem?.type !== "item") return;
+        if (fromRenderItem?.type !== "item") return;
 
         // DOM 索引来自当前筛选/折叠视图；先按 identifier 映射回完整顺序，避免拖错条目。
         const displayed = buildDisplayedPrompts(preset);
         const fromIndex = displayed.findIndex(prompt => prompt.identifier === fromRenderItem.prompt.identifier);
-        const toIndex = displayed.findIndex(prompt => prompt.identifier === toRenderItem.prompt.identifier);
-        if (fromIndex < 0 || toIndex < 0) return;
+        if (fromIndex < 0) return;
         const dragged = displayed[fromIndex];
+
+        // 目标行可能是「折叠行 / 展开头」（type 不是 item）——折叠模式下拖到它们旁边
+        // 以前会直接 return 不保存，导致视觉上挪了、一折叠又复原。这里把折叠行当作
+        // 一个块：取其锚点（折叠块的首个成员 / 头下面最近的条目）在完整顺序里的位置。
+        let toIndex = -1;
+        for (let i = toRenderIndex; i < promptRenderItems.length; i++) {
+            const item = promptRenderItems[i];
+            if (item.type === "item") {
+                toIndex = displayed.findIndex(prompt => prompt.identifier === item.prompt.identifier);
+                break;
+            }
+            if (item.type === "collapsed") {
+                const anchorId = item.prompts?.[0]?.identifier;
+                if (anchorId) {
+                    toIndex = displayed.findIndex(prompt => prompt.identifier === anchorId);
+                    break;
+                }
+            }
+            // collapse-header：它下面紧跟的才是该组条目，继续向下找第一个真实条目。
+        }
+        if (toIndex < 0 || fromIndex === toIndex) return;
 
         let newDisplayed: Prompt[];
         const isBulk = selectMode
