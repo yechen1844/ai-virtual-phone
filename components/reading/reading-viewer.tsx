@@ -19,6 +19,7 @@ import {
     loadSummaries,
     saveSummary,
     getTotalSummaryChars,
+    encodeReadingPosition,
 } from "@/lib/reading-storage";
 import { generateAnnotationBatch, generateReadingChat, distillSummariesIfNeeded, formatReadingSummary, getDistillableSummaryChars, getSummariesForInjection, parseReadingDiscussResponse, type ReadingDiscussAction, type ReadingDiscussContext } from "@/lib/reading-engine";
 import { loadChatMessages, pushChatMessage, deleteChatMessage, editChatMessage, loadChatContacts, createOrGetSession, isReadingDiscussMessage } from "@/lib/chat-storage";
@@ -481,6 +482,58 @@ export function ReadingViewer({ book, onBack }: Props) {
     );
     const charPickerBottom = showChat ? (chatExpanded ? 284 : 76) : 64;
     const paragraphRefs = useMemo(() => buildParagraphRefsFromChapters(chapters), [chapters]);
+
+    // 定位当前阅读中心段落：滚动模式直接从 DOM 取视口中心所在段落（不受章节窗口平移/回滚时
+    // chapterIndex 与 scrollFraction 短暂不一致的影响），翻页/PDF 按当前页首个内容段落。
+    // 摘要注入、共读讨论与自动批注共用同一位置来源，保证注入内容与用户实际看到的内容一致。
+    const getReadingCenter = useCallback((): { chapterIndex: number; paragraphIndex: number } => {
+        if (isPdf) {
+            const pageRefs = paragraphRefs.filter((item) => item.text.trim() && (item.pageNum || 0) === pdfCurrentPage);
+            if (pageRefs.length > 0) {
+                return {
+                    chapterIndex: pageRefs[0].chapterIndex,
+                    paragraphIndex: Math.min(...pageRefs.map((item) => item.paragraphIndex)),
+                };
+            }
+            return { chapterIndex: Math.floor((pdfCurrentPage - 1) / PDF_PAGES_PER_CHAPTER), paragraphIndex: 0 };
+        }
+        if (isScrollMode) {
+            const content = scrollContentRef.current;
+            const body = scrollRef.current;
+            if (content && body) {
+                const centerPoint = body.getBoundingClientRect().top + body.clientHeight / 2;
+                let best: { chapterIndex: number; paragraphIndex: number; dist: number } | null = null;
+                for (const chunk of content.querySelectorAll<HTMLElement>("[data-chapter-index]")) {
+                    const ci = Number(chunk.getAttribute("data-chapter-index"));
+                    for (const block of chunk.querySelectorAll<HTMLElement>("[data-paragraph-index]")) {
+                        const rect = block.getBoundingClientRect();
+                        if (rect.height <= 0) continue;
+                        const pi = Number(block.getAttribute("data-paragraph-index"));
+                        const dist = rect.bottom < centerPoint ? centerPoint - rect.bottom : rect.top > centerPoint ? rect.top - centerPoint : 0;
+                        if (!best || dist < best.dist) best = { chapterIndex: ci, paragraphIndex: pi, dist };
+                        if (dist === 0) break;
+                    }
+                    if (best && best.dist === 0) break;
+                }
+                if (best) return { chapterIndex: best.chapterIndex, paragraphIndex: best.paragraphIndex };
+            }
+            // DOM 不可用时回退到 state 估算
+            const refs = paragraphRefs.filter((item) => item.chapterIndex === chapterIndex && item.text.trim());
+            if (refs.length > 0) {
+                const idx = Math.round(Math.max(0, Math.min(1, scrollFraction)) * (refs.length - 1));
+                return { chapterIndex, paragraphIndex: refs[idx].paragraphIndex };
+            }
+            return { chapterIndex, paragraphIndex: 0 };
+        }
+        // 翻页模式：当前页首个内容段落
+        const pageItems = txtPages[txtPage] || [];
+        const indexes = pageItems
+            .filter((item): item is Extract<TxtPageItem, { kind: "line" | "annotation" }> => item.kind === "line" || item.kind === "annotation")
+            .map((item) => item.paragraphIndex);
+        if (indexes.length > 0) return { chapterIndex, paragraphIndex: Math.min(...indexes) };
+        return { chapterIndex, paragraphIndex: 0 };
+    }, [chapterIndex, isPdf, isScrollMode, paragraphRefs, pdfCurrentPage, scrollFraction, txtPage, txtPages]);
+
     const pdfRenderAnnotations = useMemo(() => {
         if (!isPdf) return annotations;
         const absoluteIndexMap = new Map(
@@ -717,7 +770,12 @@ export function ReadingViewer({ book, onBack }: Props) {
         const bid = book.id;
         try {
             const maxChars = readingConfig.maxSummariesChars > 0 ? readingConfig.maxSummariesChars : 5000;
-            const distilled = await distillSummariesIfNeeded(bid, companionId, maxChars, { force: true });
+            // 截断提炼覆盖范围到当前阅读位置：避免 prefetch 超前摘要把 distilledUpTo 推到未读区域
+            const center = getReadingCenter();
+            const distilled = await distillSummariesIfNeeded(bid, companionId, maxChars, {
+                force: true,
+                currentReadingPos: encodeReadingPosition(center.chapterIndex, center.paragraphIndex),
+            });
             if (bookIdRef.current !== bid) return; // 提炼途中切书，不动当前书 UI
             await refreshSummaries();
             setSummaryActionMsg(distilled
@@ -729,7 +787,7 @@ export function ReadingViewer({ book, onBack }: Props) {
             setSummaryActionMsg({ ok: false, text: `提炼失败：${e instanceof Error ? e.message : String(e)}（已有摘要不受影响）` });
             await refreshSummaries();
         }
-    }, [book.id, companionId, readingConfig.maxSummariesChars, refreshSummaries]);
+    }, [book.id, companionId, getReadingCenter, readingConfig.maxSummariesChars, refreshSummaries]);
 
     const getReadingSummaryForContext = useCallback(async (chapterIdx: number, paragraphIdx: number): Promise<string> => {
         const all = await loadSummaries(book.id);
@@ -799,12 +857,16 @@ export function ReadingViewer({ book, onBack }: Props) {
     const buildTxtBatchRequest = useCallback((size: number, mode: AnnotationBatchMode): AnnotationBatchRequest | null => {
         let minParagraphIndex: number;
         let maxParagraphIndex: number;
+        let batchChapterIndex = chapterIndex;
 
         if (isScrollMode) {
-            // 滚动模式没有分页：以当前滚动比例估算「正在阅读」的段落窗口
-            const total = currentChapter?.paragraphs.length || 0;
+            // 滚动模式没有分页：以视口中心实际所在段落（DOM 定位）估算「正在阅读」的段落窗口，
+            // 避免章节窗口平移后 scrollFraction 陈旧 / 回读上一章时 chapterIndex 滞后导致批次错位
+            const centerPos = getReadingCenter();
+            batchChapterIndex = centerPos.chapterIndex;
+            const total = chapters[batchChapterIndex]?.paragraphs.length || 0;
             if (total === 0) return null;
-            const center = Math.round(Math.max(0, Math.min(1, scrollFraction)) * (total - 1));
+            const center = Math.min(total - 1, Math.max(0, centerPos.paragraphIndex));
             const half = Math.max(1, Math.ceil(size / 2));
             minParagraphIndex = Math.max(0, center - half);
             maxParagraphIndex = Math.min(total - 1, center + half);
@@ -820,7 +882,7 @@ export function ReadingViewer({ book, onBack }: Props) {
             maxParagraphIndex = visibleParagraphIndexes[visibleParagraphIndexes.length - 1];
         }
 
-        const visibleRefs = paragraphRefs.filter((item) => item.chapterIndex === chapterIndex && item.paragraphIndex >= minParagraphIndex && item.paragraphIndex <= maxParagraphIndex);
+        const visibleRefs = paragraphRefs.filter((item) => item.chapterIndex === batchChapterIndex && item.paragraphIndex >= minParagraphIndex && item.paragraphIndex <= maxParagraphIndex);
         if (visibleRefs.length === 0) return null;
 
         const startCandidates: number[] = [];
@@ -848,7 +910,7 @@ export function ReadingViewer({ book, onBack }: Props) {
             size,
             items,
         };
-    }, [chapterIndex, currentChapter, isScrollMode, paragraphRefs, scrollFraction, txtPage, txtPages]);
+    }, [chapterIndex, chapters, getReadingCenter, isScrollMode, paragraphRefs, txtPage, txtPages]);
 
     const getPdfBatchWindow = useCallback((size: number, mode: AnnotationBatchMode) => {
         const chapterMaxPage = Math.max(0, ...chapters.map((chapter) => chapter.pageEnd ?? 0));
@@ -956,9 +1018,12 @@ export function ReadingViewer({ book, onBack }: Props) {
             if (batchResult.summary && !isSummaryAlreadyCovered) {
                 await saveSummary(batchResult.summary);
                 await refreshSummaries();
-                // 检查是否需要提炼
+                // 检查是否需要提炼（截断覆盖范围到当前阅读位置，避免 prefetch 超前摘要推远 distilledUpTo）
                 const maxChars = readingConfig.maxSummariesChars > 0 ? readingConfig.maxSummariesChars : 5000;
-                await distillSummariesIfNeeded(book.id, companionId, maxChars);
+                const center = getReadingCenter();
+                await distillSummariesIfNeeded(book.id, companionId, maxChars, {
+                    currentReadingPos: encodeReadingPosition(center.chapterIndex, center.paragraphIndex),
+                });
                 await refreshSummaries();
             }
 
@@ -972,7 +1037,7 @@ export function ReadingViewer({ book, onBack }: Props) {
             annotationInFlightRef.current = false;
             setGenerating(false);
         }
-    }, [book, companionId, loadExistingAnnotationsForItems, readingConfig.annotationRetryCount, readingConfig.maxSummariesChars, getReadingSummaryForContext, refreshSummaries, summaries]);
+    }, [book, companionId, loadExistingAnnotationsForItems, readingConfig.annotationRetryCount, readingConfig.maxSummariesChars, getReadingCenter, getReadingSummaryForContext, refreshSummaries, summaries]);
 
     const openAnnotationDialog = (mode: AnnotationDialogMode) => {
         const nextSize = annotationBatchSize || (isPdf ? 5 : 50);
@@ -1314,9 +1379,13 @@ export function ReadingViewer({ book, onBack }: Props) {
         if (paragraphRefs.length === 0) return;
         let currentAbs = -1;
         if (isScrollMode) {
-            const chapterRefs = paragraphRefs.filter((item) => item.chapterIndex === chapterIndex && item.text.trim());
+            // 以视口中心实际所在段落（DOM 定位）计算全书记绝对段落索引，
+            // 避免章节窗口平移后 scrollFraction 陈旧 / 回读上一章时 chapterIndex 滞后导致预生成错批
+            const centerPos = getReadingCenter();
+            const chapterRefs = paragraphRefs.filter((item) => item.chapterIndex === centerPos.chapterIndex && item.text.trim());
             if (chapterRefs.length > 0) {
-                const center = Math.round(Math.max(0, Math.min(1, scrollFraction)) * (chapterRefs.length - 1));
+                const centerIdx = chapterRefs.findIndex((item) => item.paragraphIndex === centerPos.paragraphIndex);
+                const center = centerIdx >= 0 ? centerIdx : 0;
                 currentAbs = chapterRefs[center].absoluteIndex;
             }
         } else {
@@ -1349,7 +1418,7 @@ export function ReadingViewer({ book, onBack }: Props) {
         void executeBatchAnnotation(request).then((started) => {
             if (!started) prefetchedBatchStartRef.current = -1;
         });
-    }, [annotationBatchSize, autoAnnotate, chapterIndex, companionId, ensurePdfPageRangeParsed, executeBatchAnnotation, generating, isPdf, isScrollMode, paragraphRefs, pdfCurrentPage, pdfTotalPages, readingConfig.autoAnnotatePrefetch, readingConfig.autoAnnotatePrefetchPdf, readingConfig.annotationPrefetchThreshold, scrollFraction, txtPage, txtPages]);
+    }, [annotationBatchSize, autoAnnotate, chapterIndex, companionId, ensurePdfPageRangeParsed, executeBatchAnnotation, generating, getReadingCenter, isPdf, isScrollMode, paragraphRefs, pdfCurrentPage, pdfTotalPages, readingConfig.autoAnnotatePrefetch, readingConfig.autoAnnotatePrefetchPdf, readingConfig.annotationPrefetchThreshold, txtPage, txtPages]);
 
     useEffect(() => {
         // 自动批注开启时，随滚动把当前 5 页的文本层预先解析好，让批注生成请求不用临时等待解析。
@@ -1373,57 +1442,6 @@ export function ReadingViewer({ book, onBack }: Props) {
         setChapterIndex(idx);
         setTxtPage(0);
     };
-
-    // 定位当前阅读中心段落：滚动模式直接从 DOM 取视口中心所在段落（不受章节窗口平移/回滚时
-    // chapterIndex 与 scrollFraction 短暂不一致的影响），翻页/PDF 按当前页首个内容段落。
-    // 摘要注入与共读讨论共用同一位置来源，保证注入内容与用户实际看到的内容一致。
-    const getReadingCenter = useCallback((): { chapterIndex: number; paragraphIndex: number } => {
-        if (isPdf) {
-            const pageRefs = paragraphRefs.filter((item) => item.text.trim() && (item.pageNum || 0) === pdfCurrentPage);
-            if (pageRefs.length > 0) {
-                return {
-                    chapterIndex: pageRefs[0].chapterIndex,
-                    paragraphIndex: Math.min(...pageRefs.map((item) => item.paragraphIndex)),
-                };
-            }
-            return { chapterIndex: Math.floor((pdfCurrentPage - 1) / PDF_PAGES_PER_CHAPTER), paragraphIndex: 0 };
-        }
-        if (isScrollMode) {
-            const content = scrollContentRef.current;
-            const body = scrollRef.current;
-            if (content && body) {
-                const centerPoint = body.getBoundingClientRect().top + body.clientHeight / 2;
-                let best: { chapterIndex: number; paragraphIndex: number; dist: number } | null = null;
-                for (const chunk of content.querySelectorAll<HTMLElement>("[data-chapter-index]")) {
-                    const ci = Number(chunk.getAttribute("data-chapter-index"));
-                    for (const block of chunk.querySelectorAll<HTMLElement>("[data-paragraph-index]")) {
-                        const rect = block.getBoundingClientRect();
-                        if (rect.height <= 0) continue;
-                        const pi = Number(block.getAttribute("data-paragraph-index"));
-                        const dist = rect.bottom < centerPoint ? centerPoint - rect.bottom : rect.top > centerPoint ? rect.top - centerPoint : 0;
-                        if (!best || dist < best.dist) best = { chapterIndex: ci, paragraphIndex: pi, dist };
-                        if (dist === 0) break;
-                    }
-                    if (best && best.dist === 0) break;
-                }
-                if (best) return { chapterIndex: best.chapterIndex, paragraphIndex: best.paragraphIndex };
-            }
-            // DOM 不可用时回退到 state 估算
-            const refs = paragraphRefs.filter((item) => item.chapterIndex === chapterIndex && item.text.trim());
-            if (refs.length > 0) {
-                const idx = Math.round(Math.max(0, Math.min(1, scrollFraction)) * (refs.length - 1));
-                return { chapterIndex, paragraphIndex: refs[idx].paragraphIndex };
-            }
-            return { chapterIndex, paragraphIndex: 0 };
-        }
-        // 翻页模式：当前页首个内容段落
-        const pageItems = txtPages[txtPage] || [];
-        const indexes = pageItems
-            .filter((item): item is Extract<TxtPageItem, { kind: "line" | "annotation" }> => item.kind === "line" || item.kind === "annotation")
-            .map((item) => item.paragraphIndex);
-        if (indexes.length > 0) return { chapterIndex, paragraphIndex: Math.min(...indexes) };
-        return { chapterIndex, paragraphIndex: 0 };
-    }, [chapterIndex, isPdf, isScrollMode, paragraphRefs, pdfCurrentPage, scrollFraction, txtPage, txtPages]);
 
     const buildDiscussContext = useCallback((sourceChapters: BookChapter[] = chapters): ReadingDiscussContext | null => {
         const sourceParagraphRefs = buildParagraphRefsFromChapters(sourceChapters);
