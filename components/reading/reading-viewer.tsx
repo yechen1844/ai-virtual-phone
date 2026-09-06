@@ -1374,6 +1374,57 @@ export function ReadingViewer({ book, onBack }: Props) {
         setTxtPage(0);
     };
 
+    // 定位当前阅读中心段落：滚动模式直接从 DOM 取视口中心所在段落（不受章节窗口平移/回滚时
+    // chapterIndex 与 scrollFraction 短暂不一致的影响），翻页/PDF 按当前页首个内容段落。
+    // 摘要注入与共读讨论共用同一位置来源，保证注入内容与用户实际看到的内容一致。
+    const getReadingCenter = useCallback((): { chapterIndex: number; paragraphIndex: number } => {
+        if (isPdf) {
+            const pageRefs = paragraphRefs.filter((item) => item.text.trim() && (item.pageNum || 0) === pdfCurrentPage);
+            if (pageRefs.length > 0) {
+                return {
+                    chapterIndex: pageRefs[0].chapterIndex,
+                    paragraphIndex: Math.min(...pageRefs.map((item) => item.paragraphIndex)),
+                };
+            }
+            return { chapterIndex: Math.floor((pdfCurrentPage - 1) / PDF_PAGES_PER_CHAPTER), paragraphIndex: 0 };
+        }
+        if (isScrollMode) {
+            const content = scrollContentRef.current;
+            const body = scrollRef.current;
+            if (content && body) {
+                const centerPoint = body.getBoundingClientRect().top + body.clientHeight / 2;
+                let best: { chapterIndex: number; paragraphIndex: number; dist: number } | null = null;
+                for (const chunk of content.querySelectorAll<HTMLElement>("[data-chapter-index]")) {
+                    const ci = Number(chunk.getAttribute("data-chapter-index"));
+                    for (const block of chunk.querySelectorAll<HTMLElement>("[data-paragraph-index]")) {
+                        const rect = block.getBoundingClientRect();
+                        if (rect.height <= 0) continue;
+                        const pi = Number(block.getAttribute("data-paragraph-index"));
+                        const dist = rect.bottom < centerPoint ? centerPoint - rect.bottom : rect.top > centerPoint ? rect.top - centerPoint : 0;
+                        if (!best || dist < best.dist) best = { chapterIndex: ci, paragraphIndex: pi, dist };
+                        if (dist === 0) break;
+                    }
+                    if (best && best.dist === 0) break;
+                }
+                if (best) return { chapterIndex: best.chapterIndex, paragraphIndex: best.paragraphIndex };
+            }
+            // DOM 不可用时回退到 state 估算
+            const refs = paragraphRefs.filter((item) => item.chapterIndex === chapterIndex && item.text.trim());
+            if (refs.length > 0) {
+                const idx = Math.round(Math.max(0, Math.min(1, scrollFraction)) * (refs.length - 1));
+                return { chapterIndex, paragraphIndex: refs[idx].paragraphIndex };
+            }
+            return { chapterIndex, paragraphIndex: 0 };
+        }
+        // 翻页模式：当前页首个内容段落
+        const pageItems = txtPages[txtPage] || [];
+        const indexes = pageItems
+            .filter((item): item is Extract<TxtPageItem, { kind: "line" | "annotation" }> => item.kind === "line" || item.kind === "annotation")
+            .map((item) => item.paragraphIndex);
+        if (indexes.length > 0) return { chapterIndex, paragraphIndex: Math.min(...indexes) };
+        return { chapterIndex, paragraphIndex: 0 };
+    }, [chapterIndex, isPdf, isScrollMode, paragraphRefs, pdfCurrentPage, scrollFraction, txtPage, txtPages]);
+
     const buildDiscussContext = useCallback((sourceChapters: BookChapter[] = chapters): ReadingDiscussContext | null => {
         const sourceParagraphRefs = buildParagraphRefsFromChapters(sourceChapters);
         if (sourceParagraphRefs.length === 0) return null;
@@ -1406,10 +1457,16 @@ export function ReadingViewer({ book, onBack }: Props) {
                     .map((item) => item.paragraphIndex),
             )].sort((a, b) => a - b);
         } else if (isScrollMode) {
-            // 滚动模式没有分页：以当前滚动比例估算正在阅读的段落窗口
+            // 滚动模式没有分页：以视口中心实际所在段落（DOM 定位）估算阅读窗口，
+            // 避免章节窗口平移后 scrollFraction 陈旧 / 回读上一章时 chapterIndex 滞后导致注入内容偏后
+            const centerPos = getReadingCenter();
+            focusChapterIndex = centerPos.chapterIndex;
             const chapterRefs0 = sourceParagraphRefs.filter((item) => item.chapterIndex === focusChapterIndex && item.text.trim());
             if (chapterRefs0.length === 0) return null;
-            const center = Math.round(Math.max(0, Math.min(1, scrollFraction)) * (chapterRefs0.length - 1));
+            const centerIdx = chapterRefs0.findIndex((item) => item.paragraphIndex === centerPos.paragraphIndex);
+            const center = centerIdx >= 0
+                ? centerIdx
+                : Math.round(Math.max(0, Math.min(1, scrollFraction)) * (chapterRefs0.length - 1));
             const half = Math.max(1, Math.ceil(DISCUSS_MAX_PARAGRAPHS / 3));
             focusParagraphIndexes = chapterRefs0
                 .slice(Math.max(0, center - half), Math.min(chapterRefs0.length, center + half + 1))
@@ -1474,11 +1531,13 @@ export function ReadingViewer({ book, onBack }: Props) {
         ].join("\n");
 
         return {
+            focusChapterIndex,
+            focusStartParagraph: focusParagraphIndexes[0],
             chapterTitle: chapterTitleText,
             chapterContent,
             annotations: contextAnnotations,
         };
-    }, [annotations, book.title, chapterIndex, chapters, currentChapter?.title, isPdf, isScrollMode, pdfCurrentPage, scrollFraction, txtPage, txtPages]);
+    }, [annotations, book.title, chapterIndex, chapters, currentChapter?.title, getReadingCenter, isPdf, isScrollMode, pdfCurrentPage, scrollFraction, txtPage, txtPages]);
 
     // Chat send — parse AI response like chat-room does
     const handleSend = async () => {
@@ -1512,11 +1571,8 @@ export function ReadingViewer({ book, onBack }: Props) {
                 : chapters;
             const discussContext = buildDiscussContext(sourceChapters);
             if (!discussContext) return;
-            // 注入当前阅读位置之前的摘要
-            const currentChapterIdx = isPdf
-                ? Math.floor((pdfCurrentPage - 1) / PDF_PAGES_PER_CHAPTER)
-                : chapterIndex;
-            const discussSummaryText = await getReadingSummaryForContext(currentChapterIdx, 0);
+            // 注入当前阅读位置（与正文上下文同一焦点来源）之前的摘要
+            const discussSummaryText = await getReadingSummaryForContext(discussContext.focusChapterIndex, discussContext.focusStartParagraph);
             const rawReply = await generateReadingChat(session, book, discussContext, companionId, discussSummaryText);
             if (rawReply) {
                 const { reply, actions } = parseReadingDiscussResponse(rawReply);
@@ -2105,6 +2161,15 @@ export function ReadingViewer({ book, onBack }: Props) {
                 const newPrev = metrics.get(chapterIndex - 1);
                 body.scrollTop = Math.max(0, action.oldScrollTop + (newPrev ? newPrev.height : 0));
             }
+            // 平移后按新章块重算章内比例：否则 scrollFraction 停留旧值（前向≈1 / 后向≈0），
+            // 进度保存与讨论注入会以错误的章内位置计算（偏后一屏甚至偏后一章）
+            const cur = metrics.get(chapterIndex);
+            if (cur) {
+                const span = Math.max(1, cur.height - body.clientHeight);
+                const fraction = Math.min(1, Math.max(0, (body.scrollTop - cur.top) / span));
+                scrollFractionRef.current = fraction;
+                setScrollFraction(fraction);
+            }
             return;
         }
 
@@ -2299,7 +2364,7 @@ export function ReadingViewer({ book, onBack }: Props) {
                                         (annotation) => annotation.chapterIndex === chapter.index && annotation.paragraphIndex === pIndex
                                     );
                                     return (
-                                        <div key={pIndex} className="reading-scroll-block">
+                                        <div key={pIndex} className="reading-scroll-block" data-paragraph-index={pIndex}>
                                             {paragraph.split("\n").map((segment, sIndex) => (
                                                 <p
                                                     key={sIndex}
@@ -2894,12 +2959,11 @@ export function ReadingViewer({ book, onBack }: Props) {
                     </div>
                     <div style={{ maxHeight: "55vh", overflowY: "auto" }}>
                         {(() => {
-                            const currentChapterIdx = isPdf
-                                ? Math.floor((pdfCurrentPage - 1) / PDF_PAGES_PER_CHAPTER)
-                                : chapterIndex;
+                            // 「当前注入」以真实阅读中心段落定位（与共读讨论同一来源），不再固定章首
+                            const center = getReadingCenter();
                             let displaySummaries: ReadingSummary[] = [];
                             if (summaryDialogTab === "injected") {
-                                displaySummaries = getSummariesForInjection(summaries, currentChapterIdx, 0);
+                                displaySummaries = getSummariesForInjection(summaries, center.chapterIndex, center.paragraphIndex);
                             } else if (summaryDialogTab === "distilled") {
                                 displaySummaries = summaries.filter(s => s.isDistilled);
                             } else {

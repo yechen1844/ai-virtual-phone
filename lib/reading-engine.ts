@@ -42,6 +42,10 @@ export type AnnotationTarget = {
 };
 
 export type ReadingDiscussContext = {
+    /** 焦点章节（当前阅读中心所在章），供摘要注入与正文上下文保持同一位置来源 */
+    focusChapterIndex: number;
+    /** 焦点窗口首段（当前阅读中心段落） */
+    focusStartParagraph: number;
     chapterTitle: string;
     chapterContent: string;
     annotations: ReadingAnnotation[];
@@ -490,9 +494,9 @@ export function getSummariesForInjection(
                 result.push(s);
             }
         } else {
-            // 普通摘要：检查是否在当前位置之前
+            // 普通摘要：检查是否不晚于当前位置（摘要末段=当前段也算已读，摘要描述的是已读内容）
             const summaryPos = encodeReadingPosition(s.chapterIndex, s.endParagraph);
-            if (summaryPos < currentPos) {
+            if (summaryPos <= currentPos) {
                 // 检查是否被某个提炼摘要覆盖（被覆盖的不注入）
                 const coveredByDistilled = allSummaries.some(
                     d => d.isDistilled

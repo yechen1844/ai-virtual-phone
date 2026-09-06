@@ -495,6 +495,8 @@ export function DebugPromptPanel() {
                     const session = chatSessionOptions.find(option => !option.session.isGroup && option.session.contactId === extraCharacterId)?.session;
                     if (!session) throw new Error("没有找到这个角色的聊天会话，无法预览阅读对话");
                     result = await previewReadingDiscussPrompt(session, book, {
+                        focusChapterIndex: chapter.index,
+                        focusStartParagraph: 0,
                         chapterTitle: chapter.title,
                         chapterContent: [
                             "当前阅读中心：整章",

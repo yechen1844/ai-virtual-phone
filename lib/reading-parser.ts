@@ -125,11 +125,16 @@ export function decodeTxtArrayBuffer(buffer: ArrayBuffer, preferredEncoding?: st
 }
 
 // ── Chapter heading patterns ──
+/** 无任何章节标题时的兜底拆分阈值：每达到该字数拆为 1 章（在段落边界切分） */
+export const FALLBACK_CHAPTER_CHARS = 10000;
+
 const CHAPTER_PATTERNS = [
     /^第[零一二三四五六七八九十百千\d]+[章节回卷集篇]/,       // 第X章, 第X节, 第X回...
     /^Chapter\s+\d+/i,                                        // Chapter 1
     /^CHAPTER\s+[IVXLCDM\d]+/,                                // CHAPTER IV
     /^卷[零一二三四五六七八九十百千\d]+/,                       // 卷一
+    /^\d{1,4}(?:[、.．:：]\s*|\s+)\S.{0,49}$/,                 // 数字+标题: "1 初遇" "12.风起"
+    /^\d{1,4}$/,                                               // 纯数字编号行: "1234"
     /^={3,}/,                                                  // ===
     /^-{3,}/,                                                  // ---
     /^#{1,3}\s+/,                                              // Markdown # heading
@@ -179,15 +184,27 @@ export function parseTxtContent(text: string, fileName?: string, mode: TxtParagr
         }
     }
 
-    // No chapters found → entire text is one chapter
+    // No chapter headings at all → 按字数兜底拆分：每 FALLBACK_CHAPTER_CHARS 字约拆为 1 章（在段落边界切分）
     if (chapterStarts.length === 0) {
-        return {
-            title: bookTitle,
-            chapters: [{
-                title: "全文",
-                paragraphs: splitParagraphs(trimBlankEdges(lines), resolvedMode),
-            }],
-        };
+        const paragraphs = splitParagraphs(trimBlankEdges(lines), resolvedMode);
+        const chapters: ParsedChapter[] = [];
+        let bucket: string[] = [];
+        let acc = 0;
+        for (const paragraph of paragraphs) {
+            bucket.push(paragraph);
+            acc += paragraph.replace(/\s+/g, "").length;
+            if (acc >= FALLBACK_CHAPTER_CHARS) {
+                chapters.push({ title: `第${chapters.length + 1}章`, paragraphs: bucket });
+                bucket = [];
+                acc = 0;
+            }
+        }
+        if (bucket.length > 0) {
+            chapters.push({ title: `第${chapters.length + 1}章`, paragraphs: bucket });
+        }
+        // 总字数不足一章时保持原有的「全文」单章形态
+        if (chapters.length === 1) chapters[0].title = "全文";
+        return { title: bookTitle, chapters };
     }
 
     // Build chapters
@@ -235,6 +252,8 @@ const LENIENT_TITLE_PATTERNS = [
     /^[Cc]hapter\s+\d+/,
     /^[Pp]art\s+[IVXLCDM\d]+/,
     /^[零一二三四五六七八九十百千\d]+[、.．:：]/,           // 一、 / 1、 / 1.
+    /^\d{1,4}(?:[、.．:：]\s*|\s+)\S/,                     // 数字+标题: 1 初遇
+    /^\d{1,4}$/,                                           // 纯数字编号行
     /^[（(][零一二三四五六七八九十百千\d]+[)）]/,           // （一）/（1）
     /^《.+》$/,                                            // 《书名》式短行
     /^[=#*\-]{3,}$/,                                      // 分隔线
