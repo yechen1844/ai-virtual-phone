@@ -526,6 +526,9 @@ export async function generateMascotReply({
         history: workingMessages,
         characterBackupIds: new Set<string>(),
     };
+    // 去重池：同一轮任务里「同名工具 + 相同参数」只执行一次、只存一条结果。
+    // 只折叠完全一致的调用；不同参数的批量更新照常各自执行，不影响正常多条目修改。
+    const executedToolSignatures = new Set<string>();
 
     try {
         for (let round = 0; round < MAX_ROUNDS; round += 1) {
@@ -656,6 +659,12 @@ export async function generateMascotReply({
                         : undefined;
                     const displayName = call.name;
                     const protocolName = nativeCall?.name || call.name;
+
+                    // 去重：重复的「同名工具 + 相同参数」不再执行，也不追加新的 tool 占位/结果，
+                    // 避免模型一轮吐出大量相同调用时把存储灌满、挤掉真实聊天历史。
+                    const signature = `${call.name}:${JSON.stringify(call.args ?? {})}`;
+                    if (executedToolSignatures.has(signature)) continue;
+                    executedToolSignatures.add(signature);
 
                     const runningMessage: MascotMsg = {
                         role: "tool",

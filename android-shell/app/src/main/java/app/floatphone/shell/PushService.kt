@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import android.webkit.CookieManager
 import android.media.session.MediaSession
 import androidx.core.app.NotificationCompat
@@ -36,6 +37,7 @@ import kotlin.concurrent.thread
 class PushService : Service() {
 
     companion object {
+        private const val LOG_TAG = "FloatShellPush"
         private const val CH_KEEPALIVE = "shell_keepalive"
         private const val CH_MESSAGES = "shell_messages"
         private const val CH_CALLS = "shell_calls"
@@ -107,6 +109,7 @@ class PushService : Service() {
             updateKeepAlive("已连接，等待角色消息")
             val closedNormally = runSocket(config)
             if (stopped) break
+            Log.d(LOG_TAG, "connLoop: socket ended normal=$closedNormally, sleeping=${if (closedNormally) 3 else backoffSec}s")
             updateKeepAlive("连接断开，重连中…")
             sleepSec(if (closedNormally) 3 else backoffSec)
             backoffSec = (backoffSec * 2).coerceAtMost(120)
@@ -201,6 +204,7 @@ class PushService : Service() {
 
         val listener = object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                Log.d(LOG_TAG, "onOpen: joined ${topic}")
                 val join = JSONObject()
                     .put("topic", topic)
                     .put("event", "phx_join")
@@ -271,11 +275,13 @@ class PushService : Service() {
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                Log.d(LOG_TAG, "onClosed: code=$code reason=$reason")
                 normal = true
                 synchronized(lock) { done = true; lock.notifyAll() }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                Log.d(LOG_TAG, "onFailure: ${t!!::class.java.simpleName} ${t.message} resp=${response?.code} ${response?.message}")
                 synchronized(lock) { done = true; lock.notifyAll() }
             }
         }

@@ -490,6 +490,24 @@ export function MascotChatRoom({ onBack, onDeleted }: MascotChatRoomProps) {
     const visibleMessageEntries = useMemo(() => (
         allVisibleMessageEntries.slice(-visibleMascotMessageCount)
     ), [allVisibleMessageEntries, visibleMascotMessageCount]);
+    // 渲染层保护：把连续的同名「正在调用 X…」运行占位卡合并成一张（×N），
+    // 防止工具启动事件一次性涌出时几十张占位卡刷屏。已完成/不同名的不合并。
+    const renderedMessageEntries = useMemo(() => {
+        const out: Array<{ msg: MascotMsg; rawIndex: number; sameRunCount: number }> = [];
+        for (const { msg, rawIndex } of visibleMessageEntries) {
+            if (msg.role === "tool" && msg.toolSuccess === undefined) {
+                const last = out[out.length - 1];
+                if (last && last.sameRunCount > 0 && last.msg.role === "tool" && last.msg.toolName === msg.toolName) {
+                    last.sameRunCount += 1;
+                    continue;
+                }
+                out.push({ msg, rawIndex, sameRunCount: 1 });
+            } else {
+                out.push({ msg, rawIndex, sameRunCount: 0 });
+            }
+        }
+        return out;
+    }, [visibleMessageEntries]);
     const hasMoreMascotMessages = allVisibleMessageEntries.length > visibleMessageEntries.length;
     const latestVisibleChatMessage = [...chat.messages].reverse().find((msg) => !msg.hidden && msg.role !== "tool");
     const canGenerateReply = !chat.isThinking && latestVisibleChatMessage?.role === "user";
@@ -1032,13 +1050,14 @@ export function MascotChatRoom({ onBack, onDeleted }: MascotChatRoomProps) {
                         </svg>
                     </button>
                 )}
-                {visibleMessageEntries.map(({ msg, rawIndex }) => {
+                {renderedMessageEntries.map(({ msg, rawIndex, sameRunCount }) => {
                     if (msg.role === "tool") {
                         const label = msg.displayText || msg.text || msg.toolDisplayName || msg.toolName || "工具";
                         const shownName = msg.toolDisplayName || msg.toolName || "工具";
                         const running = msg.toolSuccess === undefined;
+                        const dupSuffix = running && sameRunCount > 1 ? `（×${sameRunCount}）` : "";
                         const toolSummary = running
-                            ? `正在调用 ${shownName}…`
+                            ? `正在调用 ${shownName}…${dupSuffix}`
                             : `${shownName}${label && label !== shownName ? `：${label.slice(0, 80)}${label.length > 80 ? "…" : ""}` : ""}`;
                         return (
                             <div key={`${rawIndex}-${msg.createdAt || ""}`} className="chat-msg-wrapper" data-role="system">
