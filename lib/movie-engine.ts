@@ -2,11 +2,11 @@
 // 架构严格照抄 reading-engine：预设条目走 assemblePromptPayload、记忆走统一水位线。
 // 讨论消息存 char 主会话（origin: "movie_discuss"），隔离靠三层过滤，不搞独立 contactId。
 
-import type { Movie, MovieAct, MovieScene, MovieFrame, SubtitleCue, MovieSegmentationResult, MovieDiscussContext } from "./movie-types";
+import type { Movie, MovieAct, MovieScene, MovieFrame, SubtitleCue, MovieSegmentationResult, MovieDiscussContext, MovieDanmaku } from "./movie-types";
 import type { ChatSession } from "./chat-storage";
 import { loadChatMessages } from "./chat-storage";
 import { loadCharacters } from "./character-storage";
-import { saveSegmentation, saveFrames, loadScenes, loadFrames } from "./movie-storage";
+import { saveSegmentation, saveFrames, saveDanmaku, loadScenes, loadFrames } from "./movie-storage";
 import { buildSubtitleWindow, sliceSubtitleText } from "./movie-parser";
 import {
     resolveBinding,
@@ -633,7 +633,7 @@ export async function generateMovieChat(
         sceneSummary: context.sceneSummary,
         movieSummary: context.movieSummary,
         sceneSubtitleWindow: context.sceneSubtitleWindow,
-        frameHint: buildFrameHint(await loadFramesForContext(movie.id, context), { startSeconds: 0, endSeconds: context.positionSeconds } as MovieScene),
+        frameHint: context.frameHint,
         moviePosition: `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`,
         history,
     });
@@ -679,7 +679,112 @@ export async function generateMovieChat(
     return parseMovieDiscussResponse(responseText);
 }
 
-async function loadFramesForContext(movieId: string, context: MovieDiscussContext): Promise<MovieFrame[]> {
-    const all = await loadFrames(movieId);
-    return all.filter(f => Math.abs(f.timeSeconds - context.positionSeconds) < 3600);
+// ── 弹幕批量生成（进新场自动 / 手动补充）──
+
+/** 解析 [弹幕 秒=N]内容[/弹幕]（容忍缺失闭合标签），N 为场内相对秒数 */
+const DANMAKU_GLOBAL_RE = /\[弹幕\s*秒\s*[=＝]\s*(\d+)\s*\]([^[\n]*(?:\n[^[\n]*)*)/g;
+
+export function parseDanmakuResponse(raw: string): { timeSeconds: number; content: string }[] {
+    const items: { timeSeconds: number; content: string }[] = [];
+    for (const m of raw.matchAll(DANMAKU_GLOBAL_RE)) {
+        const rel = Number(m[1]);
+        const content = (m[2] || "").trim();
+        if (Number.isFinite(rel) && content) items.push({ timeSeconds: rel, content });
+    }
+    return items;
+}
+
+function buildDanmakuFallback(params: {
+    movieTitle: string;
+    sceneTitle: string;
+    sceneSummary: string;
+    sceneSubtitleWindow: string;
+    frameHint: string;
+    characterName: string;
+    userName: string;
+}): string {
+    const p = params;
+    return [
+        "<movie_danmaku_instruction>",
+        `你正在和${p.userName}一起观看电影「${p.movieTitle}」。${p.characterName}是你的身份，弹幕是你的实时吐槽，像朋友窝在沙发上一起看片时随口说的话。`,
+        "",
+        `当前场：${p.sceneTitle}`,
+        p.sceneSummary,
+        "",
+        "该场的字幕（按时间顺序）：",
+        p.sceneSubtitleWindow,
+        "",
+        p.frameHint,
+        "",
+        "请以该角色的口吻为本场生成 5~10 条弹幕，散布在本场时间轴的不同时间点上。",
+        "格式：[弹幕 秒=N]内容[/弹幕]，N 为本场范围内的秒数。",
+        "要求：",
+        "- 每条 ≤30 字，口语化、自然、符合角色的性格",
+        "- 可以吐槽、感叹、联想、共情、玩梗，但不要复述字幕原文",
+        "- 禁止剧透本场之后的内容",
+        "- 禁止用星号（*）或括号包裹动作描写",
+        "</movie_danmaku_instruction>",
+    ].join("\n");
+}
+
+/** 为指定场批量生成弹幕并入库，返回新产生的弹幕 */
+export async function generateMovieDanmaku(
+    movie: Movie,
+    scene: MovieScene,
+    characterId: string,
+): Promise<MovieDanmaku[]> {
+    const character = loadCharacters().find(c => c.id === characterId);
+    if (!character) return [];
+
+    const sceneFrames = (await loadFrames(movie.id)).filter(f => f.sceneId === scene.id);
+    const resolved = await resolveMovieInput(characterId, ["movie", "danmaku"], {
+        movieTitle: movie.title,
+        sceneTitle: `第${scene.index + 1}场 ${scene.title}（${formatSeconds(scene.startSeconds)}-${formatSeconds(scene.endSeconds)}）`,
+        sceneSummary: scene.summary,
+        sceneSubtitleWindow: scene.subtitleText,
+        frameHint: buildFrameHint(sceneFrames, scene),
+    });
+    if (!resolved?.apiConfig) return [];
+
+    const { input, apiConfig, preset } = resolved;
+    const llmMessages = assemblePromptPayload(input);
+    ensureMovieInstruction(llmMessages, "<movie_danmaku_instruction>", buildDanmakuFallback({
+        movieTitle: movie.title,
+        sceneTitle: `第${scene.index + 1}场 ${scene.title}（${formatSeconds(scene.startSeconds)}-${formatSeconds(scene.endSeconds)}）`,
+        sceneSummary: scene.summary,
+        sceneSubtitleWindow: scene.subtitleText,
+        frameHint: buildFrameHint(sceneFrames, scene),
+        characterName: character.name,
+        userName: input.userIdentity?.name ?? "用户",
+    }));
+
+    const responseText = await callMovieLLM(
+        apiConfig!,
+        preset,
+        llmMessages,
+        character.name,
+        input.regexes,
+        input.appTags,
+        input.userIdentity?.name,
+    );
+    if (!responseText) return [];
+
+    // 副 app 活动计数进统一水位线
+    recordCharacterActivity(characterId, character.name, 1);
+
+    const items: MovieDanmaku[] = [];
+    for (const d of parseDanmakuResponse(responseText)) {
+        const abs = Math.min(Math.max(scene.startSeconds + d.timeSeconds, scene.startSeconds), Math.max(scene.endSeconds - 1, scene.startSeconds));
+        items.push({
+            id: `mdk_${movie.id}_${scene.index}_${Date.now().toString(36)}_${items.length}`,
+            movieId: movie.id,
+            timeSeconds: abs,
+            characterId: character.id,
+            characterName: character.name,
+            content: d.content.slice(0, 50),
+            createdAt: new Date().toISOString(),
+        });
+    }
+    await saveDanmaku(items);
+    return items;
 }
