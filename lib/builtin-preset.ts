@@ -6,7 +6,7 @@ import type { PresetConfig } from "./settings-types";
 import { getCheckPhonePromptTags } from "./checkphone-config";
 
 export const BUILTIN_PRESET_ID = "builtin_default_v1";
-export const BUILTIN_PRESET_VERSION = 264; // 升版本会用出厂内容重写用户的内置预设副本（自定义会丢），非必要不升
+export const BUILTIN_PRESET_VERSION = 265; // 升版本会用出厂内容重写用户的内置预设副本（自定义会丢），非必要不升
 
 export function createBuiltinPreset(): PresetConfig {
     const now = Date.now();
@@ -111,6 +111,9 @@ export function createBuiltinPreset(): PresetConfig {
             { identifier: "dwelling_item_detail", enabled: true },
             { identifier: "reading_annotation", enabled: true },
             { identifier: "reading_discuss", enabled: true },
+            { identifier: "movie_segment", enabled: true },
+            { identifier: "movie_danmaku", enabled: true },
+            { identifier: "movie_discuss", enabled: true },
             { identifier: "cocreate_write", enabled: true },
             { identifier: "cocreate_discuss", enabled: true },
             { identifier: "cocreate_tools_write", enabled: true },

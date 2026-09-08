@@ -162,6 +162,86 @@ function buildFrameHint(frames: MovieFrame[], scene: MovieScene): string {
     return `<movie_frames>\n以下附带本场（${formatSeconds(scene.startSeconds)}-${formatSeconds(scene.endSeconds)}）的 ${frames.length} 张预抽画面关键帧，时间点：${times}。请结合画面理解剧情，注意帧之间可能有省略。\n</movie_frames>\n`;
 }
 
+// ── 兜底注入：预设条目缺失时的保底指令 ──
+// 用户的生效预设可能是自定义副本、没有 movie_* 条目（或未启用）。
+// assemblePromptPayload 后检测标记是否存在，缺失则用实际数据现拼指令插入，
+// 保证「分段/讨论」无论如何都有完整指令。预设里配了条目时仍以预设为准（可自定义）。
+
+function ensureMovieInstruction(llmMessages: LLMMessage[], marker: string, fallback: string): void {
+    const present = llmMessages.some(m => typeof m.content === "string" && m.content.includes(marker));
+    if (present) return;
+    console.warn(`[Movie] 预设未注入 ${marker}，使用引擎兜底指令`);
+    // 插到最后一条连续 system 消息之后（保持 system 区块相邻），否则置于最前
+    let insertAt = 0;
+    for (let i = 0; i < llmMessages.length; i++) {
+        if (llmMessages[i].role === "system") insertAt = i + 1;
+        else break;
+    }
+    llmMessages.splice(insertAt, 0, { role: "system", content: fallback });
+}
+
+function buildSegmentFallback(movieTitle: string, sceneBoundaries: string): string {
+    return [
+        "<movie_segment_instruction>",
+        `你是一位专业的影视结构分析师。用户准备和伴侣一起观看电影「${movieTitle}」，需要你把电影划分为便于边看边聊的段落。`,
+        "",
+        "以下是这部电影按时间排序的完整字幕文本，其中已用 [候选切点 秒=N] 标出了天然的场面转换边界（沉默间隙/画面突变）：",
+        sceneBoundaries,
+        "",
+        "请完成两级划分：",
+        "1. 把电影划分为 4~8 个「幕」（对应起承转合的叙事骨架）；",
+        "2. 在幕内把电影划分为 20~40 个「场」（每场约 3~6 分钟），场必须以候选切点为边界，不得自行发明边界时间。",
+        "",
+        "输出格式（严格遵循，每场一条）：",
+        "[幕 序号=N]幕标题[/幕]",
+        "[场 开始=秒 结束=秒 幕=N]场标题|情节概括[/场]",
+        "",
+        "要求：",
+        "- 场标题简短（10字内），情节概括 60~120 字，写清该场的关键事件、人物动态与情绪走向",
+        "- 严格按时间顺序，各场时间范围首尾相接、覆盖全片，不重叠不遗漏",
+        "- 只输出标记，不要输出任何其他内容",
+        "</movie_segment_instruction>",
+    ].join("\n");
+}
+
+function buildDiscussFallback(params: {
+    movieTitle: string;
+    sceneTitle: string;
+    sceneSummary: string;
+    movieSummary: string;
+    sceneSubtitleWindow: string;
+    frameHint: string;
+    moviePosition: string;
+    characterName: string;
+    userName: string;
+}): string {
+    const p = params;
+    return [
+        "<movie_context>",
+        `你正在和${p.userName}一起观看电影「${p.movieTitle}」。`,
+        `当前正在看：${p.sceneTitle}（播放到 ${p.moviePosition}）`,
+        "",
+        p.sceneSummary,
+        "",
+        p.movieSummary,
+        "",
+        `当前场次附近的字幕（按时间顺序，你只「看过」已播放的部分）：`,
+        p.sceneSubtitleWindow,
+        "",
+        p.frameHint,
+        "</movie_context>",
+        "",
+        "<movie_instruction>",
+        `${p.userName}想和你边看边聊。请围绕当前正在发生的剧情自然回复，可以评价画面节奏、猜测走向、分享感受、联想你们共同的经历。`,
+        "- 回复简短自然，像朋友间坐在沙发上小声聊天，不要写长文影评",
+        "- 你只知道已经播放过的内容，绝对不要剧透后面的剧情",
+        "- 你的记忆和性格与平时聊天完全一致",
+        "- 如果你想发一条弹幕，先正常回复，再在末尾追加动作尾注：【发弹幕 秒=N】内容（N 为当前场内秒数，内容 ≤30 字）",
+        "- 禁止用星号（*）或括号包裹动作描写、神态描写或旁白",
+        "</movie_instruction>",
+    ].join("\n");
+}
+
 // ── 物理边界候选 + LLM 分段 ──
 
 /**
@@ -292,6 +372,7 @@ export async function generateMovieSegmentation(
 
     const { input, apiConfig, preset } = resolved;
     const llmMessages = assemblePromptPayload(input);
+    ensureMovieInstruction(llmMessages, "<movie_segment_instruction>", buildSegmentFallback(movie.title, sourceText));
     const responseText = await callWithRetry(() => callMovieLLM(
         apiConfig!,
         preset,
@@ -560,6 +641,17 @@ export async function generateMovieChat(
 
     const { input, apiConfig, preset } = resolved;
     const llmMessages = assemblePromptPayload(input);
+    ensureMovieInstruction(llmMessages, "<movie_instruction>", buildDiscussFallback({
+        movieTitle: movie.title,
+        sceneTitle: context.sceneTitle,
+        sceneSummary: context.sceneSummary,
+        movieSummary: context.movieSummary,
+        sceneSubtitleWindow: context.sceneSubtitleWindow,
+        frameHint: context.frameHint,
+        moviePosition: `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`,
+        characterName: character.name,
+        userName: input.userIdentity?.name ?? "用户",
+    }));
     // 帧图以多模态 parts 附在 payload 末尾（detail low 省 token）
     if (context.frameDataUrls.length > 0) {
         llmMessages.push({
