@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { loadProgress, saveProgress, loadScenes, loadCues, loadDanmaku } from "@/lib/movie-storage";
 import { findCurrentScene, generateMovieDanmaku } from "@/lib/movie-engine";
+import { loadCharacters } from "@/lib/character-storage";
 import type { Movie, MovieScene, SubtitleCue, MovieDanmaku } from "@/lib/movie-types";
 import { MovieDiscussPanel } from "./movie-discuss-panel";
 import { MovieSegmentDialog } from "./movie-segment-dialog";
@@ -31,10 +32,13 @@ export function MoviePlayer({ movie, onBack }: Props) {
     const [companionId, setCompanionId] = useState("");
     const [showDiscuss, setShowDiscuss] = useState(false);
     const [showSegments, setShowSegments] = useState(false);
-    const [isFullscreen, setIsFullscreen] = useState(false);
+    // 沉浸模式：隐藏顶栏（尝试锁横屏），顶部下滑唤出、4 秒自动隐藏
+    const [immersive, setImmersive] = useState(false);
+    const [showTopBar, setShowTopBar] = useState(true);
     const [danmakuList, setDanmakuList] = useState<MovieDanmaku[]>([]);
     const [generatingSceneIdx, setGeneratingSceneIdx] = useState<number | null>(null);
     const [danmakuNotice, setDanmakuNotice] = useState("");
+
     const videoRef = useRef<HTMLVideoElement>(null);
     const videoAreaRef = useRef<HTMLDivElement>(null);
     const danmakuLayerRef = useRef<HTMLDivElement>(null);
@@ -47,14 +51,13 @@ export function MoviePlayer({ movie, onBack }: Props) {
     const danmakuRef = useRef<MovieDanmaku[]>([]);
     const generatingSceneRef = useRef<number | null>(null);
     const companionIdRef = useRef("");
-    const cuesRef = useRef<SubtitleCue[]>([]);
-    const showDiscussRef = useRef(false);
 
     scenesRef.current = scenes;
     danmakuRef.current = danmakuList;
-    cuesRef.current = cues;
     companionIdRef.current = companionId;
-    showDiscussRef.current = showDiscuss;
+
+    const companionName = loadCharacters().find(c => c.id === companionId)?.name ?? "讨论";
+    const currentScene = findCurrentScene(scenes, position);
 
     // 加载进度 / 场次 / 字幕 / 弹幕
     useEffect(() => {
@@ -89,35 +92,9 @@ export function MoviePlayer({ movie, onBack }: Props) {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [movie.id]);
 
-    // 全屏状态监听
-    useEffect(() => {
-        const onFsChange = () => setIsFullscreen(Boolean(document.fullscreenElement));
-        document.addEventListener("fullscreenchange", onFsChange);
-        return () => document.removeEventListener("fullscreenchange", onFsChange);
-    }, []);
-
-    const handleFilePicked = (file: File | null) => {
-        if (!file) return;
-        setFileError("");
-        const url = URL.createObjectURL(file);
-        if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
-        objectUrlRef.current = url;
-        setVideoUrl(url);
-        setNeedFile(false);
-    };
-
-    const toggleFullscreen = useCallback(() => {
-        const el = videoAreaRef.current;
-        if (!el) return;
-        if (document.fullscreenElement) {
-            void document.exitFullscreen().catch(() => {});
-        } else {
-            void el.requestFullscreen?.().catch(() => {
-                // WebView 兜底：尝试 video 元素自身的原生全屏
-                const v = videoRef.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null;
-                v?.webkitEnterFullscreen?.();
-            });
-        }
+    const showNotice = useCallback((text: string) => {
+        setDanmakuNotice(text);
+        window.setTimeout(() => setDanmakuNotice(""), 4000);
     }, []);
 
     // ── 弹幕：spawn 一条到 overlay（命令式 DOM + WAAPI，重渲染零开销）──
@@ -164,21 +141,53 @@ export function MoviePlayer({ movie, onBack }: Props) {
             .then(items => {
                 if (items.length > 0) {
                     setDanmakuList(prev => [...prev, ...items].sort((a, b) => a.timeSeconds - b.timeSeconds));
-                    spawnedRef.current = new Set([...spawnedRef.current].filter(id => !items.some(it => it.id === id)));
+                    showNotice(`已生成 ${items.length} 条弹幕`);
                 } else {
-                    setDanmakuNotice("本场没有生成弹幕（可稍后手动重试）");
-                    window.setTimeout(() => setDanmakuNotice(""), 4000);
+                    showNotice("本场没有生成弹幕，可稍后手动重试");
                 }
             })
-            .catch(() => {
-                setDanmakuNotice("弹幕生成失败，可稍后手动重试");
-                window.setTimeout(() => setDanmakuNotice(""), 4000);
+            .catch((err: unknown) => {
+                showNotice(`弹幕生成失败：${err instanceof Error ? err.message : String(err)}`);
             })
             .finally(() => {
                 generatingSceneRef.current = null;
                 setGeneratingSceneIdx(null);
             });
-    }, [movie]);
+    }, [movie, showNotice]);
+
+    // 换幕即触发（React effect 监听，比挂在 timeupdate 上可靠）
+    const currentSceneIdx = currentScene?.index ?? -1;
+    useEffect(() => {
+        if (needFile) return;
+        if (currentSceneIdx < 0) return;
+        const scene = scenes.find(s => s.index === currentSceneIdx);
+        if (scene) maybeAutoGenerate(scene);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [currentSceneIdx, needFile]);
+
+    // ── 手动生成当前场弹幕 ──
+    const handleGenerateDanmaku = useCallback(() => {
+        const scene = findCurrentScene(scenesRef.current, positionRef.current);
+        if (!scene || generatingSceneRef.current !== null) return;
+        generatingSceneRef.current = scene.index;
+        setGeneratingSceneIdx(scene.index);
+        void generateMovieDanmaku(movie, scene, companionIdRef.current)
+            .then(items => {
+                if (items.length > 0) {
+                    setDanmakuList(prev => [...prev, ...items].sort((a, b) => a.timeSeconds - b.timeSeconds));
+                    showNotice(`已生成 ${items.length} 条弹幕`);
+                } else {
+                    showNotice("没有解析出弹幕，可稍后重试");
+                }
+            })
+            .catch((err: unknown) => {
+                showNotice(`弹幕生成失败：${err instanceof Error ? err.message : String(err)}`);
+            })
+            .finally(() => {
+                generatingSceneRef.current = null;
+                setGeneratingSceneIdx(null);
+            });
+    }, [movie, showNotice]);
 
     const handleTimeUpdate = useCallback(() => {
         const video = videoRef.current;
@@ -206,17 +215,10 @@ export function MoviePlayer({ movie, onBack }: Props) {
                 spawnDanmaku(d);
             }
         }
-
-        // 进新场 → 自动生成弹幕
-        const scene = findCurrentScene(scenesRef.current, video.currentTime);
-        if (scene && scene.index !== generatingSceneRef.current) {
-            maybeAutoGenerate(scene);
-        }
-    }, [movie.id, companionId, spawnDanmaku, maybeAutoGenerate]);
+    }, [movie.id, companionId, spawnDanmaku]);
 
     const handleSeeking = useCallback(() => {
-        // seek 后重置：未来的弹幕重新可触发，屏幕上的立刻清空
-        spawnedRef.current = spawnedRef.current && new Set(
+        spawnedRef.current = new Set(
             [...spawnedRef.current].filter(id => {
                 const d = danmakuRef.current.find(x => x.id === id);
                 return d && d.timeSeconds <= (videoRef.current?.currentTime ?? 0);
@@ -232,45 +234,52 @@ export function MoviePlayer({ movie, onBack }: Props) {
         }
     };
 
-    const currentScene = findCurrentScene(scenes, position);
+    const handleFilePicked = (file: File | null) => {
+        if (!file) return;
+        setFileError("");
+        const url = URL.createObjectURL(file);
+        if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = url;
+        setVideoUrl(url);
+        setNeedFile(false);
+    };
 
-    // ── 手动生成当前场弹幕（弹幕栏按钮）──
-    const handleGenerateDanmaku = useCallback(() => {
-        const scene = findCurrentScene(scenesRef.current, positionRef.current);
-        if (!scene || generatingSceneRef.current !== null) return;
-        generatingSceneRef.current = scene.index;
-        setGeneratingSceneIdx(scene.index);
-        void generateMovieDanmaku(movie, scene, companionIdRef.current)
-            .then(items => {
-                if (items.length > 0) {
-                    setDanmakuList(prev => [...prev, ...items].sort((a, b) => a.timeSeconds - b.timeSeconds));
-                } else {
-                    setDanmakuNotice("没有解析出弹幕，可稍后重试");
-                    window.setTimeout(() => setDanmakuNotice(""), 4000);
-                }
-            })
-            .catch(() => {
-                setDanmakuNotice("弹幕生成失败，可稍后重试");
-                window.setTimeout(() => setDanmakuNotice(""), 4000);
-            })
-            .finally(() => {
-                generatingSceneRef.current = null;
-                setGeneratingSceneIdx(null);
-            });
-    }, [movie]);
-
-    // ── 讨论开关：打开暂停、关闭继续；面板常驻挂载（关掉也继续生成）──
-    const handleToggleDiscuss = useCallback(() => {
-        setShowDiscuss(prev => {
-            const next = !prev;
-            const video = videoRef.current;
-            if (video) {
-                if (next) video.pause();
-                else void video.play().catch(() => {});
+    // ── 沉浸模式：隐藏顶栏 + 尝试锁横屏；顶部下滑唤出顶栏 ──
+    const toggleImmersive = useCallback(async () => {
+        const el = videoAreaRef.current;
+        if (!immersive) {
+            setImmersive(true);
+            setShowTopBar(false);
+            if (el && document.fullscreenElement !== el) {
+                try { await el.requestFullscreen?.(); } catch { /* 无全屏权限时纯应用内沉浸 */ }
             }
-            return next;
-        });
+            try { await (screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> }).lock?.("landscape"); } catch { /* 锁横屏失败则跟随系统 */ }
+        } else {
+            setImmersive(false);
+            setShowTopBar(true);
+            try { (screen.orientation as ScreenOrientation & { unlock?: () => void }).unlock?.(); } catch { /* ignore */ }
+            if (document.fullscreenElement) {
+                try { await document.exitFullscreen(); } catch { /* ignore */ }
+            }
+        }
+    }, [immersive]);
+
+    // 系统手势退出全屏时同步状态
+    useEffect(() => {
+        const onFsChange = () => {
+            if (!document.fullscreenElement) return;
+            // 进入全屏成功，无额外动作
+        };
+        document.addEventListener("fullscreenchange", onFsChange);
+        return () => document.removeEventListener("fullscreenchange", onFsChange);
     }, []);
+
+    // 沉浸模式唤出顶栏后 4 秒自动隐藏
+    useEffect(() => {
+        if (!immersive || !showTopBar) return;
+        const t = window.setTimeout(() => setShowTopBar(false), 4000);
+        return () => window.clearTimeout(t);
+    }, [immersive, showTopBar]);
 
     // ── 长按三倍速（长按视频画面 450ms 触发，松手恢复）──
     const pressTimerRef = useRef<number | null>(null);
@@ -289,12 +298,18 @@ export function MoviePlayer({ movie, onBack }: Props) {
         }
     }, [speedActive]);
 
+    // 沉浸模式下顶部边缘下滑唤出顶栏
+    const immersiveTopSwipeRef = useRef<number | null>(null);
     const handleAreaPointerDown = useCallback((e: React.PointerEvent) => {
         if (needFile) return;
+        const rect = videoAreaRef.current?.getBoundingClientRect();
+        if (immersive && rect && e.clientY < rect.top + 32) {
+            immersiveTopSwipeRef.current = e.clientY;
+            return;
+        }
+        // 长按三倍速
         const video = videoRef.current;
         if (!video || video.paused) return;
-        // 忽略原生控制条区域（底部约 64px）
-        const rect = videoAreaRef.current?.getBoundingClientRect();
         if (rect && e.clientY > rect.bottom - 64) return;
         clearPressTimer();
         pressTimerRef.current = window.setTimeout(() => {
@@ -305,35 +320,62 @@ export function MoviePlayer({ movie, onBack }: Props) {
                 setSpeedActive(true);
             }
         }, 450);
-    }, [needFile, clearPressTimer]);
+    }, [needFile, immersive, clearPressTimer]);
+
+    const handleAreaPointerMove = useCallback((e: React.PointerEvent) => {
+        if (immersiveTopSwipeRef.current !== null && e.clientY - immersiveTopSwipeRef.current > 40) {
+            immersiveTopSwipeRef.current = null;
+            setShowTopBar(true);
+        }
+    }, []);
+
+    const handleAreaPointerUp = useCallback(() => {
+        immersiveTopSwipeRef.current = null;
+        clearPressTimer();
+    }, [clearPressTimer]);
+
+    // ── 讨论开关：打开暂停、关闭继续；面板常驻挂载（关掉也继续生成）──
+    const handleToggleDiscuss = useCallback(() => {
+        setShowDiscuss(prev => {
+            const next = !prev;
+            const video = videoRef.current;
+            if (video) {
+                if (next) video.pause();
+                else void video.play().catch(() => {});
+            }
+            return next;
+        });
+    }, []);
+
+    // 顶栏内容（普通模式内嵌一行；沉浸模式浮层显示同一套按钮）
+    const barButtons = (
+        <>
+            <button className="ts-14" onClick={onBack} style={{ background: "none", border: "none", color: "#8f93a8", padding: "4px 8px", cursor: "pointer" }}>‹ 片架</button>
+            <span className="ts-14" style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{movie.title}</span>
+            <div style={{ flex: 1 }} />
+            {scenes.length > 0 && (
+                <button className="ts-14" onClick={() => setShowSegments(true)} style={{ background: "none", border: "1px solid #2c3046", color: "#8f93a8", borderRadius: 8, padding: "4px 10px", cursor: "pointer" }}>分段</button>
+            )}
+            <button className="ts-14" onClick={() => void toggleImmersive()} style={{ background: "none", border: "1px solid #2c3046", color: "#8f93a8", borderRadius: 8, padding: "4px 10px", cursor: "pointer" }}>{immersive ? "退出全屏" : "全屏"}</button>
+        </>
+    );
 
     return (
         <div className="absolute inset-0 flex flex-col" style={{ background: "#000", color: "#e8e9f0" }}>
-            {/* 顶栏（顶部避让状态栏安全区） */}
-            <div style={{ flex: "0 0 auto", paddingTop: "var(--page-header-safe-top, max(48px, env(safe-area-inset-top, 48px)))", background: "#0d0f1a", borderBottom: "1px solid #232636" }}>
-                <div className="flex items-center gap-3 px-4" style={{ height: 48 }}>
-                    <button className="ts-14" onClick={onBack} style={{ background: "none", border: "none", color: "#8f93a8", padding: "4px 8px", cursor: "pointer" }}>‹ 片架</button>
-                    <span className="ts-14" style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{movie.title}</span>
-                    <div style={{ flex: 1 }} />
-                    {scenes.length > 0 && (
-                        <button className="ts-14" onClick={() => setShowSegments(true)} style={{ background: "none", border: "1px solid #2c3046", color: "#8f93a8", borderRadius: 8, padding: "4px 10px", cursor: "pointer" }}>分段</button>
-                    )}
-                    <button className="ts-14" onClick={toggleFullscreen} style={{ background: "none", border: "1px solid #2c3046", color: "#8f93a8", borderRadius: 8, padding: "4px 10px", cursor: "pointer" }}>{isFullscreen ? "退出全屏" : "全屏"}</button>
-                    <button
-                        className="ts-14"
-                        onClick={handleToggleDiscuss}
-                        style={{ background: showDiscuss ? "#6c5ce7" : "none", border: "1px solid #2c3046", color: showDiscuss ? "#fff" : "#8f93a8", borderRadius: 8, padding: "4px 10px", cursor: "pointer" }}
-                    >讨论</button>
+            {/* 顶栏：普通模式常规渲染；沉浸模式隐藏（下滑唤出浮层） */}
+            {!immersive && (
+                <div style={{ flex: "0 0 auto", paddingTop: "var(--page-header-safe-top, max(48px, env(safe-area-inset-top, 48px)))", background: "#0d0f1a", borderBottom: "1px solid #232636" }}>
+                    <div className="flex items-center gap-3 px-4" style={{ height: 48 }}>{barButtons}</div>
                 </div>
-            </div>
+            )}
 
-            {/* 视频区（全屏目标容器；长按画面三倍速） */}
+            {/* 视频区（全屏目标容器；长按画面三倍速；沉浸模式顶部下滑唤出顶栏） */}
             <div
                 ref={videoAreaRef}
                 onPointerDown={handleAreaPointerDown}
-                onPointerUp={clearPressTimer}
-                onPointerLeave={clearPressTimer}
-                onPointerCancel={clearPressTimer}
+                onPointerMove={handleAreaPointerMove}
+                onPointerUp={handleAreaPointerUp}
+                onPointerCancel={handleAreaPointerUp}
                 onContextMenu={e => e.preventDefault()}
                 style={{ flex: 1, position: "relative", display: "flex", alignItems: "center", justifyContent: "center", background: "#000", overflow: "hidden", userSelect: "none", WebkitUserSelect: "none" }}
             >
@@ -373,7 +415,7 @@ export function MoviePlayer({ movie, onBack }: Props) {
                     style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none" }}
                 />
 
-                {/* 当前场指示（不用 backdrop-filter：视频上方的模糊层会加重合成负载导致音画不同步） */}
+                {/* 当前场指示 */}
                 {!needFile && currentScene && (
                     <div
                         className="ts-14"
@@ -410,7 +452,39 @@ export function MoviePlayer({ movie, onBack }: Props) {
                 )}
             </div>
 
-            {/* 讨论面板：常驻挂载（隐藏时也继续生成），拖拽 + 弹幕栏 */}
+            {/* 沉浸模式：顶栏浮层（下滑唤出，4 秒自动隐藏） */}
+            {immersive && showTopBar && (
+                <div style={{ position: "absolute", top: 0, left: 0, right: 0, zIndex: 40, paddingTop: "var(--page-header-safe-top, max(24px, env(safe-area-inset-top, 24px)))", background: "rgba(13,15,26,0.92)", borderBottom: "1px solid #232636" }}>
+                    <div className="flex items-center gap-3 px-4" style={{ height: 48 }}>{barButtons}</div>
+                </div>
+            )}
+
+            {/* 悬浮球：面板关闭时显示，点击展开讨论面板 */}
+            {!showDiscuss && !needFile && (
+                <button
+                    onClick={handleToggleDiscuss}
+                    style={{
+                        position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
+                        width: 52, height: 52, borderRadius: "50%", zIndex: 25,
+                        background: "linear-gradient(135deg, #6c5ce7, #a29bfe)",
+                        color: "#fff", border: "2px solid rgba(255,255,255,0.25)",
+                        cursor: "pointer", fontWeight: 600, fontSize: 12,
+                        boxShadow: "0 4px 14px rgba(0,0,0,0.45)",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        lineHeight: 1.2, padding: 4, wordBreak: "break-all",
+                    }}
+                >{companionName.slice(0, 4)}</button>
+            )}
+
+            {/* 点击面板外部收起 */}
+            {showDiscuss && (
+                <div
+                    onClick={handleToggleDiscuss}
+                    style={{ position: "absolute", inset: 0, zIndex: 29, background: "rgba(0,0,0,0.15)" }}
+                />
+            )}
+
+            {/* 讨论面板：常驻挂载（隐藏时也继续生成） */}
             <div
                 style={{
                     position: "absolute", inset: 0, zIndex: 30,

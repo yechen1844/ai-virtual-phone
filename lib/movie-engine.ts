@@ -749,7 +749,7 @@ export async function generateMovieDanmaku(
         sceneSubtitleWindow: scene.subtitleText,
         frameHint: buildFrameHint(sceneFrames, scene),
     });
-    if (!resolved?.apiConfig) return [];
+    if (!resolved?.apiConfig) throw new Error("观影 app 未绑定 API（设置 → 配置绑定 → 观影）");
 
     const { input, apiConfig, preset } = resolved;
     const llmMessages = assemblePromptPayload(input);
