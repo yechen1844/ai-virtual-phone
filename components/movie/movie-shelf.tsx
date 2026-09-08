@@ -54,6 +54,8 @@ export function MovieShelf({ onOpenMovie, onClose }: Props) {
     const [stageDetail, setStageDetail] = useState("");
     const [errorMsg, setErrorMsg] = useState("");
     const [showHelp, setShowHelp] = useState(false);
+    // 两步删除确认：第一次点变「确认删除？」，再点才真删（避免 window.confirm 在 APK 壳中不显示）
+    const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
     // 选完视频后弹出的「字幕/分段」决策框（按钮触发文件选择，保证手势有效）
     const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
     // 视频文件选择的用途：导入新片 or 给已有影片补视频（重新分段）
@@ -190,8 +192,8 @@ export function MovieShelf({ onOpenMovie, onClose }: Props) {
     };
 
     const handleDelete = async (movie: Movie) => {
-        if (!window.confirm(`删除《${movie.title}》？观影包（分段/摘要/画面帧/弹幕）将一并删除。`)) return;
         await deleteMovie(movie.id);
+        setDeleteConfirmId(null);
         await refresh();
     };
 
@@ -316,9 +318,14 @@ export function MovieShelf({ onOpenMovie, onClose }: Props) {
                                     >{watched ? "继续" : "观看"}</button>
                                     <button
                                         className="ts-14"
-                                        onClick={() => void handleDelete(movie)}
-                                        style={{ padding: "6px 10px", borderRadius: 8, background: "none", border: "1px solid #2c3046", color: "#8f93a8", cursor: "pointer" }}
-                                    >删除</button>
+                                        onClick={() => (deleteConfirmId === movie.id ? void handleDelete(movie) : setDeleteConfirmId(movie.id))}
+                                        style={{
+                                            padding: "6px 10px", borderRadius: 8, cursor: "pointer",
+                                            background: deleteConfirmId === movie.id ? "#c0392b" : "none",
+                                            border: "1px solid #2c3046",
+                                            color: deleteConfirmId === movie.id ? "#fff" : "#8f93a8",
+                                        }}
+                                    >{deleteConfirmId === movie.id ? "确认删除" : "删除"}</button>
                                 </div>
                                 {/* 未就绪时的引导操作 */}
                                 {(!segmented || !hasCues) && (
