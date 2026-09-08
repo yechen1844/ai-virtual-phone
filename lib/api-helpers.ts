@@ -126,7 +126,7 @@ export function isNativeGoogleApi(config: ApiConfig): boolean {
 export async function simpleLLMCall(
     config: ApiConfig,
     messages: { role: string; content: string }[],
-    options?: { temperature?: number; max_tokens?: number; signal?: AbortSignal; label?: string },
+    options?: { temperature?: number; max_tokens?: number; signal?: AbortSignal; label?: string; noThinking?: boolean },
 ): Promise<{ content: string | null; error?: string; finishReason?: string; wasTruncated?: boolean }> {
     const baseUrl = determineBaseUrl(config);
     if (!baseUrl || !config.apiKey) {
@@ -144,6 +144,11 @@ export async function simpleLLMCall(
     const headers = buildRequestHeaders(config, baseUrl);
     const temperature = options?.temperature ?? 0.7;
     const max_tokens = options?.max_tokens;
+    // noThinking：请求层关闭模型思维链，用于重排序等只需快速结论的副调用。
+    // 仅原生 Gemini 2.5+/3 支持 thinkingConfig:0（其余模型不支持该字段会 400）；
+    // Anthropic 默认不思考；OpenAI 兼容端点无法统一关思考，由调用方 assistant 预填绕过。
+    const noThinking = options?.noThinking === true;
+    const googleThinkingCapable = /gemini-(2\.5|3)/i.test(config.defaultModel ?? "");
     const startedAt = Date.now();
     const durationMs = () => Date.now() - startedAt;
 
@@ -181,6 +186,7 @@ export async function simpleLLMCall(
                 generationConfig: {
                     temperature,
                     ...(max_tokens ? { maxOutputTokens: max_tokens } : {}),
+                    ...(noThinking && googleThinkingCapable ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
                 },
             });
         } else {

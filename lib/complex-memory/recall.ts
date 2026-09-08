@@ -17,7 +17,7 @@ import {
   saveDaily,
   savePeriod,
 } from "./storage";
-import { boostedVoltage } from "./voltage";
+import { boostedVoltage, effectiveVoltage } from "./voltage";
 import { formatLocalDateTime } from "./utils";
 import type {
   ComplexDaily,
@@ -200,6 +200,14 @@ export async function buildMemoryContextBundle(
 }
 
 // ── ② 向量召回 ──
+type RecallCandidate = {
+  item: MemoryRecallItem;
+  embedding?: number[];
+  emotion?: EmotionVector;
+  /** 有效电压（含保护期下限与分层衰减），供召回打分加成 */
+  effVoltage: number;
+};
+
 async function vectorRecall(
   characterId: string,
   currentContext: string,
@@ -207,13 +215,15 @@ async function vectorRecall(
   entities: { events: ComplexEvent[]; dailies: ComplexDaily[]; periods: ComplexPeriod[] },
 ): Promise<MemoryRecallItem[]> {
   const embApi = config.vectorRecallEnabled ? resolveAuxiliaryApiConfig("embeddingApiConfigId") : null;
+  const now = Date.now();
 
-  const candidates: Array<{ item: MemoryRecallItem; embedding?: number[]; emotion?: EmotionVector }> = [];
+  const candidates: RecallCandidate[] = [];
   for (const e of entities.events) {
     candidates.push({
       item: { kind: "event", id: e.id, characterId, timestamp: e.timestamp, content: e.content, score: 0, voltage: e.voltage, belongsToPeriods: e.periodsRef },
       embedding: e.embedding,
       emotion: e.emotion,
+      effVoltage: effectiveVoltage(e, { kind: "event", now }),
     });
   }
   for (const d of entities.dailies) {
@@ -221,12 +231,14 @@ async function vectorRecall(
       item: { kind: "daily", id: d.id, characterId, timestamp: d.date, content: d.content, score: 0, voltage: d.voltage, belongsToPeriods: d.belongsToPeriods },
       embedding: d.embedding,
       emotion: d.emotionVector,
+      effVoltage: effectiveVoltage(d, { kind: "daily", special: d.special === true, now }),
     });
   }
   for (const p of entities.periods) {
     candidates.push({
       item: { kind: "period", id: p.id, characterId, timestamp: p.startTime, content: p.summary, score: 0, voltage: p.voltage },
       embedding: p.embedding,
+      effVoltage: effectiveVoltage(p, { kind: "period", now }),
     });
   }
 
@@ -235,14 +247,21 @@ async function vectorRecall(
   // M5 情绪参与召回：探测当前上下文情绪，评分按 score × (1 + λ × 情绪相似度) 加权（周期无情绪向量，跳过）
   const ctxEmotion = detectEmotion(currentContext);
   const applyWeights = (scored: Array<{ item: MemoryRecallItem; score: number }>): MemoryRecallItem[] => {
+    const effById = new Map(candidates.map((c) => [c.item.id, c.effVoltage]));
     const weighted = scored.map((s) => {
       let score = s.score;
-      const cand = candidates.find((c) => c.item.id === s.item.id);
       // 每日记忆时间窗：仅日记按时间降权（事件不受此窗，久远但关键的事件必须能召回）
       if (s.item.kind === "daily") {
         score *= dailyTimeWindowWeight(s.item.timestamp, config);
       }
+      // 电压加成（加成式）：常被回忆的记忆（高电压）优先浮现，
+      // 低电压老记忆不受惩罚（× 1.0 ~ × 1.5w），老事件仍可靠语义相似度召回
+      const effV = effById.get(s.item.id) ?? 0;
+      if (config.voltageRecallWeight > 0) {
+        score *= 1 + config.voltageRecallWeight * effV;
+      }
       // 情绪加权
+      const cand = candidates.find((c) => c.item.id === s.item.id);
       if (cand?.emotion && (ctxEmotion.valence !== 0 || ctxEmotion.arousal !== 0)) {
         score *= 1 + config.emotionRecallLambda * emotionSimilarity(cand.emotion, ctxEmotion);
       }
@@ -321,6 +340,10 @@ async function rerankCandidates(
 
   // 键兜底：重排序的整个副 API 调用都包进 try/catch，任何异常（网络/解析/格式）都回退到
   // 向量评分排序再注入，避免异常冒泡导致该轮复杂记忆整块丢失（固定注入 + 向量召回不受影响）。
+  // 提速策略：① 预填一条助手消息「我将开始打分」，让模型直接续写打分 JSON，跳过开场白与
+  // 思考铺垫（多数模型的思维链不会在 prefilled 轮次后展开）；② 请求层关闭思考
+  // （原生 Gemini 2.5+/3 传 thinkingBudget:0）；③ 限制输出长度，打分 JSON 本身很短。
+  // 若预填调用失败（个别中转不支持尾部 assistant 消息），自动回退为单 user 消息再试一次。
   try {
     const candidatesText = candidates
     .map((c, i) => `${i + 1}. [${c.kind}] ${c.timestamp} ${c.content}`)
@@ -336,11 +359,31 @@ async function rerankCandidates(
     keepMax: String(config.rerankKeepMax),
   });
 
-  const result = await simpleLLMCall(
+  const fastOptions = {
+    temperature: 0.1 as const,
+    label: "复杂记忆·重排序",
+    noThinking: true,
+    // 打分 JSON：每条候选约 20-30 token，recallTopK 上限 100，1000 token 足够且显著缩短回包时间
+    max_tokens: 1000,
+  };
+
+  let result = await simpleLLMCall(
     apiConfig,
-    [{ role: "user", content: prompt }],
-    { temperature: 0.1, label: "复杂记忆·重排序" },
+    [
+      { role: "user", content: prompt },
+      // 预填助手消息（assistant prefill）：模型从这句话继续输出，直接进入打分
+      { role: "assistant", content: "我将开始打分。" },
+    ],
+    fastOptions,
   );
+  if (!result.content) {
+    // 回退：兼容不支持尾部 assistant 消息的端点，退回传统单消息调用（仅损失提速，不损失功能）
+    result = await simpleLLMCall(
+      apiConfig,
+      [{ role: "user", content: prompt }],
+      fastOptions,
+    );
+  }
   if (!result.content) return fallback();
 
   const scores = parseRerankScores(result.content);

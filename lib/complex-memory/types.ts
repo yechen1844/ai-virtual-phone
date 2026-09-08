@@ -212,6 +212,10 @@ export type ComplexMemoryConfig = {
   eventDecayFactor: number;          // 0.94：事件衰减快
   periodDecayFactor: number;         // 0.995：周期衰减慢
   specialDateDecayFactor: number;    // 0.995：特殊日期日记享受周期级慢衰减
+  // 记忆保护期：闲置不超过 voltageFloorDays 天时，电压衰减不低于 voltageFloor；
+  // 超过保护期后从 voltageFloor 起按原速率继续衰减（连续无跳崖）
+  voltageFloor: number;              // 0.5：保护期内电压下限
+  voltageFloorDays: number;          // 90：保护期天数（三个月）
   // 读取管线
   fixedShortTermEntries: number;     // 120
   fixedRecentEventCount: number;     // 2
@@ -227,6 +231,9 @@ export type ComplexMemoryConfig = {
   recallTimeWindowFloor: number;     // 0.2
   // 情绪参与召回（M5）
   emotionRecallLambda: number;       // 0.15：score × (1 + λ × 情绪相似度)
+  // 电压参与向量召回（加成式）：score × (1 + weight × 有效电压)
+  // 高电压（常回忆）获得加成，低电压（久未想起）不受惩罚
+  voltageRecallWeight: number;       // 0.5
   // 特殊日期固定注入（M5）：最近 N 篇被标记日记进固定注入区
   fixedSpecialDateCount: number;     // 1
   // 镜像

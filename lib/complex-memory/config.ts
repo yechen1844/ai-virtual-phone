@@ -66,6 +66,8 @@ export const DEFAULT_COMPLEX_MEMORY_CONFIG: ComplexMemoryConfig = {
   voltageDecayFactor: 0.98,
   voltageRecallBoost: 0.1,
   voltageEraseThreshold: 0.1,
+  voltageFloor: 0.5,
+  voltageFloorDays: 90,
   eventDecayFactor: 0.94,
   periodDecayFactor: 0.995,
   specialDateDecayFactor: 0.995,
@@ -81,6 +83,7 @@ export const DEFAULT_COMPLEX_MEMORY_CONFIG: ComplexMemoryConfig = {
   recallTimeWindowFloorDays: 180,
   recallTimeWindowFloor: 0.2,
   emotionRecallLambda: 0.15,
+  voltageRecallWeight: 0.5,
   fixedSpecialDateCount: 1,
   mirrorToFloatEnabled: true,
   sanitizerBanList: [
@@ -154,6 +157,8 @@ function normalizeConfig(parsed: Partial<ComplexMemoryConfig>): ComplexMemoryCon
     voltageDecayFactor: num(parsed.voltageDecayFactor, d.voltageDecayFactor, 0.5, 1),
     voltageRecallBoost: num(parsed.voltageRecallBoost, d.voltageRecallBoost, 0, 1),
     voltageEraseThreshold: num(parsed.voltageEraseThreshold, d.voltageEraseThreshold, 0.001, 1),
+    voltageFloor: num(parsed.voltageFloor, d.voltageFloor, 0, 1),
+    voltageFloorDays: num(parsed.voltageFloorDays, d.voltageFloorDays, 0, 36500),
     eventDecayFactor: num(parsed.eventDecayFactor, d.eventDecayFactor, 0.5, 1),
     periodDecayFactor: num(parsed.periodDecayFactor, d.periodDecayFactor, 0.9, 1),
     specialDateDecayFactor: num(parsed.specialDateDecayFactor, d.specialDateDecayFactor, 0.9, 1),
@@ -169,6 +174,7 @@ function normalizeConfig(parsed: Partial<ComplexMemoryConfig>): ComplexMemoryCon
     recallTimeWindowFloorDays: num(parsed.recallTimeWindowFloorDays, d.recallTimeWindowFloorDays, 1, 36500),
     recallTimeWindowFloor: num(parsed.recallTimeWindowFloor, d.recallTimeWindowFloor, 0.01, 1),
     emotionRecallLambda: num(parsed.emotionRecallLambda, d.emotionRecallLambda, 0, 1),
+    voltageRecallWeight: num(parsed.voltageRecallWeight, d.voltageRecallWeight, 0, 5),
     fixedSpecialDateCount: num(parsed.fixedSpecialDateCount, d.fixedSpecialDateCount, 0, 30),
     mirrorToFloatEnabled: bool(parsed.mirrorToFloatEnabled, d.mirrorToFloatEnabled),
     sanitizerBanList: Array.isArray(parsed.sanitizerBanList)

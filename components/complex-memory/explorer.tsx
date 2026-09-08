@@ -112,7 +112,7 @@ import {
   type CleanupCluster,
   type CleanupSnapshot,
 } from "@/lib/complex-memory/cleanup";
-import { boostedVoltage, effectiveVoltage } from "@/lib/complex-memory/voltage";
+import { boostedVoltage, effectiveVoltage, rechargeCharacterVoltage } from "@/lib/complex-memory/voltage";
 import type {
   ComplexCoreEntry,
   ComplexCoreSnapshot,
@@ -1542,6 +1542,25 @@ function EventTab({ characterId, characterName, notify, refresh }: {
     await load();
   };
 
+  // 一键补电：全部记忆（事件/日记/周期）中电压不足 60% 的统一拉到 60%
+  const handleRechargeAll = async () => {
+    setBusy(true);
+    try {
+      const res = await rechargeCharacterVoltage(characterId, 0.6);
+      const total = res.events + res.dailies + res.periods;
+      notify({
+        kind: total > 0 ? "ok" : "err",
+        text: total > 0
+          ? `补电完成：${total} 条记忆已拉至 60%（事件 ${res.events} / 日记 ${res.dailies} / 周期 ${res.periods}）`
+          : "所有记忆电压均不低于 60%，无需补电",
+      });
+      await load();
+      refresh();
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleSaveEdit = async (e: ComplexEvent) => {
     setBusy(true);
     await saveEvent({ ...e, content: draft.trim() || e.content });
@@ -1604,6 +1623,9 @@ function EventTab({ characterId, characterName, notify, refresh }: {
           )}
           <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={handleGenerate} disabled={busy}>
             {busy ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} />} 立即压缩
+          </button>
+          <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => void handleRechargeAll()} disabled={busy} title="把所有电压不足 60% 的记忆（事件/日记/周期）统一拉到 60%">
+            {busy ? <Loader2 size={14} className="animate-spin" /> : <Flame size={14} />} 一键补电 60%
           </button>
         </div>
       </div>
@@ -2425,11 +2447,28 @@ function ConfigTab({ characterId, notify }: { characterId: string; notify: (n: N
 
   const banListText = config.sanitizerBanList.join("、");
 
+  // 一键召回增强：扩大召回通道（取 max 逻辑，手动调得更高的字段保持不变）
+  const handleRecallBoost = () => {
+    update({
+      recallTopK: Math.max(config.recallTopK, 20),
+      rerankKeepMax: Math.max(config.rerankKeepMax, 12),
+      totalInjectTokenBudget: Math.max(config.totalInjectTokenBudget, 32000),
+    });
+    notify({ kind: "ok", text: "召回参数已增强：向量候选 ≥20 / 注入上限 ≥12 / 总预算 ≥32000（已调更高的字段保持原值）" });
+  };
+
   return (
     <div className="cm-section">
       <div className="cm-section-head">
         <span className="cm-section-title">数值与开关</span>
         <span className="cm-meta-text">角色开关：{isComplexMemoryEnabled(characterId) ? "已启用" : "未启用"}</span>
+      </div>
+      <div className="cm-card cm-card-actions" style={{ marginBottom: 10 }}>
+        <span className="cm-meta-text">召回通道增强：向量候选 20 条 · 注入上限 12 条 · 总预算 32000 token（只升不降）</span>
+        <span className="cm-spacer" />
+        <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={handleRecallBoost}>
+          <Flame size={14} /> 一键召回增强
+        </button>
       </div>
       <div className="cm-card cm-config-grid">
         {numField("ringBufferMaxEntries", "L1 活跃窗口条数", "建议 100-200")}
@@ -2450,10 +2489,13 @@ function ConfigTab({ characterId, notify }: { characterId: string; notify: (n: N
         {numField("specialDateDecayFactor", "特殊日期衰减系数", "周期级慢衰减")}
         {numField("voltageRecallBoost", "召回回升量")}
         {numField("voltageEraseThreshold", "消磨电压阈值")}
+        {numField("voltageFloor", "保护期电压下限", "闲置不超过保护期天数时，电压衰减不低于此值；0 = 关闭保护")}
+        {numField("voltageFloorDays", "保护期天数", "三个月内的记忆电压最低只降到下限值")}
         {numField("recallTimeWindowFullDays", "日记时间窗全额（天）")}
         {numField("recallTimeWindowFloorDays", "日记时间窗底值（天）")}
         {numField("recallTimeWindowFloor", "日记时间窗降权底值")}
         {numField("emotionRecallLambda", "情绪召回权重 λ")}
+        {numField("voltageRecallWeight", "电压召回权重", "score × (1 + 权重 × 电压)：常回忆的加分，老记忆不减分")}
         {numField("fixedSpecialDateCount", "特殊日期固定注入篇数")}
         {numField("fixedShortTermEntries", "固定注入短期条数")}
         {numField("fixedRecentEventCount", "固定注入最新事件数")}
