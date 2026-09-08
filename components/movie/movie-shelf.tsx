@@ -2,8 +2,8 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
-    loadMovies, addMovie, deleteMovie, updateMovie,
-    loadProgress, saveProgress, saveCues, loadScenes,
+    loadMovies, addMovie, deleteMovie,
+    loadProgress, saveProgress, saveCues, loadCues, loadScenes,
 } from "@/lib/movie-storage";
 import { parseSubtitleArrayBuffer } from "@/lib/movie-parser";
 import { generateMovieSegmentation, extractSceneFrames } from "@/lib/movie-engine";
@@ -15,7 +15,8 @@ type Props = {
     onClose: () => void;
 };
 
-type ImportStage = "idle" | "decoding" | "segmenting" | "extracting" | "done" | "error";
+type ImportStage = "idle" | "decoding" | "segmenting" | "extracting" | "error";
+type PendingImport = { movie: Movie; videoFile: File | null };
 
 function formatDuration(total?: number): string {
     if (!total || !Number.isFinite(total)) return "--:--";
@@ -48,28 +49,35 @@ export function MovieShelf({ onOpenMovie, onClose }: Props) {
     const [companionId, setCompanionId] = useState<string>("");
     const [progressMap, setProgressMap] = useState<Map<string, { positionSeconds: number; segmented: boolean }>>(new Map());
     const [sceneCountMap, setSceneCountMap] = useState<Map<string, number>>(new Map());
+    const [cuesMap, setCuesMap] = useState<Map<string, boolean>>(new Map());
     const [stage, setStage] = useState<ImportStage>("idle");
     const [stageDetail, setStageDetail] = useState("");
     const [errorMsg, setErrorMsg] = useState("");
     const [showHelp, setShowHelp] = useState(false);
+    // 选完视频后弹出的「字幕/分段」决策框（按钮触发文件选择，保证手势有效）
+    const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
+    // 视频文件选择的用途：导入新片 or 给已有影片补视频（重新分段）
+    const videoPickTargetRef = useRef<string>("new"); // "new" | movieId
     const videoInputRef = useRef<HTMLInputElement>(null);
     const subtitleInputRef = useRef<HTMLInputElement>(null);
-    const pendingVideoRef = useRef<File | null>(null);
-    const [subtitlePickerMovie, setSubtitlePickerMovie] = useState<string | null>(null);
 
     const refresh = useCallback(async () => {
         const list = loadMovies();
         setMovies(list);
         const pMap = new Map<string, { positionSeconds: number; segmented: boolean }>();
         const sMap = new Map<string, number>();
+        const cMap = new Map<string, boolean>();
         for (const m of list) {
             const p = await loadProgress(m.id);
             pMap.set(m.id, { positionSeconds: p?.positionSeconds ?? 0, segmented: p?.segmented ?? false });
             const scenes = await loadScenes(m.id);
             sMap.set(m.id, scenes.length);
+            const cues = await loadCues(m.id);
+            cMap.set(m.id, cues.length > 0);
         }
         setProgressMap(pMap);
         setSceneCountMap(sMap);
+        setCuesMap(cMap);
     }, []);
 
     useEffect(() => {
@@ -79,93 +87,102 @@ export function MovieShelf({ onOpenMovie, onClose }: Props) {
         void refresh();
     }, [refresh]);
 
+    // ── 视频选择完成 ──
     const handleVideoPicked = async (file: File | null) => {
-        if (!file) return;
-        if (!companionId) {
-            setErrorMsg("请先选择陪伴角色");
-            return;
-        }
-        pendingVideoRef.current = file;
+        if (!file) return; // 用户取消，静默返回
+        const target = videoPickTargetRef.current;
         setErrorMsg("");
-        setStage("decoding");
-        setStageDetail("读取视频信息...");
         try {
-            const duration = await readVideoDuration(file);
-            if (!duration) throw new Error("无法读取视频时长");
-            const title = file.name.replace(/\.[^.]+$/, "");
-            const movie: Movie = {
-                id: `mv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-                title,
-                durationSeconds: Math.round(duration),
-                createdAt: new Date().toISOString(),
-            };
-            await addMovie(movie);
-            // 若随选了字幕文件则自动接续；否则进入字幕选择提示
-            if (subtitleInputRef.current) {
-                subtitleInputRef.current.value = "";
-                subtitleInputRef.current.click();
-                setSubtitlePickerMovie(movie.id);
-                setStage("idle");
-                setStageDetail("");
-            } else {
-                await runSegmentation(movie, file, null);
-            }
-        } catch (err) {
-            setStage("error");
-            setErrorMsg(err instanceof Error ? err.message : String(err));
-        }
-    };
-
-    const handleSubtitlePicked = async (file: File | null) => {
-        const movieId = subtitlePickerMovie;
-        setSubtitlePickerMovie(null);
-        if (!movieId) return;
-        const movie = loadMovies().find(m => m.id === movieId);
-        const videoFile = pendingVideoRef.current;
-        if (!movie || !videoFile) return;
-        try {
-            if (file) {
-                setStage("decoding");
-                setStageDetail("解析字幕...");
-                const buffer = await file.arrayBuffer();
-                const { cues, encoding } = parseSubtitleArrayBuffer(buffer, file.name);
-                if (cues.length === 0) {
-                    throw new Error(`字幕解析出 0 条：请确认是 .srt/.vtt/.ass/.ssa 文件且内容完整（已尝试多编码，最后使用 ${encoding}）`);
+            if (target === "new") {
+                if (!companionId) {
+                    setErrorMsg("请先选择一起看的人（陪伴角色）");
+                    setStage("error");
+                    return;
                 }
-                await saveCues(movie.id, cues);
+                setStage("decoding");
+                setStageDetail("读取视频信息...");
+                const duration = await readVideoDuration(file);
+                if (!duration) throw new Error("无法读取视频时长");
+                const title = file.name.replace(/\.[^.]+$/, "");
+                const movie: Movie = {
+                    id: `mv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+                    title,
+                    durationSeconds: Math.round(duration),
+                    createdAt: new Date().toISOString(),
+                };
+                await addMovie(movie);
+                await refresh();
+                setStage("idle");
+                setPendingImport({ movie, videoFile: file });
+            } else {
+                // 给已有影片补视频（重新分段/补帧）
+                const movie = loadMovies().find(m => m.id === target);
+                if (!movie) return;
+                setStage("decoding");
+                setStageDetail("读取视频信息...");
+                await readVideoDuration(file); // 仅校验可读
+                setStage("idle");
+                setPendingImport({ movie, videoFile: file });
             }
-            await runSegmentation(movie, videoFile, null);
         } catch (err) {
             setStage("error");
             setErrorMsg(err instanceof Error ? err.message : String(err));
         }
     };
 
-    const runSegmentation = async (movie: Movie, videoFile: File, _subtitleFile: File | null) => {
-        const { loadCues } = await import("@/lib/movie-storage");
+    // ── 字幕选择完成（从决策框按钮触发，带手势）──
+    const handleSubtitlePicked = async (file: File | null) => {
+        const ctx = pendingImport;
+        if (!ctx || !file) return;
         try {
+            setStage("decoding");
+            setStageDetail("解析字幕...");
+            const buffer = await file.arrayBuffer();
+            const { cues, encoding } = parseSubtitleArrayBuffer(buffer, file.name);
+            if (cues.length === 0) {
+                throw new Error(`字幕解析出 0 条：请确认是 .srt/.vtt/.ass/.ssa 文件且内容完整（已尝试多编码，最后使用 ${encoding}）`);
+            }
+            await saveCues(ctx.movie.id, cues);
+            await refresh();
+            setStage("idle");
+            setPendingImport({ ...ctx });
+        } catch (err) {
+            setStage("error");
+            setErrorMsg(err instanceof Error ? err.message : String(err));
+        }
+    };
+
+    // ── 生成分段（决策框确认按钮触发）──
+    const runSegmentation = async (ctx: PendingImport) => {
+        const { movie, videoFile } = ctx;
+        try {
+            const cues = await loadCues(movie.id);
+            if (cues.length === 0) {
+                setErrorMsg("还没有字幕：char 靠字幕理解剧情，请先点「选择字幕文件」导入（没有现成字幕可看顶部的「字幕从哪来？」）");
+                setStage("error");
+                return;
+            }
+            setPendingImport(null);
             setStage("segmenting");
             setStageDetail("正在划分幕与场（调用模型，约需几十秒）...");
-            const cues = await loadCues(movie.id);
             const { scenes } = await generateMovieSegmentation(movie, cues, companionId, movie.durationSeconds ?? 0);
-            setStage("extracting");
-            setStageDetail("正在预抽画面关键帧...");
-            await extractSceneFrames(videoFile, scenes, movie.id, (done, total) => {
-                setStageDetail(`预抽画面关键帧...（${done}/${total} 场）`);
-            });
+            if (videoFile) {
+                setStage("extracting");
+                setStageDetail("正在预抽画面关键帧...");
+                await extractSceneFrames(videoFile, scenes, movie.id, (done, total) => {
+                    setStageDetail(`预抽画面关键帧...（${done}/${total} 场）`);
+                });
+            }
             await saveProgress({
                 movieId: movie.id,
-                positionSeconds: 0,
+                positionSeconds: (await loadProgress(movie.id))?.positionSeconds ?? 0,
                 companionCharacterId: companionId,
                 segmented: true,
                 lastWatchAt: new Date().toISOString(),
             });
-            pendingVideoRef.current = null;
-            setStage("done");
-            setStageDetail(`完成！共 ${scenes.length} 场`);
+            setStage("idle");
             await refresh();
-            // 分段完成直接进入播放
-            onOpenMovie({ ...movie });
+            onOpenMovie(movie);
         } catch (err) {
             setStage("error");
             setErrorMsg(err instanceof Error ? err.message : String(err));
@@ -179,6 +196,7 @@ export function MovieShelf({ onOpenMovie, onClose }: Props) {
     };
 
     const busy = stage === "decoding" || stage === "segmenting" || stage === "extracting";
+    const pendingHasCues = pendingImport ? (cuesMap.get(pendingImport.movie.id) ?? false) : false;
 
     return (
         <div className="absolute inset-0 flex flex-col" style={{ background: "#0d0f1a", color: "#e8e9f0" }}>
@@ -201,6 +219,22 @@ export function MovieShelf({ onOpenMovie, onClose }: Props) {
             </div>
 
             <div style={{ flex: 1, overflowY: "auto", padding: 16 }}>
+                {/* 隐藏文件输入：视频（新片/补视频共用）与字幕均由用户手势触发 */}
+                <input
+                    ref={videoInputRef}
+                    type="file"
+                    accept="video/*,.mp4,.webm,.mov,.m4v"
+                    style={{ display: "none" }}
+                    onChange={e => { void handleVideoPicked(e.target.files?.[0] ?? null); e.target.value = ""; }}
+                />
+                <input
+                    ref={subtitleInputRef}
+                    type="file"
+                    accept=".srt,.vtt,.ass,.ssa"
+                    style={{ display: "none" }}
+                    onChange={e => { void handleSubtitlePicked(e.target.files?.[0] ?? null); e.target.value = ""; }}
+                />
+
                 {/* 角色选择 */}
                 <div className="flex items-center gap-2" style={{ marginBottom: 14 }}>
                     <span className="ts-14" style={{ color: "#8f93a8" }}>一起看的人：</span>
@@ -216,30 +250,16 @@ export function MovieShelf({ onOpenMovie, onClose }: Props) {
                 </div>
 
                 {/* 导入按钮 */}
-                <input
-                    ref={videoInputRef}
-                    type="file"
-                    accept="video/*,.mp4,.webm,.mov,.m4v"
-                    style={{ display: "none" }}
-                    onChange={e => { void handleVideoPicked(e.target.files?.[0] ?? null); e.target.value = ""; }}
-                />
-                <input
-                    ref={subtitleInputRef}
-                    type="file"
-                    accept=".srt,.vtt,.ass,.ssa"
-                    style={{ display: "none" }}
-                    onChange={e => { void handleSubtitlePicked(e.target.files?.[0] ?? null); }}
-                />
                 <button
                     className="ts-14"
-                    disabled={busy || !companionId}
-                    onClick={() => videoInputRef.current?.click()}
+                    disabled={busy}
+                    onClick={() => { videoPickTargetRef.current = "new"; videoInputRef.current?.click(); }}
                     style={{
                         width: "100%", padding: "12px 0", borderRadius: 12,
                         background: busy ? "#232636" : "linear-gradient(135deg, #6c5ce7, #a29bfe)",
                         color: busy ? "#8f93a8" : "#fff", border: "none", cursor: busy ? "default" : "pointer", fontWeight: 600,
                     }}
-                >＋ 导入影片（本地视频，可带字幕）</button>
+                >＋ 导入影片（本地视频）</button>
 
                 {/* 进度 / 错误提示 */}
                 {busy && (
@@ -247,15 +267,10 @@ export function MovieShelf({ onOpenMovie, onClose }: Props) {
                         {stageDetail}
                     </div>
                 )}
-                {stage === "done" && (
-                    <div className="ts-14" style={{ marginTop: 10, padding: "10px 12px", borderRadius: 10, background: "#16241c", color: "#7ec99a" }}>
-                        {stageDetail}
-                    </div>
-                )}
                 {stage === "error" && (
-                    <div className="ts-14" style={{ marginTop: 10, padding: "10px 12px", borderRadius: 10, background: "#2c1a1e", color: "#e08a95" }}>
+                    <div className="ts-14" style={{ marginTop: 10, padding: "10px 12px", borderRadius: 10, background: "#2c1a1e", color: "#e08a95", lineHeight: 1.6 }}>
                         {errorMsg}
-                        <button className="ts-14" onClick={() => setStage("idle")} style={{ marginLeft: 8, background: "none", border: "none", color: "#8f93a8", cursor: "pointer" }}>关闭</button>
+                        <button className="ts-14" onClick={() => { setStage("idle"); setErrorMsg(""); }} style={{ marginLeft: 8, background: "none", border: "none", color: "#8f93a8", cursor: "pointer" }}>关闭</button>
                     </div>
                 )}
 
@@ -264,7 +279,7 @@ export function MovieShelf({ onOpenMovie, onClose }: Props) {
                     <div className="ts-14" style={{ marginTop: 12, padding: 12, borderRadius: 10, background: "#1a1d2c", color: "#b6b9c9", lineHeight: 1.8 }}>
                         <p style={{ fontWeight: 600, color: "#e8e9f0" }}>给视频配字幕的三种方式：</p>
                         <p>1. 下载现成字幕：SubHD、字幕库、OpenSubtitles 按资源名搜 SRT 文件；</p>
-                        <p>2. 没有字幕就用剪映（手机/电脑）：导入视频 → 文本 → 智能字幕 → 语音转字幕 → 导出 SRT，免费；</p>
+                        <p>2. 没有字幕就用电脑上的「卡卡字幕助手」（已装好，命令 videocaptioner）或手机剪映：智能字幕 → 语音转字幕 → 导出 SRT；</p>
                         <p>3. mkv 内封字幕：电脑上用 PotPlayer「字幕另存为」或 MKVToolNix 提取；mkv 本体若播放失败，先用剪映转一次 MP4。</p>
                     </div>
                 )}
@@ -279,27 +294,56 @@ export function MovieShelf({ onOpenMovie, onClose }: Props) {
                     {movies.map(movie => {
                         const p = progressMap.get(movie.id);
                         const sceneCount = sceneCountMap.get(movie.id) ?? 0;
+                        const hasCues = cuesMap.get(movie.id) ?? false;
+                        const segmented = p?.segmented ?? false;
                         const watched = (p?.positionSeconds ?? 0) > 0;
                         return (
-                            <div key={movie.id} style={{ borderRadius: 12, background: "#1a1d2c", padding: "12px 14px", display: "flex", alignItems: "center", gap: 12 }}>
-                                <div style={{ flex: 1, minWidth: 0 }}>
-                                    <div className="ts-14" style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{movie.title}</div>
-                                    <div className="ts-14" style={{ color: "#8f93a8", marginTop: 2 }}>
-                                        {formatDuration(movie.durationSeconds)}
-                                        {sceneCount > 0 ? ` · ${sceneCount} 场` : " · 未分段"}
-                                        {watched ? ` · 看到 ${formatDuration(p?.positionSeconds)}` : ""}
+                            <div key={movie.id} style={{ borderRadius: 12, background: "#1a1d2c", padding: "12px 14px" }}>
+                                <div className="flex items-center gap-3">
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                        <div className="ts-14" style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{movie.title}</div>
+                                        <div className="ts-14" style={{ color: "#8f93a8", marginTop: 2 }}>
+                                            {formatDuration(movie.durationSeconds)}
+                                            {segmented ? ` · ${sceneCount} 场` : " · 未分段"}
+                                            {hasCues ? " · 有字幕" : " · 无字幕"}
+                                            {watched ? ` · 看到 ${formatDuration(p?.positionSeconds)}` : ""}
+                                        </div>
                                     </div>
+                                    <button
+                                        className="ts-14"
+                                        onClick={() => onOpenMovie(movie)}
+                                        style={{ padding: "6px 14px", borderRadius: 8, background: "#6c5ce7", color: "#fff", border: "none", cursor: "pointer" }}
+                                    >{watched ? "继续" : "观看"}</button>
+                                    <button
+                                        className="ts-14"
+                                        onClick={() => void handleDelete(movie)}
+                                        style={{ padding: "6px 10px", borderRadius: 8, background: "none", border: "1px solid #2c3046", color: "#8f93a8", cursor: "pointer" }}
+                                    >删除</button>
                                 </div>
-                                <button
-                                    className="ts-14"
-                                    onClick={() => onOpenMovie(movie)}
-                                    style={{ padding: "6px 14px", borderRadius: 8, background: "#6c5ce7", color: "#fff", border: "none", cursor: "pointer" }}
-                                >{watched ? "继续" : "观看"}</button>
-                                <button
-                                    className="ts-14"
-                                    onClick={() => void handleDelete(movie)}
-                                    style={{ padding: "6px 10px", borderRadius: 8, background: "none", border: "1px solid #2c3046", color: "#8f93a8", cursor: "pointer" }}
-                                >删除</button>
+                                {/* 未就绪时的引导操作 */}
+                                {(!segmented || !hasCues) && (
+                                    <div className="flex items-center gap-2" style={{ marginTop: 10 }}>
+                                        {!hasCues && (
+                                            <button
+                                                className="ts-14"
+                                                disabled={busy}
+                                                onClick={() => { setPendingImport({ movie, videoFile: null }); }}
+                                                style={{ padding: "5px 12px", borderRadius: 8, background: "#2c3046", color: "#e8e9f0", border: "none", cursor: "pointer" }}
+                                            >导入字幕</button>
+                                        )}
+                                        {hasCues && !segmented && (
+                                            <button
+                                                className="ts-14"
+                                                disabled={busy}
+                                                onClick={() => { videoPickTargetRef.current = movie.id; videoInputRef.current?.click(); }}
+                                                style={{ padding: "5px 12px", borderRadius: 8, background: "#2c3046", color: "#e8e9f0", border: "none", cursor: "pointer" }}
+                                            >生成分段（需重选视频文件）</button>
+                                        )}
+                                        {!hasCues && (
+                                            <span className="ts-14" style={{ color: "#565b73" }}>分段需要字幕，char 靠它理解剧情</span>
+                                        )}
+                                    </div>
+                                )}
                             </div>
                         );
                     })}
@@ -310,6 +354,55 @@ export function MovieShelf({ onOpenMovie, onClose }: Props) {
                     视频文件保存在你的设备原处，观影不会复制或上传它；每次观看时需重新选择一次文件。库里只存分段摘要、字幕与画面帧（约几 MB）。
                 </div>
             </div>
+
+            {/* 导入决策框：选完视频后出现，字幕选择由按钮手势触发 */}
+            {pendingImport && (
+                <div
+                    style={{
+                        position: "absolute", inset: 0, zIndex: 50,
+                        background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)",
+                        display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+                    }}
+                    onClick={() => setPendingImport(null)}
+                >
+                    <div
+                        style={{
+                            width: "min(380px, 92%)", background: "#141622", border: "1px solid #2c3046",
+                            borderRadius: 16, padding: "16px 18px",
+                        }}
+                        onClick={e => e.stopPropagation()}
+                    >
+                        <div className="ts-16" style={{ fontWeight: 600, marginBottom: 6 }}>《{pendingImport.movie.title}》</div>
+                        <div className="ts-14" style={{ color: "#b6b9c9", lineHeight: 1.7, marginBottom: 14 }}>
+                            {pendingHasCues
+                                ? "已有字幕。可以现在生成分段，也可以重新选择字幕文件覆盖。"
+                                : "视频已就绪。char 靠字幕理解剧情——建议先导入字幕文件（SRT/ASS/VTT），没有的话看看顶部的「字幕从哪来？」。"}
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                            <button
+                                className="ts-14"
+                                disabled={busy}
+                                onClick={() => subtitleInputRef.current?.click()}
+                                style={{ padding: "10px 0", borderRadius: 10, background: "#2c3046", color: "#e8e9f0", border: "none", cursor: "pointer" }}
+                            >{pendingHasCues ? "重新选择字幕文件" : "选择字幕文件（推荐）"}</button>
+                            {pendingHasCues && (
+                                <button
+                                    className="ts-14"
+                                    disabled={busy}
+                                    onClick={() => void runSegmentation(pendingImport)}
+                                    style={{ padding: "10px 0", borderRadius: 10, background: "linear-gradient(135deg, #6c5ce7, #a29bfe)", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 }}
+                                >生成分段并抽帧</button>
+                            )}
+                            <button
+                                className="ts-14"
+                                disabled={busy}
+                                onClick={() => setPendingImport(null)}
+                                style={{ padding: "8px 0", borderRadius: 10, background: "none", color: "#8f93a8", border: "none", cursor: "pointer" }}
+                            >稍后再说（影片已存入片架）</button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
