@@ -182,6 +182,17 @@ export const CONTENT_SCOPE_TAG_GROUPS: TagGroupProfile[] = [
         ],
     },
     {
+        id: "movie",
+        label: "观影",
+        tags: ["movie"],
+        minors: [
+            commonMinor("movie", ["movie"]),
+            profile("movie", "segment", "分段", ["movie", "segment"]),
+            profile("movie", "danmaku", "弹幕", ["movie", "danmaku"]),
+            profile("movie", "discuss", "讨论", ["movie", "discuss"]),
+        ],
+    },
+    {
         id: "interview_magazine",
         label: "访谈",
         tags: ["interview_magazine"],
