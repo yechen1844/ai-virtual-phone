@@ -4,7 +4,6 @@
 //   格式：CRLF 换行、零宽字符、逗号毫秒时间轴（00:01:02,500）
 //   ASS/SSA：解析 Dialogue: 行，剥离样式标签 {} 、位置代码与绘图代码，仅保留台词
 
-import { decodeTxtArrayBuffer } from "./reading-parser";
 import type { SubtitleCue } from "./movie-types";
 
 /** 去除零宽字符与 BOM 残留 */
@@ -43,7 +42,10 @@ function parseSrtContent(content: string): SubtitleCue[] {
         const start = parseTimestamp(startRaw ?? "");
         const end = parseTimestamp(((endRaw ?? "").trim().split(/\s+/)[0]) ?? "");
         if (start === null || end === null || end <= start) continue;
-        const text = lines.slice(timeLineIndex + 1).join("\n").trim();
+        const text = lines.slice(timeLineIndex + 1).join("\n")
+            // 去除 <i> <b> <font> 等 HTML 风格标签（SRT 常见）
+            .replace(/<[^>]+>/g, "")
+            .trim();
         if (!text) continue;
         cues.push({ startSeconds: start, endSeconds: end, text });
     }
@@ -145,9 +147,55 @@ export function parseSubtitleText(content: string, filename?: string): SubtitleC
         .sort((a, b) => a.startSeconds - b.startSeconds || a.endSeconds - b.endSeconds);
 }
 
-/** 从字幕文件字节解析（多编码自动尝试，复用阅读 TXT 解码器评分逻辑） */
+/**
+ * 字幕专用解码：不用通用打分（UTF-16 把 ASCII 配成假汉字会骗过 CJK 打分）。
+ * 顺序：BOM → 严格 UTF-8 → GB18030 → 高 NUL 占比才尝试 UTF-16 → 兜底宽松 UTF-8。
+ */
+export function decodeSubtitleBuffer(buffer: ArrayBuffer): { text: string; encoding: string } {
+    const bytes = new Uint8Array(buffer);
+
+    // 1. BOM 优先
+    if (bytes.length >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) {
+        return { text: new TextDecoder("utf-8").decode(bytes.subarray(3)), encoding: "utf-8 (BOM)" };
+    }
+    if (bytes.length >= 2 && bytes[0] === 0xFF && bytes[1] === 0xFE) {
+        return { text: new TextDecoder("utf-16le").decode(bytes.subarray(2)), encoding: "utf-16le (BOM)" };
+    }
+    if (bytes.length >= 2 && bytes[0] === 0xFE && bytes[1] === 0xFF) {
+        return { text: new TextDecoder("utf-16be").decode(bytes.subarray(2)), encoding: "utf-16be (BOM)" };
+    }
+
+    // 2. 无 BOM：严格 UTF-8（结构自校验，成功即正确）
+    try {
+        return { text: new TextDecoder("utf-8", { fatal: true }).decode(bytes), encoding: "utf-8" };
+    } catch { /* 非 UTF-8，继续 */ }
+
+    // 3. GB18030 严格（GBK/GB2312 超集）
+    try {
+        return { text: new TextDecoder("gb18030", { fatal: true }).decode(bytes), encoding: "gb18030" };
+    } catch { /* 继续 */ }
+
+    // 4. UTF-16 仅在有大量 NUL 字节证据时尝试（单字节文本误读 UTF-16 不会产生 NUL）
+    let nulCount = 0;
+    for (let i = 0; i < bytes.length; i++) if (bytes[i] === 0) nulCount++;
+    if (bytes.length > 0 && nulCount / bytes.length > 0.1) {
+        // 看 NUL 偏偶还是偏奇判断 LE/BE
+        let nulEven = 0, nulOdd = 0;
+        for (let i = 0; i < bytes.length; i += 2) { if (bytes[i] === 0) nulEven++; }
+        for (let i = 1; i < bytes.length; i += 2) { if (bytes[i] === 0) nulOdd++; }
+        if (nulOdd >= nulEven) {
+            return { text: new TextDecoder("utf-16le").decode(bytes), encoding: "utf-16le" };
+        }
+        return { text: new TextDecoder("utf-16be").decode(bytes), encoding: "utf-16be" };
+    }
+
+    // 5. 兜底：宽松 UTF-8
+    return { text: new TextDecoder("utf-8", { fatal: false }).decode(bytes), encoding: "utf-8 (lenient)" };
+}
+
+/** 从字幕文件字节解析（多编码自动尝试，解码顺序见 decodeSubtitleBuffer） */
 export function parseSubtitleArrayBuffer(buffer: ArrayBuffer, filename?: string): { cues: SubtitleCue[]; encoding: string } {
-    const { text, encoding } = decodeTxtArrayBuffer(buffer);
+    const { text, encoding } = decodeSubtitleBuffer(buffer);
     return { cues: parseSubtitleText(text, filename), encoding };
 }
 
