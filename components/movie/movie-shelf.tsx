@@ -232,7 +232,6 @@ export function MovieShelf({ onOpenMovie, onClose }: Props) {
                 <input
                     ref={subtitleInputRef}
                     type="file"
-                    accept=".srt,.vtt,.ass,.ssa,text/plain"
                     style={{ display: "none" }}
                     onChange={e => { void handleSubtitlePicked(e.target.files?.[0] ?? null); e.target.value = ""; }}
                 />
