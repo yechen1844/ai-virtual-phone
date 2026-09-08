@@ -4,7 +4,7 @@
 
 import type { Movie, MovieAct, MovieScene, MovieFrame, SubtitleCue, MovieSegmentationResult, MovieDiscussContext, MovieDanmaku } from "./movie-types";
 import type { ChatSession } from "./chat-storage";
-import { loadChatMessages } from "./chat-storage";
+import { loadChatMessages, pushChatMessage, createOrGetSession } from "./chat-storage";
 import { loadCharacters } from "./character-storage";
 import { saveSegmentation, saveFrames, saveDanmaku, loadScenes, loadFrames } from "./movie-storage";
 import { buildSubtitleWindow, sliceSubtitleText } from "./movie-parser";
@@ -29,6 +29,7 @@ import { formatCoreMemories, formatLongTermMemories } from "./memory-injector";
 import { prepareShortTermContext } from "./short-term-assembler";
 import { sendLLMRequest } from "./chat-engine";
 import { recordCharacterActivity } from "./complex-memory/guard";
+import { DEFAULT_MOVIE_BILINGUAL_PROMPT, resolveBilingualPrompt } from "./bilingual-prompt-defaults";
 
 // ── Resolve assembler input for movie context（照抄 resolveReadingInput）──
 
@@ -44,6 +45,7 @@ async function resolveMovieInput(
         frameHint?: string;
         sceneBoundaries?: string;
         moviePosition?: string;
+        bilingualInstruction?: string;
         history?: ReturnType<typeof loadChatMessages>;
     },
 ): Promise<{ input: AssemblerInput; apiConfig: ApiConfig | null; preset: PresetConfig | null } | null> {
@@ -113,6 +115,7 @@ async function resolveMovieInput(
         frameHint: options.frameHint,
         sceneBoundaries: options.sceneBoundaries,
         moviePosition: options.moviePosition,
+        chatBilingualInstruction: options.bilingualInstruction ?? "",
     };
 
     return { input, apiConfig, preset };
@@ -635,6 +638,7 @@ export async function generateMovieChat(
         sceneSubtitleWindow: context.sceneSubtitleWindow,
         frameHint: context.frameHint,
         moviePosition: `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`,
+        bilingualInstruction: resolveBilingualPrompt(session.bilingualTranslationEnabled !== false, undefined, DEFAULT_MOVIE_BILINGUAL_PROMPT),
         history,
     });
     if (!resolved) return null;
@@ -723,6 +727,7 @@ function buildDanmakuFallback(params: {
         "- 可以吐槽、感叹、联想、共情、玩梗，但不要复述字幕原文",
         "- 禁止剧透本场之后的内容",
         "- 禁止用星号（*）或括号包裹动作描写",
+        "- 如果本场有特别想说的话（一句弹幕装不下的感想、联想到了你们的共同经历），在所有弹幕之后另起一行输出：[开口]想说的话[/开口]。没有就输出 [无开口]，不要勉强",
         "</movie_danmaku_instruction>",
     ].join("\n");
 }
@@ -771,6 +776,22 @@ export async function generateMovieDanmaku(
 
     // 副 app 活动计数进统一水位线
     recordCharacterActivity(characterId, character.name, 1);
+
+    // [开口]：char 主动以聊天消息发一条感想（走 movie_discuss 会话，主聊天不可见但短期记忆互通）
+    const openingMatch = responseText.match(/\[开口\]([\s\S]*?)\[\/开口\]/);
+    if (openingMatch && openingMatch[1].trim()) {
+        const session = createOrGetSession(characterId);
+        pushChatMessage({
+            sessionId: session.id,
+            role: "assistant",
+            content: openingMatch[1].trim(),
+            origin: "movie_discuss",
+            mediaData: {
+                movieTitle: movie.title,
+                moviePositionSeconds: Math.floor(scene.startSeconds),
+            },
+        });
+    }
 
     const items: MovieDanmaku[] = [];
     for (const d of parseDanmakuResponse(responseText)) {

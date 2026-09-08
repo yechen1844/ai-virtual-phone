@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { createOrGetSession, loadChatMessages, pushChatMessage, isMovieDiscussMessage, type ChatMessage } from "@/lib/chat-storage";
 import { parseAIResponse } from "@/lib/rich-message-parser";
+import { splitBilingualText } from "@/lib/bilingual-text";
 import { loadCharacters } from "@/lib/character-storage";
 import { buildMovieDiscussContext, generateMovieChat } from "@/lib/movie-engine";
 import { saveDanmaku } from "@/lib/movie-storage";
@@ -52,6 +53,11 @@ export function MovieDiscussPanel({ movie, cues, companionId, getPosition, scene
     useEffect(() => {
         reload();
     }, [reload]);
+
+    // 弹幕生成时 char 可能附带 [开口] 主动消息 → 列表变化时同步刷新聊天消息
+    useEffect(() => {
+        reload();
+    }, [danmakuList.length, reload]);
 
     // 聊天 tab 新消息自动滚底
     useEffect(() => {
@@ -227,21 +233,32 @@ export function MovieDiscussPanel({ movie, cues, companionId, getPosition, scene
                                 想到什么就说吧，她/他知道你现在看到哪
                             </div>
                         )}
-                        {messages.map(msg => (
-                            <div key={msg.id} style={{ display: "flex", flexDirection: msg.role === "user" ? "row-reverse" : "row" }}>
-                                <div
-                                    className="ts-14"
-                                    style={{
-                                        maxWidth: "85%", padding: "8px 11px", borderRadius: 12,
-                                        whiteSpace: "pre-wrap", wordBreak: "break-word", lineHeight: 1.55,
-                                        background: msg.role === "user" ? "#6c5ce7" : "#262a3e",
-                                        color: "#e8e9f0",
-                                        borderBottomRightRadius: msg.role === "user" ? 4 : 12,
-                                        borderBottomLeftRadius: msg.role === "user" ? 12 : 4,
-                                    }}
-                                >{msg.content}</div>
-                            </div>
-                        ))}
+                        {messages.map(msg => {
+                            // 双语渲染：与主聊天一致的「原文 + 中文译文」样式
+                            const bilingual = msg.role === "assistant" ? splitBilingualText(msg.content) : null;
+                            return (
+                                <div key={msg.id} style={{ display: "flex", flexDirection: msg.role === "user" ? "row-reverse" : "row" }}>
+                                    <div
+                                        className="ts-14"
+                                        style={{
+                                            maxWidth: "85%", padding: "8px 11px", borderRadius: 12,
+                                            whiteSpace: "pre-wrap", wordBreak: "break-word", lineHeight: 1.55,
+                                            background: msg.role === "user" ? "#6c5ce7" : "#262a3e",
+                                            color: "#e8e9f0",
+                                            borderBottomRightRadius: msg.role === "user" ? 4 : 12,
+                                            borderBottomLeftRadius: msg.role === "user" ? 12 : 4,
+                                        }}
+                                    >
+                                        {bilingual ? (
+                                            <>
+                                                <div>{bilingual.original}</div>
+                                                <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px solid rgba(255,255,255,0.12)", color: "#b6b9c9" }}>{bilingual.translated}</div>
+                                            </>
+                                        ) : msg.content}
+                                    </div>
+                                </div>
+                            );
+                        })}
                         {chatting && (
                             <div className="ts-14" style={{ color: "#565b73" }}>正在输入…</div>
                         )}

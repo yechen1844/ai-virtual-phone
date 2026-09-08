@@ -88,3 +88,12 @@ export function resolveBilingualPrompt(enabled: boolean, customPrompt: string | 
   const prompt = customPrompt?.trim();
   return prompt || defaultPrompt;
 }
+
+export const DEFAULT_MOVIE_BILINGUAL_PROMPT = [
+  "【观影双语规则（仅非中文角色使用，中文角色忽略此规则)】",
+  "**作用范围**：对讨论回复生效",
+  "**输出格式**：",
+  "- 中文正常输出无需译文：如果回复是中文，直接正常输出，不要添加译文",
+  "- 非中文情况下译文输出格式：如果回复使用非中文语言，则回复使用“原文|对应的简体中文译文”的格式输出",
+  "- 不要改变协议头，只对内容本身作用：只对内容本身输出译文，不要改变【发弹幕 秒=N】这些结构",
+].join("\n");

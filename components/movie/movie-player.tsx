@@ -272,6 +272,41 @@ export function MoviePlayer({ movie, onBack }: Props) {
         });
     }, []);
 
+    // ── 长按三倍速（长按视频画面 450ms 触发，松手恢复）──
+    const pressTimerRef = useRef<number | null>(null);
+    const rateRef = useRef(1);
+    const [speedActive, setSpeedActive] = useState(false);
+
+    const clearPressTimer = useCallback(() => {
+        if (pressTimerRef.current !== null) {
+            window.clearTimeout(pressTimerRef.current);
+            pressTimerRef.current = null;
+        }
+        const video = videoRef.current;
+        if (speedActive && video) {
+            video.playbackRate = rateRef.current;
+            setSpeedActive(false);
+        }
+    }, [speedActive]);
+
+    const handleAreaPointerDown = useCallback((e: React.PointerEvent) => {
+        if (needFile) return;
+        const video = videoRef.current;
+        if (!video || video.paused) return;
+        // 忽略原生控制条区域（底部约 64px）
+        const rect = videoAreaRef.current?.getBoundingClientRect();
+        if (rect && e.clientY > rect.bottom - 64) return;
+        clearPressTimer();
+        pressTimerRef.current = window.setTimeout(() => {
+            const v = videoRef.current;
+            if (v && !v.paused) {
+                rateRef.current = v.playbackRate || 1;
+                v.playbackRate = 3;
+                setSpeedActive(true);
+            }
+        }, 450);
+    }, [needFile, clearPressTimer]);
+
     return (
         <div className="absolute inset-0 flex flex-col" style={{ background: "#000", color: "#e8e9f0" }}>
             {/* 顶栏（顶部避让状态栏安全区） */}
@@ -292,8 +327,16 @@ export function MoviePlayer({ movie, onBack }: Props) {
                 </div>
             </div>
 
-            {/* 视频区（全屏目标容器） */}
-            <div ref={videoAreaRef} style={{ flex: 1, position: "relative", display: "flex", alignItems: "center", justifyContent: "center", background: "#000", overflow: "hidden" }}>
+            {/* 视频区（全屏目标容器；长按画面三倍速） */}
+            <div
+                ref={videoAreaRef}
+                onPointerDown={handleAreaPointerDown}
+                onPointerUp={clearPressTimer}
+                onPointerLeave={clearPressTimer}
+                onPointerCancel={clearPressTimer}
+                onContextMenu={e => e.preventDefault()}
+                style={{ flex: 1, position: "relative", display: "flex", alignItems: "center", justifyContent: "center", background: "#000", overflow: "hidden", userSelect: "none", WebkitUserSelect: "none" }}
+            >
                 {needFile ? (
                     <div style={{ textAlign: "center", padding: 20 }}>
                         <p className="ts-14" style={{ color: "#8f93a8", marginBottom: 12 }}>选择这部电影的视频文件开始观看（文件仍在你的设备原处）</p>
@@ -330,7 +373,7 @@ export function MoviePlayer({ movie, onBack }: Props) {
                     style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none" }}
                 />
 
-                {/* 当前场指示 */}
+                {/* 当前场指示（不用 backdrop-filter：视频上方的模糊层会加重合成负载导致音画不同步） */}
                 {!needFile && currentScene && (
                     <div
                         className="ts-14"
@@ -338,12 +381,25 @@ export function MoviePlayer({ movie, onBack }: Props) {
                             position: "absolute", top: 8, left: 10,
                             padding: "6px 10px", borderRadius: 8,
                             background: "rgba(13,15,26,0.72)", color: "#c9cce0",
-                            pointerEvents: "none", backdropFilter: "blur(6px)",
+                            pointerEvents: "none",
                         }}
                     >
                         第{currentScene.index + 1}场 {currentScene.title} · {formatSeconds(position)}
                         {generatingSceneIdx === currentScene.index && <span style={{ color: "#a29bfe" }}> · 弹幕生成中…</span>}
                     </div>
+                )}
+
+                {/* 长按三倍速指示 */}
+                {speedActive && (
+                    <div
+                        className="ts-14"
+                        style={{
+                            position: "absolute", top: "42%", left: "50%", transform: "translate(-50%, -50%)",
+                            padding: "10px 18px", borderRadius: 999,
+                            background: "rgba(13,15,26,0.8)", color: "#a29bfe",
+                            fontWeight: 700, pointerEvents: "none",
+                        }}
+                    >3× 倍速中</div>
                 )}
 
                 {/* 弹幕提示 */}

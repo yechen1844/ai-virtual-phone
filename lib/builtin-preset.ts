@@ -6,7 +6,7 @@ import type { PresetConfig } from "./settings-types";
 import { getCheckPhonePromptTags } from "./checkphone-config";
 
 export const BUILTIN_PRESET_ID = "builtin_default_v1";
-export const BUILTIN_PRESET_VERSION = 265; // 升版本会用出厂内容重写用户的内置预设副本（自定义会丢），非必要不升
+export const BUILTIN_PRESET_VERSION = 266; // 升版本会用出厂内容重写用户的内置预设副本（自定义会丢），非必要不升
 
 export function createBuiltinPreset(): PresetConfig {
     const now = Date.now();
@@ -3972,6 +3972,7 @@ export function createBuiltinPreset(): PresetConfig {
                     "- 可以吐槽、感叹、联想、共情、玩梗，但不要复述字幕原文",
                     "- 禁止剧透本场之后的内容",
                     "- 禁止用星号（*）或括号包裹动作描写",
+                    "- 如果本场有特别想说的话（一句弹幕装不下的感想、联想到了你们的共同经历），在所有弹幕之后另起一行输出：[开口]想说的话[/开口]。没有就输出 [无开口]，不要勉强",
                     "{{chatBilingualInstruction}}",
                     "</movie_danmaku_instruction>",
                 ].join("\n"),
