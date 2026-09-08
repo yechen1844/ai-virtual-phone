@@ -106,19 +106,21 @@ export function MoviePlayer({ movie, onBack }: Props) {
 
     return (
         <div className="absolute inset-0 flex flex-col" style={{ background: "#000", color: "#e8e9f0" }}>
-            {/* 顶栏 */}
-            <div className="flex items-center gap-3 px-4" style={{ height: 48, background: "#0d0f1a", borderBottom: "1px solid #232636" }}>
-                <button className="ts-14" onClick={onBack} style={{ background: "none", border: "none", color: "#8f93a8", padding: "4px 8px", cursor: "pointer" }}>‹ 片架</button>
-                <span className="ts-14" style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{movie.title}</span>
-                <div style={{ flex: 1 }} />
-                {scenes.length > 0 && (
-                    <button className="ts-14" onClick={() => setShowSegments(true)} style={{ background: "none", border: "1px solid #2c3046", color: "#8f93a8", borderRadius: 8, padding: "4px 10px", cursor: "pointer" }}>分段</button>
-                )}
-                <button
-                    className="ts-14"
-                    onClick={() => setShowDiscuss(v => !v)}
-                    style={{ background: showDiscuss ? "#6c5ce7" : "none", border: "1px solid #2c3046", color: showDiscuss ? "#fff" : "#8f93a8", borderRadius: 8, padding: "4px 10px", cursor: "pointer" }}
-                >讨论</button>
+            {/* 顶栏（顶部避让状态栏安全区，照 reading-shelf-header 模式） */}
+            <div style={{ flex: "0 0 auto", paddingTop: "var(--page-header-safe-top, max(48px, env(safe-area-inset-top, 48px)))", background: "#0d0f1a", borderBottom: "1px solid #232636" }}>
+                <div className="flex items-center gap-3 px-4" style={{ height: 48 }}>
+                    <button className="ts-14" onClick={onBack} style={{ background: "none", border: "none", color: "#8f93a8", padding: "4px 8px", cursor: "pointer" }}>‹ 片架</button>
+                    <span className="ts-14" style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{movie.title}</span>
+                    <div style={{ flex: 1 }} />
+                    {scenes.length > 0 && (
+                        <button className="ts-14" onClick={() => setShowSegments(true)} style={{ background: "none", border: "1px solid #2c3046", color: "#8f93a8", borderRadius: 8, padding: "4px 10px", cursor: "pointer" }}>分段</button>
+                    )}
+                    <button
+                        className="ts-14"
+                        onClick={() => setShowDiscuss(v => !v)}
+                        style={{ background: showDiscuss ? "#6c5ce7" : "none", border: "1px solid #2c3046", color: showDiscuss ? "#fff" : "#8f93a8", borderRadius: 8, padding: "4px 10px", cursor: "pointer" }}
+                    >讨论</button>
+                </div>
             </div>
 
             {/* 视频区 */}

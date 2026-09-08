@@ -115,7 +115,8 @@ export function MovieDiscussPanel({ movie, cues, companionId, getPosition, onClo
     return (
         <div
             style={{
-                position: "absolute", right: 10, bottom: 10,
+                position: "absolute", right: 10,
+                bottom: "calc(10px + env(safe-area-inset-bottom, 0px))",
                 width: "min(320px, 78%)", height: "62%",
                 display: "flex", flexDirection: "column",
                 background: "rgba(20,22,34,0.92)", backdropFilter: "blur(10px)",

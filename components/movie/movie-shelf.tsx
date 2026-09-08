@@ -182,20 +182,22 @@ export function MovieShelf({ onOpenMovie, onClose }: Props) {
 
     return (
         <div className="absolute inset-0 flex flex-col" style={{ background: "#0d0f1a", color: "#e8e9f0" }}>
-            {/* 顶栏 */}
-            <div className="flex items-center gap-3 px-4" style={{ height: 52, borderBottom: "1px solid #232636" }}>
-                <button
-                    className="ts-14"
-                    onClick={onClose}
-                    style={{ background: "none", border: "none", color: "#8f93a8", padding: "4px 8px", cursor: "pointer" }}
-                >‹ 返回</button>
-                <span className="ts-16" style={{ fontWeight: 600 }}>观影</span>
-                <div style={{ flex: 1 }} />
-                <button
-                    className="ts-14"
-                    onClick={() => setShowHelp(v => !v)}
-                    style={{ background: "none", border: "none", color: "#8f93a8", padding: "4px 8px", cursor: "pointer" }}
-                >字幕从哪来？</button>
+            {/* 顶栏（顶部避让状态栏安全区，照 reading-shelf-header 模式） */}
+            <div style={{ flex: "0 0 auto", paddingTop: "var(--page-header-safe-top, max(48px, env(safe-area-inset-top, 48px)))", background: "#0d0f1a", borderBottom: "1px solid #232636" }}>
+                <div className="flex items-center gap-3 px-4" style={{ height: 48 }}>
+                    <button
+                        className="ts-14"
+                        onClick={onClose}
+                        style={{ background: "none", border: "none", color: "#8f93a8", padding: "4px 8px", cursor: "pointer" }}
+                    >‹ 返回</button>
+                    <span className="ts-16" style={{ fontWeight: 600 }}>观影</span>
+                    <div style={{ flex: 1 }} />
+                    <button
+                        className="ts-14"
+                        onClick={() => setShowHelp(v => !v)}
+                        style={{ background: "none", border: "none", color: "#8f93a8", padding: "4px 8px", cursor: "pointer" }}
+                    >字幕从哪来？</button>
+                </div>
             </div>
 
             <div style={{ flex: 1, overflowY: "auto", padding: 16 }}>
