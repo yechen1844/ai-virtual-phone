@@ -232,7 +232,7 @@ export function MovieShelf({ onOpenMovie, onClose }: Props) {
                 <input
                     ref={subtitleInputRef}
                     type="file"
-                    accept=".srt,.vtt,.ass,.ssa"
+                    accept=".srt,.vtt,.ass,.ssa,text/plain"
                     style={{ display: "none" }}
                     onChange={e => { void handleSubtitlePicked(e.target.files?.[0] ?? null); e.target.value = ""; }}
                 />
@@ -385,6 +385,11 @@ export function MovieShelf({ onOpenMovie, onClose }: Props) {
                                 ? "已有字幕。可以现在生成分段，也可以重新选择字幕文件覆盖。"
                                 : "视频已就绪。char 靠字幕理解剧情——建议先导入字幕文件（SRT/ASS/VTT），没有的话看看顶部的「字幕从哪来？」。"}
                         </div>
+                        {stage === "error" && errorMsg && (
+                            <div className="ts-14" style={{ marginBottom: 10, padding: "8px 10px", borderRadius: 8, background: "#2c1a1e", color: "#e08a95", lineHeight: 1.6 }}>
+                                {errorMsg}
+                            </div>
+                        )}
                         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                             <button
                                 className="ts-14"

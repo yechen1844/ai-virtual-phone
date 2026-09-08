@@ -40,8 +40,8 @@ function parseSrtContent(content: string): SubtitleCue[] {
         const timeLineIndex = lines.findIndex(l => l.includes("-->"));
         if (timeLineIndex < 0) continue;
         const [startRaw, endRaw] = lines[timeLineIndex].split("-->");
-        const start = parseTimestamp(startRaw);
-        const end = parseTimestamp((endRaw ?? "").split(/\s+/)[0]); // 去掉 VTT cue settings
+        const start = parseTimestamp(startRaw ?? "");
+        const end = parseTimestamp(((endRaw ?? "").trim().split(/\s+/)[0]) ?? "");
         if (start === null || end === null || end <= start) continue;
         const text = lines.slice(timeLineIndex + 1).join("\n").trim();
         if (!text) continue;
@@ -61,8 +61,8 @@ function parseVttContent(content: string): SubtitleCue[] {
         const timeLineIndex = lines.findIndex(l => l.includes("-->"));
         if (timeLineIndex < 0) continue;
         const [startRaw, endRaw] = lines[timeLineIndex].split("-->");
-        const start = parseTimestamp(startRaw);
-        const end = parseTimestamp((endRaw ?? "").split(/\s+/)[0]);
+        const start = parseTimestamp(startRaw ?? "");
+        const end = parseTimestamp(((endRaw ?? "").trim().split(/\s+/)[0]) ?? "");
         if (start === null || end === null || end <= start) continue;
         const text = lines.slice(timeLineIndex + 1)
             .join("\n")
