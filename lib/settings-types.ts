@@ -241,13 +241,13 @@ export type ContentAppId =
     | "chat" | "diary" | "music" | "reading"
     | "forum" | "cocreate" | "story" | "game" | "xiaohongshu" | "dwelling"
     | "checkphone" | "shopping" | "calendar" | "interview_magazine"
-    | "moments" | "group_chat" | "vn" | "adventure" | "stardew";
+    | "moments" | "group_chat" | "vn" | "adventure" | "stardew" | "movie";
 
 export const CONTENT_APP_IDS: ContentAppId[] = [
     "chat", "diary", "music", "reading",
     "cocreate", "story", "game", "xiaohongshu", "dwelling",
     "checkphone", "shopping", "calendar", "interview_magazine",
-    "moments", "group_chat", "vn", "adventure", "stardew"
+    "moments", "group_chat", "vn", "adventure", "stardew", "movie"
 ];
 
 export const CONTENT_APP_LABELS: Record<ContentAppId, string> = {
@@ -270,6 +270,7 @@ export const CONTENT_APP_LABELS: Record<ContentAppId, string> = {
     vn: "漫卷",
     adventure: "冒险",
     stardew: "星露谷",
+    movie: "观影",
 };
 
 // Binding slot — config selections for a given scope

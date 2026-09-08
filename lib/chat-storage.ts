@@ -114,11 +114,12 @@ export type ChatMessage = {
         | "tool_result"
         | "memory_write_request"
         | "reading_discuss"
+        | "movie_discuss"
         | "system_instruction"
         | "group_admin_notice"
         | "media_file"
         | `plugin:${string}`; // 聊天插件自定义消息类型（由注册该 kind 的插件渲染气泡）
-    origin?: "chat" | "reading_discuss" | "custom_app" | "custom_app_background";
+    origin?: "chat" | "reading_discuss" | "movie_discuss" | "custom_app" | "custom_app_background";
     mediaUrl?: string;
     mediaData?: {
         amount?: number;          // 红包/转账金额
@@ -213,6 +214,8 @@ export type ChatMessage = {
         mediaCompressedAt?: string;
         mediaCleanedAt?: string;
         readingBookTitle?: string; // 阅读讨论所属书名，用于 prompt 短期记忆边界
+        movieTitle?: string;       // 观影讨论所属片名，用于 prompt 短期记忆边界
+        moviePositionSeconds?: number; // 观影讨论时的播放位置（秒），用于短期记忆边界进度标注
         appId?: string;
         appName?: string;
         appCardTitle?: string;
@@ -310,12 +313,17 @@ export function isReadingDiscussMessage(msg: Pick<ChatMessage, "origin" | "media
     return msg.origin === "reading_discuss" || msg.mediaType === "reading_discuss";
 }
 
+export function isMovieDiscussMessage(msg: Pick<ChatMessage, "origin" | "mediaType">): boolean {
+    return msg.origin === "movie_discuss" || msg.mediaType === "movie_discuss";
+}
+
 export function isSystemInstructionMessage(msg: Pick<ChatMessage, "role" | "mediaType">): boolean {
     return msg.role === "system" && msg.mediaType === "system_instruction";
 }
 
 export function getChatMessagePreview(msg: ChatMessage): string {
     if (isReadingDiscussMessage(msg)) return "";
+    if (isMovieDiscussMessage(msg)) return "";
 
     const userName = (() => { try { return resolveUserIdentity()?.name; } catch { return undefined; } })();
     const toYou = (text: string) => userName ? text.replace(new RegExp(userName, "g"), "你") : text;
@@ -432,6 +440,7 @@ function hasPreviewText(text: string | undefined): boolean {
 
 function isSessionPreviewCandidate(msg: ChatMessage): boolean {
     if (isReadingDiscussMessage(msg)) return false;
+    if (isMovieDiscussMessage(msg)) return false;
     if (msg.mediaType === "tool_result" || msg.mediaType === "tool_call") return false;
     if (msg.mediaType === "tool_notice") return false;
     if (msg.mediaType === "memory_write_request") return false;

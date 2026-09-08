@@ -31,4 +31,5 @@ export const CONTENT_APP_ACCENTS: Record<ContentAppId, string> = {
     vn: "#7C3AED",
     adventure: "#F97316",
     stardew: "#8B5E34",
+    movie: "#A29BFE",
 };

@@ -3,7 +3,7 @@
 // a unified timeline. Replaces the old ShortTermEvent IndexedDB approach.
 // Used by: memory-bank-page (UI display), memory-summarizer (summarization input).
 
-import { isReadingDiscussMessage, isSystemInstructionMessage, loadChatSessions, loadChatMessages, type ChatMessage } from "./chat-storage";
+import { isReadingDiscussMessage, isMovieDiscussMessage, isSystemInstructionMessage, loadChatSessions, loadChatMessages, type ChatMessage } from "./chat-storage";
 import { splitBilingualText } from "./bilingual-text";
 import { buildGroupAdminBracketText } from "./group-admin";
 import { loadMomentPosts, loadMomentComments } from "./moments-storage";
@@ -878,19 +878,37 @@ function getReadingBookTitle(msg: ChatMessage, fallback = "当前书籍"): strin
     return msg.mediaData?.readingBookTitle?.trim() || fallback;
 }
 
+function getMovieTitle(msg: ChatMessage, fallback = "当前影片"): string {
+    return msg.mediaData?.movieTitle?.trim() || fallback;
+}
+
+function getMoviePositionSuffix(msg: ChatMessage): string {
+    const seconds = msg.mediaData?.moviePositionSeconds;
+    if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return "";
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `（看到 ${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}）`;
+}
+
+/**
+ * 共读/观影边界条目：把 app 域内的讨论消息（origin 标记）纳入统一短期时间线。
+ * 主聊天里 char 由此「知道」你们刚一起读了什么/看了什么，但讨论细节不刷屏。
+ */
 function buildCoReadingBoundaryEntries(
     history: ChatMessage[],
     params: { characterName: string; userName: string; timeAware: boolean; timestampOptions?: PromptTimestampOptions },
 ): NativeTimelineEntry[] {
     const entries: NativeTimelineEntry[] = [];
-    let lastMode: "chat" | "reading" | null = null;
+    let lastMode: "chat" | "reading" | "movie" | null = null;
     let activeBookTitle = "";
+    let activeMovieTitle = "";
 
     for (const msg of history) {
         if (msg.isRetracted) continue;
         if (isPromptHiddenChatMessage(msg)) continue;
-        const mode = isReadingDiscussMessage(msg) ? "reading" : "chat";
+        const mode = isReadingDiscussMessage(msg) ? "reading" : isMovieDiscussMessage(msg) ? "movie" : "chat";
         const bookTitle = mode === "reading" ? getReadingBookTitle(msg, activeBookTitle || "当前书籍") : activeBookTitle || "当前书籍";
+        const movieTitle = mode === "movie" ? getMovieTitle(msg, activeMovieTitle || "当前影片") : activeMovieTitle || "当前影片";
 
         if (mode !== lastMode) {
             if (mode === "reading") {
@@ -903,6 +921,16 @@ function buildCoReadingBoundaryEntries(
                     timestamp: msg.createdAt,
                     content: `[共读${formatCoReadingTimestamp(msg.createdAt, params.timeAware, params.timestampOptions)}]${params.userName}和${params.characterName}开始了共读《${activeBookTitle}》`,
                 });
+            } else if (mode === "movie") {
+                activeMovieTitle = movieTitle;
+                entries.push({
+                    id: `comovie_start_${msg.id}`,
+                    sourceApp: "chat",
+                    sourceDetail: "direct",
+                    sessionId: msg.sessionId,
+                    timestamp: msg.createdAt,
+                    content: `[观影${formatCoReadingTimestamp(msg.createdAt, params.timeAware, params.timestampOptions)}]${params.userName}和${params.characterName}开始了观影《${activeMovieTitle}》${getMoviePositionSuffix(msg)}`,
+                });
             } else if (lastMode === "reading") {
                 entries.push({
                     id: `coreading_end_${msg.id}`,
@@ -912,11 +940,21 @@ function buildCoReadingBoundaryEntries(
                     timestamp: msg.createdAt,
                     content: `[共读${formatCoReadingTimestamp(msg.createdAt, params.timeAware, params.timestampOptions)}]${params.userName}和${params.characterName}结束了共读《${activeBookTitle || "当前书籍"}》`,
                 });
+            } else if (lastMode === "movie") {
+                entries.push({
+                    id: `comovie_end_${msg.id}`,
+                    sourceApp: "chat",
+                    sourceDetail: "direct",
+                    sessionId: msg.sessionId,
+                    timestamp: msg.createdAt,
+                    content: `[观影${formatCoReadingTimestamp(msg.createdAt, params.timeAware, params.timestampOptions)}]${params.userName}和${params.characterName}结束了观影《${activeMovieTitle || "当前影片"}》`,
+                });
             }
             lastMode = mode;
         }
 
         if (mode === "reading") activeBookTitle = bookTitle;
+        if (mode === "movie") activeMovieTitle = movieTitle;
     }
 
     return entries;
