@@ -32,6 +32,8 @@ function formatSeconds(total: number): string {
 
 export function MovieDiscussPanel({ movie, cues, companionId, getPosition, sceneStart, sceneEnd, danmakuList, generatingScene, onGenerateDanmaku, onClose }: Props) {
     const [messages, setMessages] = useState<ChatMessage[]>([]);
+    const [hasMore, setHasMore] = useState(false);
+    const [loadingMore, setLoadingMore] = useState(false);
     const [input, setInput] = useState("");
     const [chatting, setChatting] = useState(false);
     const [tab, setTab] = useState<"chat" | "danmaku">("chat");
@@ -41,14 +43,37 @@ export function MovieDiscussPanel({ movie, cues, companionId, getPosition, scene
     const panelRef = useRef<HTMLDivElement>(null);
     const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
     const movedRef = useRef(false);
+    const sessionIdRef = useRef("");
+    // 向上加载更早消息后，保持视口停在同一条消息上（prepend 防跳）
+    const scrollRestoreRef = useRef<{ prevHeight: number; prevTop: number } | null>(null);
 
+    const PAGE = 40;
     const companion = loadCharacters().find(c => c.id === companionId);
 
     const reload = useCallback(() => {
         if (!companionId) return;
         const session = createOrGetSession(companionId);
-        setMessages(loadChatMessages(session.id).filter(isMovieDiscussMessage));
+        sessionIdRef.current = session.id;
+        const list = loadChatMessages(session.id, PAGE, isMovieDiscussMessage);
+        setMessages(list);
+        setHasMore(list.length >= PAGE);
     }, [companionId]);
+
+    const loadMore = useCallback(() => {
+        const oldest = messages[0];
+        if (!oldest || loadingMore) return;
+        setLoadingMore(true);
+        try {
+            const older = loadChatMessages(sessionIdRef.current, PAGE, isMovieDiscussMessage, oldest.createdAt);
+            if (older.length > 0 && listRef.current) {
+                scrollRestoreRef.current = { prevHeight: listRef.current.scrollHeight, prevTop: listRef.current.scrollTop };
+            }
+            setMessages(prev => [...older, ...prev]);
+            setHasMore(older.length >= PAGE);
+        } finally {
+            setLoadingMore(false);
+        }
+    }, [messages, loadingMore]);
 
     useEffect(() => {
         reload();
@@ -59,12 +84,23 @@ export function MovieDiscussPanel({ movie, cues, companionId, getPosition, scene
         reload();
     }, [danmakuList.length, reload]);
 
-    // 聊天 tab 新消息自动滚底
+    // prepend 后恢复滚动位置（避免「查看更早」把视口顶走）
+    useEffect(() => {
+        const restore = scrollRestoreRef.current;
+        const el = listRef.current;
+        if (restore && el) {
+            scrollRestoreRef.current = null;
+            el.scrollTop = el.scrollHeight - restore.prevHeight + restore.prevTop;
+        }
+    }, [messages.length]);
+
+    // 聊天 tab 新消息自动滚底（只在最后一条消息变化时，向上翻历史不打扰）
+    const lastMsgId = messages.length > 0 ? messages[messages.length - 1].id : "";
     useEffect(() => {
         if (tab !== "chat") return;
         const el = listRef.current;
         if (el) el.scrollTop = el.scrollHeight;
-    }, [messages.length, chatting, tab]);
+    }, [lastMsgId, chatting, tab]);
 
     // ── 拖拽（header 指针拖动，面板可自由移动）──
     const handleDragStart = (e: React.PointerEvent) => {
@@ -228,6 +264,13 @@ export function MovieDiscussPanel({ movie, cues, companionId, getPosition, scene
                 <>
                     {/* 消息列表 */}
                     <div ref={listRef} style={{ flex: 1, overflowY: "auto", padding: "10px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
+                        {hasMore && (
+                            <button
+                                className="ts-14"
+                                onClick={loadMore}
+                                style={{ alignSelf: "center", padding: "4px 14px", borderRadius: 999, background: "#1a1d2c", color: "#8f93a8", border: "1px solid #2c3046", cursor: "pointer" }}
+                            >{loadingMore ? "加载中…" : "查看更早的讨论"}</button>
+                        )}
                         {messages.length === 0 && (
                             <div className="ts-14" style={{ color: "#565b73", textAlign: "center", padding: "20px 0" }}>
                                 想到什么就说吧，她/他知道你现在看到哪

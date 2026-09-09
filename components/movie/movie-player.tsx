@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { loadProgress, saveProgress, loadScenes, loadCues, loadDanmaku } from "@/lib/movie-storage";
 import { findCurrentScene, generateMovieDanmaku } from "@/lib/movie-engine";
 import { loadCharacters } from "@/lib/character-storage";
@@ -32,12 +33,14 @@ export function MoviePlayer({ movie, onBack }: Props) {
     const [companionId, setCompanionId] = useState("");
     const [showDiscuss, setShowDiscuss] = useState(false);
     const [showSegments, setShowSegments] = useState(false);
-    // 沉浸模式：隐藏顶栏（尝试锁横屏），顶部下滑唤出、4 秒自动隐藏
-    const [immersive, setImmersive] = useState(false);
+    // 影院模式：portal 到 body 的铺满视口层（脱离 float 虚拟手机边框），横竖屏自适应
+    const [cinema, setCinema] = useState(false);
     const [showTopBar, setShowTopBar] = useState(true);
     const [danmakuList, setDanmakuList] = useState<MovieDanmaku[]>([]);
     const [generatingSceneIdx, setGeneratingSceneIdx] = useState<number | null>(null);
     const [danmakuNotice, setDanmakuNotice] = useState("");
+    // 长按三倍速
+    const [speedActive, setSpeedActive] = useState(false);
 
     const videoRef = useRef<HTMLVideoElement>(null);
     const videoAreaRef = useRef<HTMLDivElement>(null);
@@ -51,6 +54,12 @@ export function MoviePlayer({ movie, onBack }: Props) {
     const danmakuRef = useRef<MovieDanmaku[]>([]);
     const generatingSceneRef = useRef<number | null>(null);
     const companionIdRef = useRef("");
+    const pressTimerRef = useRef<number | null>(null);
+    const rateRef = useRef(1);
+    const immersiveTopSwipeRef = useRef<number | null>(null);
+    // 影院模式切换时移交播放状态：新 video 元素加载后跳回原位置并恢复播放
+    const pendingSeekRef = useRef<number | null>(null);
+    const pendingPlayRef = useRef(false);
 
     scenesRef.current = scenes;
     danmakuRef.current = danmakuList;
@@ -130,6 +139,15 @@ export function MoviePlayer({ movie, onBack }: Props) {
         anim.oncancel = () => el.remove();
     }, []);
 
+    const finishDanmakuGeneration = useCallback((items: MovieDanmaku[]) => {
+        if (items.length > 0) {
+            setDanmakuList(prev => [...prev, ...items].sort((a, b) => a.timeSeconds - b.timeSeconds));
+            showNotice(`已生成 ${items.length} 条弹幕`);
+        } else {
+            showNotice("本场没有生成弹幕，可稍后手动重试");
+        }
+    }, [showNotice]);
+
     // ── 进新场自动生成弹幕（该场一条都没有时才触发，控成本）──
     const maybeAutoGenerate = useCallback((scene: MovieScene) => {
         if (generatingSceneRef.current !== null) return;
@@ -138,14 +156,7 @@ export function MoviePlayer({ movie, onBack }: Props) {
         generatingSceneRef.current = scene.index;
         setGeneratingSceneIdx(scene.index);
         void generateMovieDanmaku(movie, scene, companionIdRef.current)
-            .then(items => {
-                if (items.length > 0) {
-                    setDanmakuList(prev => [...prev, ...items].sort((a, b) => a.timeSeconds - b.timeSeconds));
-                    showNotice(`已生成 ${items.length} 条弹幕`);
-                } else {
-                    showNotice("本场没有生成弹幕，可稍后手动重试");
-                }
-            })
+            .then(finishDanmakuGeneration)
             .catch((err: unknown) => {
                 showNotice(`弹幕生成失败：${err instanceof Error ? err.message : String(err)}`);
             })
@@ -153,7 +164,7 @@ export function MoviePlayer({ movie, onBack }: Props) {
                 generatingSceneRef.current = null;
                 setGeneratingSceneIdx(null);
             });
-    }, [movie, showNotice]);
+    }, [movie, showNotice, finishDanmakuGeneration]);
 
     // 换幕即触发（React effect 监听，比挂在 timeupdate 上可靠）
     const currentSceneIdx = currentScene?.index ?? -1;
@@ -172,14 +183,7 @@ export function MoviePlayer({ movie, onBack }: Props) {
         generatingSceneRef.current = scene.index;
         setGeneratingSceneIdx(scene.index);
         void generateMovieDanmaku(movie, scene, companionIdRef.current)
-            .then(items => {
-                if (items.length > 0) {
-                    setDanmakuList(prev => [...prev, ...items].sort((a, b) => a.timeSeconds - b.timeSeconds));
-                    showNotice(`已生成 ${items.length} 条弹幕`);
-                } else {
-                    showNotice("没有解析出弹幕，可稍后重试");
-                }
-            })
+            .then(finishDanmakuGeneration)
             .catch((err: unknown) => {
                 showNotice(`弹幕生成失败：${err instanceof Error ? err.message : String(err)}`);
             })
@@ -187,7 +191,7 @@ export function MoviePlayer({ movie, onBack }: Props) {
                 generatingSceneRef.current = null;
                 setGeneratingSceneIdx(null);
             });
-    }, [movie, showNotice]);
+    }, [movie, showNotice, finishDanmakuGeneration]);
 
     const handleTimeUpdate = useCallback(() => {
         const video = videoRef.current;
@@ -227,10 +231,16 @@ export function MoviePlayer({ movie, onBack }: Props) {
         if (danmakuLayerRef.current) danmakuLayerRef.current.innerHTML = "";
     }, []);
 
-    const handleSeekToSaved = () => {
+    // 视频加载完成后：跳到移交位置（影院模式切换）或上次观看到的位置
+    const handleLoadedMetadata = () => {
         const video = videoRef.current;
-        if (video && positionRef.current > 1) {
-            video.currentTime = positionRef.current;
+        if (!video) return;
+        const seek = pendingSeekRef.current ?? (positionRef.current > 1 ? positionRef.current : 0);
+        pendingSeekRef.current = null;
+        if (seek > 0) video.currentTime = seek;
+        if (pendingPlayRef.current) {
+            pendingPlayRef.current = false;
+            void video.play().catch(() => {});
         }
     };
 
@@ -244,48 +254,39 @@ export function MoviePlayer({ movie, onBack }: Props) {
         setNeedFile(false);
     };
 
-    // ── 沉浸模式：隐藏顶栏 + 尝试锁横屏；顶部下滑唤出顶栏 ──
-    const toggleImmersive = useCallback(async () => {
-        const el = videoAreaRef.current;
-        if (!immersive) {
-            setImmersive(true);
-            setShowTopBar(false);
-            if (el && document.fullscreenElement !== el) {
-                try { await el.requestFullscreen?.(); } catch { /* 无全屏权限时纯应用内沉浸 */ }
-            }
-            try { await (screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> }).lock?.("landscape"); } catch { /* 锁横屏失败则跟随系统 */ }
-        } else {
-            setImmersive(false);
-            setShowTopBar(true);
-            try { (screen.orientation as ScreenOrientation & { unlock?: () => void }).unlock?.(); } catch { /* ignore */ }
-            if (document.fullscreenElement) {
-                try { await document.exitFullscreen(); } catch { /* ignore */ }
-            }
+    // ── 影院模式切换：移交播放位置与播放状态，portal 到 body 铺满真实视口 ──
+    const toggleCinema = useCallback(async () => {
+        const video = videoRef.current;
+        if (video) {
+            pendingSeekRef.current = video.currentTime;
+            pendingPlayRef.current = !video.paused;
         }
-    }, [immersive]);
+        const next = !cinema;
+        setCinema(next);
+        setShowTopBar(!next);
+        if (next && typeof document !== "undefined" && !document.fullscreenElement) {
+            // 尝试系统级全屏（隐藏浏览器 UI / 壳层状态栏）；失败则纯应用内铺满
+            window.setTimeout(() => {
+                void videoAreaRef.current?.requestFullscreen?.().catch(() => {});
+            }, 50);
+        }
+    }, [cinema]);
 
-    // 系统手势退出全屏时同步状态
+    // 系统手势退出全屏时保持影院模式不丢状态（portal 层仍铺满视口）
     useEffect(() => {
-        const onFsChange = () => {
-            if (!document.fullscreenElement) return;
-            // 进入全屏成功，无额外动作
-        };
+        const onFsChange = () => { /* no-op：影院层不依赖 fullscreen 状态 */ };
         document.addEventListener("fullscreenchange", onFsChange);
         return () => document.removeEventListener("fullscreenchange", onFsChange);
     }, []);
 
-    // 沉浸模式唤出顶栏后 4 秒自动隐藏
+    // 影院模式唤出顶栏后 4 秒自动隐藏
     useEffect(() => {
-        if (!immersive || !showTopBar) return;
+        if (!cinema || !showTopBar) return;
         const t = window.setTimeout(() => setShowTopBar(false), 4000);
         return () => window.clearTimeout(t);
-    }, [immersive, showTopBar]);
+    }, [cinema, showTopBar]);
 
-    // ── 长按三倍速（长按视频画面 450ms 触发，松手恢复）──
-    const pressTimerRef = useRef<number | null>(null);
-    const rateRef = useRef(1);
-    const [speedActive, setSpeedActive] = useState(false);
-
+    // 长按三倍速 + 影院模式顶部边缘下滑唤出顶栏
     const clearPressTimer = useCallback(() => {
         if (pressTimerRef.current !== null) {
             window.clearTimeout(pressTimerRef.current);
@@ -298,16 +299,13 @@ export function MoviePlayer({ movie, onBack }: Props) {
         }
     }, [speedActive]);
 
-    // 沉浸模式下顶部边缘下滑唤出顶栏
-    const immersiveTopSwipeRef = useRef<number | null>(null);
     const handleAreaPointerDown = useCallback((e: React.PointerEvent) => {
         if (needFile) return;
         const rect = videoAreaRef.current?.getBoundingClientRect();
-        if (immersive && rect && e.clientY < rect.top + 32) {
+        if (cinema && rect && e.clientY < rect.top + 32) {
             immersiveTopSwipeRef.current = e.clientY;
             return;
         }
-        // 长按三倍速
         const video = videoRef.current;
         if (!video || video.paused) return;
         if (rect && e.clientY > rect.bottom - 64) return;
@@ -320,7 +318,7 @@ export function MoviePlayer({ movie, onBack }: Props) {
                 setSpeedActive(true);
             }
         }, 450);
-    }, [needFile, immersive, clearPressTimer]);
+    }, [needFile, cinema, clearPressTimer]);
 
     const handleAreaPointerMove = useCallback((e: React.PointerEvent) => {
         if (immersiveTopSwipeRef.current !== null && e.clientY - immersiveTopSwipeRef.current > 40) {
@@ -347,7 +345,66 @@ export function MoviePlayer({ movie, onBack }: Props) {
         });
     }, []);
 
-    // 顶栏内容（普通模式内嵌一行；沉浸模式浮层显示同一套按钮）
+    // 共用的视频元素（同一时刻只挂载一份：普通视图或影院层）
+    const videoJsx = needFile ? null : (
+        <video
+            ref={videoRef}
+            src={videoUrl ?? undefined}
+            controls
+            playsInline
+            onTimeUpdate={handleTimeUpdate}
+            onSeeking={handleSeeking}
+            onLoadedMetadata={handleLoadedMetadata}
+            style={{ width: "100%", height: "100%", objectFit: "contain" }}
+        />
+    );
+
+    // 共用的视频区子层：弹幕层 / 场景指示 / 倍速指示 / 提示
+    const overlayJsx = (
+        <>
+            <div ref={danmakuLayerRef} style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none" }} />
+            {!needFile && currentScene && (
+                <div
+                    className="ts-14"
+                    style={{
+                        position: "absolute", top: 8, left: 10,
+                        padding: "6px 10px", borderRadius: 8,
+                        background: "rgba(13,15,26,0.72)", color: "#c9cce0",
+                        pointerEvents: "none",
+                    }}
+                >
+                    第{currentScene.index + 1}场 {currentScene.title} · {formatSeconds(position)}
+                    {generatingSceneIdx === currentScene.index && <span style={{ color: "#a29bfe" }}> · 弹幕生成中…</span>}
+                </div>
+            )}
+            {speedActive && (
+                <div
+                    className="ts-14"
+                    style={{
+                        position: "absolute", top: "42%", left: "50%", transform: "translate(-50%, -50%)",
+                        padding: "10px 18px", borderRadius: 999,
+                        background: "rgba(13,15,26,0.8)", color: "#a29bfe",
+                        fontWeight: 700, pointerEvents: "none",
+                    }}
+                >3× 倍速中</div>
+            )}
+            {danmakuNotice && (
+                <div className="ts-14" style={{ position: "absolute", bottom: 12, left: 12, padding: "6px 10px", borderRadius: 8, background: "rgba(13,15,26,0.8)", color: "#a29bfe", pointerEvents: "none" }}>
+                    {danmakuNotice}
+                </div>
+            )}
+        </>
+    );
+
+    const videoAreaHandlers = {
+        onPointerDown: handleAreaPointerDown,
+        onPointerMove: handleAreaPointerMove,
+        onPointerUp: handleAreaPointerUp,
+        onPointerCancel: handleAreaPointerUp,
+        onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
+    };
+
+    // 顶栏按钮
     const barButtons = (
         <>
             <button className="ts-14" onClick={onBack} style={{ background: "none", border: "none", color: "#8f93a8", padding: "4px 8px", cursor: "pointer" }}>‹ 片架</button>
@@ -356,111 +413,29 @@ export function MoviePlayer({ movie, onBack }: Props) {
             {scenes.length > 0 && (
                 <button className="ts-14" onClick={() => setShowSegments(true)} style={{ background: "none", border: "1px solid #2c3046", color: "#8f93a8", borderRadius: 8, padding: "4px 10px", cursor: "pointer" }}>分段</button>
             )}
-            <button className="ts-14" onClick={() => void toggleImmersive()} style={{ background: "none", border: "1px solid #2c3046", color: "#8f93a8", borderRadius: 8, padding: "4px 10px", cursor: "pointer" }}>{immersive ? "退出全屏" : "全屏"}</button>
+            <button className="ts-14" onClick={() => void toggleCinema()} style={{ background: "none", border: "1px solid #2c3046", color: "#8f93a8", borderRadius: 8, padding: "4px 10px", cursor: "pointer" }}>{cinema ? "退出全屏" : "全屏"}</button>
         </>
     );
 
-    return (
-        <div className="absolute inset-0 flex flex-col" style={{ background: "#000", color: "#e8e9f0" }}>
-            {/* 顶栏：普通模式常规渲染；沉浸模式隐藏（下滑唤出浮层） */}
-            {!immersive && (
-                <div style={{ flex: "0 0 auto", paddingTop: "var(--page-header-safe-top, max(48px, env(safe-area-inset-top, 48px)))", background: "#0d0f1a", borderBottom: "1px solid #232636" }}>
-                    <div className="flex items-center gap-3 px-4" style={{ height: 48 }}>{barButtons}</div>
-                </div>
-            )}
-
-            {/* 视频区（全屏目标容器；长按画面三倍速；沉浸模式顶部下滑唤出顶栏） */}
+    // 影院层（portal 到 body）：铺满真实视口，横竖屏自适应，顶栏下滑唤出
+    const cinemaLayer = cinema && typeof document !== "undefined" ? createPortal(
+        <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "#000", display: "flex", flexDirection: "column" }}>
             <div
                 ref={videoAreaRef}
-                onPointerDown={handleAreaPointerDown}
-                onPointerMove={handleAreaPointerMove}
-                onPointerUp={handleAreaPointerUp}
-                onPointerCancel={handleAreaPointerUp}
-                onContextMenu={e => e.preventDefault()}
+                {...videoAreaHandlers}
                 style={{ flex: 1, position: "relative", display: "flex", alignItems: "center", justifyContent: "center", background: "#000", overflow: "hidden", userSelect: "none", WebkitUserSelect: "none" }}
             >
-                {needFile ? (
-                    <div style={{ textAlign: "center", padding: 20 }}>
-                        <p className="ts-14" style={{ color: "#8f93a8", marginBottom: 12 }}>选择这部电影的视频文件开始观看（文件仍在你的设备原处）</p>
-                        <input
-                            type="file"
-                            accept="video/*,.mp4,.webm,.mov,.m4v"
-                            id={`movie-file-${movie.id}`}
-                            style={{ display: "none" }}
-                            onChange={e => { handleFilePicked(e.target.files?.[0] ?? null); e.target.value = ""; }}
-                        />
-                        <button
-                            className="ts-14"
-                            onClick={() => document.getElementById(`movie-file-${movie.id}`)?.click()}
-                            style={{ padding: "10px 24px", borderRadius: 10, background: "linear-gradient(135deg, #6c5ce7, #a29bfe)", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 }}
-                        >选择视频文件</button>
-                        {fileError && <p className="ts-14" style={{ color: "#e08a95", marginTop: 10 }}>{fileError}</p>}
-                    </div>
-                ) : (
-                    <video
-                        ref={videoRef}
-                        src={videoUrl ?? undefined}
-                        controls
-                        playsInline
-                        onTimeUpdate={handleTimeUpdate}
-                        onSeeking={handleSeeking}
-                        onLoadedMetadata={handleSeekToSaved}
-                        style={{ width: "100%", height: "100%", objectFit: "contain" }}
-                    />
-                )}
-
-                {/* 弹幕层 */}
-                <div
-                    ref={danmakuLayerRef}
-                    style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none" }}
-                />
-
-                {/* 当前场指示 */}
-                {!needFile && currentScene && (
-                    <div
-                        className="ts-14"
-                        style={{
-                            position: "absolute", top: 8, left: 10,
-                            padding: "6px 10px", borderRadius: 8,
-                            background: "rgba(13,15,26,0.72)", color: "#c9cce0",
-                            pointerEvents: "none",
-                        }}
-                    >
-                        第{currentScene.index + 1}场 {currentScene.title} · {formatSeconds(position)}
-                        {generatingSceneIdx === currentScene.index && <span style={{ color: "#a29bfe" }}> · 弹幕生成中…</span>}
-                    </div>
-                )}
-
-                {/* 长按三倍速指示 */}
-                {speedActive && (
-                    <div
-                        className="ts-14"
-                        style={{
-                            position: "absolute", top: "42%", left: "50%", transform: "translate(-50%, -50%)",
-                            padding: "10px 18px", borderRadius: 999,
-                            background: "rgba(13,15,26,0.8)", color: "#a29bfe",
-                            fontWeight: 700, pointerEvents: "none",
-                        }}
-                    >3× 倍速中</div>
-                )}
-
-                {/* 弹幕提示 */}
-                {danmakuNotice && (
-                    <div className="ts-14" style={{ position: "absolute", bottom: 12, left: 12, padding: "6px 10px", borderRadius: 8, background: "rgba(13,15,26,0.8)", color: "#a29bfe", pointerEvents: "none" }}>
-                        {danmakuNotice}
-                    </div>
-                )}
+                {videoJsx}
+                {overlayJsx}
             </div>
-
-            {/* 沉浸模式：顶栏浮层（下滑唤出，4 秒自动隐藏） */}
-            {immersive && showTopBar && (
-                <div style={{ position: "absolute", top: 0, left: 0, right: 0, zIndex: 40, paddingTop: "var(--page-header-safe-top, max(24px, env(safe-area-inset-top, 24px)))", background: "rgba(13,15,26,0.92)", borderBottom: "1px solid #232636" }}>
+            {/* 下滑唤出的顶栏浮层 */}
+            {showTopBar && (
+                <div style={{ position: "absolute", top: 0, left: 0, right: 0, zIndex: 40, paddingTop: "max(18px, env(safe-area-inset-top, 18px))", background: "rgba(13,15,26,0.92)", borderBottom: "1px solid #232636" }}>
                     <div className="flex items-center gap-3 px-4" style={{ height: 48 }}>{barButtons}</div>
                 </div>
             )}
-
-            {/* 悬浮球：面板关闭时显示，点击展开讨论面板 */}
-            {!showDiscuss && !needFile && (
+            {/* 悬浮球 */}
+            {!showDiscuss && (
                 <button
                     onClick={handleToggleDiscuss}
                     style={{
@@ -475,7 +450,6 @@ export function MoviePlayer({ movie, onBack }: Props) {
                     }}
                 >{companionName.slice(0, 4)}</button>
             )}
-
             {/* 点击面板外部收起 */}
             {showDiscuss && (
                 <div
@@ -483,8 +457,7 @@ export function MoviePlayer({ movie, onBack }: Props) {
                     style={{ position: "absolute", inset: 0, zIndex: 29, background: "rgba(0,0,0,0.15)" }}
                 />
             )}
-
-            {/* 讨论面板：常驻挂载（隐藏时也继续生成） */}
+            {/* 讨论面板（常驻挂载） */}
             <div
                 style={{
                     position: "absolute", inset: 0, zIndex: 30,
@@ -505,6 +478,54 @@ export function MoviePlayer({ movie, onBack }: Props) {
                     onClose={handleToggleDiscuss}
                 />
             </div>
+        </div>,
+        document.body,
+    ) : null;
+
+    return (
+        <div className="absolute inset-0 flex flex-col" style={{ background: "#000", color: "#e8e9f0" }}>
+            {/* 顶栏 */}
+            <div style={{ flex: "0 0 auto", paddingTop: "var(--page-header-safe-top, max(48px, env(safe-area-inset-top, 48px)))", background: "#0d0f1a", borderBottom: "1px solid #232636" }}>
+                <div className="flex items-center gap-3 px-4" style={{ height: 48 }}>{barButtons}</div>
+            </div>
+
+            {/* 视频区 / 影院模式占位 */}
+            {cinema ? (
+                <div
+                    onClick={() => void toggleCinema()}
+                    style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#565b73" }}
+                >
+                    <span className="ts-14">正在以影院模式播放，点这里返回</span>
+                </div>
+            ) : (
+                <div
+                    ref={videoAreaRef}
+                    {...videoAreaHandlers}
+                    style={{ flex: 1, position: "relative", display: "flex", alignItems: "center", justifyContent: "center", background: "#000", overflow: "hidden", userSelect: "none", WebkitUserSelect: "none" }}
+                >
+                    {needFile ? (
+                        <div style={{ textAlign: "center", padding: 20 }}>
+                            <p className="ts-14" style={{ color: "#8f93a8", marginBottom: 12 }}>选择这部电影的视频文件开始观看（文件仍在你的设备原处）</p>
+                            <input
+                                type="file"
+                                accept="video/*,.mp4,.webm,.mov,.m4v"
+                                id={`movie-file-${movie.id}`}
+                                style={{ display: "none" }}
+                                onChange={e => { handleFilePicked(e.target.files?.[0] ?? null); e.target.value = ""; }}
+                            />
+                            <button
+                                className="ts-14"
+                                onClick={() => document.getElementById(`movie-file-${movie.id}`)?.click()}
+                                style={{ padding: "10px 24px", borderRadius: 10, background: "linear-gradient(135deg, #6c5ce7, #a29bfe)", color: "#fff", border: "none", cursor: "pointer", fontWeight: 600 }}
+                            >选择视频文件</button>
+                            {fileError && <p className="ts-14" style={{ color: "#e08a95", marginTop: 10 }}>{fileError}</p>}
+                        </div>
+                    ) : videoJsx}
+                    {overlayJsx}
+                </div>
+            )}
+
+            {cinemaLayer}
 
             {/* 分段结构弹窗 */}
             {showSegments && (

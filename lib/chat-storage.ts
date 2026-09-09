@@ -1175,21 +1175,28 @@ export function reassignChatSessionMessages(fromSessionId: string, toSessionId: 
 }
 
 // ── CRUD for Messages ─────────────────────────
-export function loadChatMessages(sessionId: string, limit?: number): ChatMessage[] {
-    if (limit && limit > 0) return loadRecentSessionTail(sessionId, limit);
-    return getSortedSessionMessages(sessionId);
+export function loadChatMessages(sessionId: string, limit?: number, filter?: (m: ChatMessage) => boolean, beforeCreatedAt?: string): ChatMessage[] {
+    if (limit && limit > 0) return loadRecentSessionTail(sessionId, limit, filter, beforeCreatedAt);
+    const all = getSortedSessionMessages(sessionId);
+    return filter ? all.filter(filter) : all;
 }
 
 /**
  * 快速取某会话「最近 limit 条」：逆序扫内存缓存（物理尾部 ≈ 最新，最新消息总是最后追加），
  * 只对收集到的小批量做一次排序，避免大会话（2.8 万条级）在每次发送后都要对全量消息
  * filter+sort 造成点击触发回复时的主线程卡顿。只改变取数方式，不改消息语义。
+ * filter 在扫描时逐条应用（如副 app 消息混在主会话中，先取尾部再过滤会漏历史）；
+ * beforeCreatedAt 为翻页游标：只收集严格早于该时间的消息。
  */
-function loadRecentSessionTail(sessionId: string, limit: number): ChatMessage[] {
+function loadRecentSessionTail(sessionId: string, limit: number, filter?: (m: ChatMessage) => boolean, beforeCreatedAt?: string): ChatMessage[] {
     const cache = _messagesCache;
     const collected: ChatMessage[] = [];
     for (let i = cache.length - 1; i >= 0 && collected.length < limit; i -= 1) {
-        if (cache[i].sessionId === sessionId) collected.push(cache[i]);
+        const m = cache[i];
+        if (m.sessionId !== sessionId) continue;
+        if (filter && !filter(m)) continue;
+        if (beforeCreatedAt && m.createdAt >= beforeCreatedAt) continue;
+        collected.push(m);
     }
     if (collected.length <= 1) return collected;
     collected.sort(compareChatMessages);
