@@ -130,14 +130,26 @@ async function callMovieLLM(
     appTags?: string[],
     userName?: string,
 ): Promise<string> {
-    return sendLLMRequest(
-        config,
-        preset,
-        messages,
-        regexes ?? [],
-        { characterName, userName },
-        { appId: "movie", appTags },
-    );
+    // 看门狗：请求挂起时不能永久卡死 generatingSceneRef / chatting 状态
+    const MOVIE_LLM_TIMEOUT_MS = 180_000;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+        return await Promise.race([
+            sendLLMRequest(
+                config,
+                preset,
+                messages,
+                regexes ?? [],
+                { characterName, userName },
+                { appId: "movie", appTags },
+            ),
+            new Promise<never>((_, reject) => {
+                timer = setTimeout(() => reject(new Error("请求超时（3 分钟无响应）")), MOVIE_LLM_TIMEOUT_MS);
+            }),
+        ]);
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
 }
 
 // ── Format helpers ──
@@ -791,6 +803,8 @@ export async function generateMovieDanmaku(
                 moviePositionSeconds: Math.floor(scene.startSeconds),
             },
         });
+        // 通知讨论面板刷新（面板可能在普通视图或影院层挂载）
+        if (typeof window !== "undefined") window.dispatchEvent(new Event("movie-discuss-updated"));
     }
 
     const items: MovieDanmaku[] = [];

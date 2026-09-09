@@ -22,6 +22,8 @@ type Props = {
     generatingScene: boolean;
     onGenerateDanmaku: () => void;
     onClose: () => void;
+    /** 面板可见性（隐藏时仍挂载，生成不中断） */
+    visible?: boolean;
 };
 
 function formatSeconds(total: number): string {
@@ -30,12 +32,13 @@ function formatSeconds(total: number): string {
     return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
-export function MovieDiscussPanel({ movie, cues, companionId, getPosition, sceneStart, sceneEnd, danmakuList, generatingScene, onGenerateDanmaku, onClose }: Props) {
+export function MovieDiscussPanel({ movie, cues, companionId, getPosition, sceneStart, sceneEnd, danmakuList, generatingScene, onGenerateDanmaku, onClose, visible = true }: Props) {
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [hasMore, setHasMore] = useState(false);
     const [loadingMore, setLoadingMore] = useState(false);
     const [input, setInput] = useState("");
     const [chatting, setChatting] = useState(false);
+    const [errorMsg, setErrorMsg] = useState("");
     const [tab, setTab] = useState<"chat" | "danmaku">("chat");
     // 拖拽位置：null = 默认右下角；拖过后记录左上角绝对坐标（面板内坐标，随面板隐藏保持不变）
     const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
@@ -79,10 +82,16 @@ export function MovieDiscussPanel({ movie, cues, companionId, getPosition, scene
         reload();
     }, [reload]);
 
-    // 弹幕生成时 char 可能附带 [开口] 主动消息 → 列表变化时同步刷新聊天消息
+    // 弹幕生成时 char 可能附带 [开口] 主动消息；跨视图实例同步 → 事件驱动刷新
     useEffect(() => {
         reload();
     }, [danmakuList.length, reload]);
+
+    useEffect(() => {
+        const onUpdated = () => reload();
+        window.addEventListener("movie-discuss-updated", onUpdated);
+        return () => window.removeEventListener("movie-discuss-updated", onUpdated);
+    }, [reload]);
 
     // prepend 后恢复滚动位置（避免「查看更早」把视口顶走）
     useEffect(() => {
@@ -142,8 +151,13 @@ export function MovieDiscussPanel({ movie, cues, companionId, getPosition, scene
     // ── 发送 ──
     const handleSend = async () => {
         const text = input.trim();
-        if (!text || !companionId || chatting) return;
+        if (!text || chatting) return;
+        if (!companionId) {
+            setErrorMsg("未选择陪伴角色——请在片架选择陪伴后重新分段，或退出重进让进度加载完成");
+            return;
+        }
         setInput("");
+        setErrorMsg("");
 
         const session = createOrGetSession(companionId);
         const positionSeconds = getPosition();
@@ -166,7 +180,10 @@ export function MovieDiscussPanel({ movie, cues, companionId, getPosition, scene
         setChatting(true);
         try {
             const context = await buildMovieDiscussContext(movie, positionSeconds, cues);
-            if (!context) return;
+            if (!context) {
+                setErrorMsg("无法构建观影上下文（分段数据缺失？）");
+                return;
+            }
             const result = await generateMovieChat(session, movie, context, cues, companionId);
             if (result && result.reply) {
                 const { parts, statusPanel, innerMonologue, stateValues, freshStateValues } = parseAIResponse(result.reply, []);
@@ -202,10 +219,14 @@ export function MovieDiscussPanel({ movie, cues, companionId, getPosition, scene
                     }));
                     await saveDanmaku(items);
                 }
+                if (typeof window !== "undefined") window.dispatchEvent(new Event("movie-discuss-updated"));
                 reload();
+            } else {
+                setErrorMsg("她没有回复——可能是 API 未配置、请求失败或内容被拦截，详见控制台");
             }
         } catch (err) {
             console.error("[Movie] Discuss error:", err);
+            setErrorMsg(`发送失败：${err instanceof Error ? err.message : String(err)}`);
         } finally {
             setChatting(false);
         }
@@ -223,6 +244,9 @@ export function MovieDiscussPanel({ movie, cues, companionId, getPosition, scene
             ref={panelRef}
             style={{
                 position: "absolute",
+                zIndex: 30,
+                visibility: visible ? "visible" : "hidden",
+                pointerEvents: visible ? "auto" : "none",
                 ...panelStyle,
                 width: "min(320px, 78%)", height: "62%",
                 display: "flex", flexDirection: "column",
@@ -302,6 +326,11 @@ export function MovieDiscussPanel({ movie, cues, companionId, getPosition, scene
                                 </div>
                             );
                         })}
+                        {errorMsg && (
+                            <div className="ts-14" style={{ color: "#e08a95", background: "rgba(224,138,149,0.1)", borderRadius: 8, padding: "6px 10px", lineHeight: 1.5 }}>
+                                {errorMsg}
+                            </div>
+                        )}
                         {chatting && (
                             <div className="ts-14" style={{ color: "#565b73" }}>正在输入…</div>
                         )}
@@ -328,7 +357,7 @@ export function MovieDiscussPanel({ movie, cues, companionId, getPosition, scene
                             onClick={() => void handleSend()}
                             disabled={chatting || !input.trim()}
                             style={{ padding: "8px 14px", borderRadius: 10, background: input.trim() && !chatting ? "#6c5ce7" : "#232636", color: input.trim() && !chatting ? "#fff" : "#565b73", border: "none", cursor: "pointer" }}
-                        >发送</button>
+                        >{chatting ? "回复中…" : "发送"}</button>
                     </div>
                 </>
             ) : (

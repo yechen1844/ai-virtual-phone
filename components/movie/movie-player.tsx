@@ -165,18 +165,23 @@ export function MoviePlayer({ movie, onBack }: Props) {
             });
     }, [movie, showNotice, finishDanmakuGeneration]);
 
-    // 换幕即触发（React effect 监听，比挂在 timeupdate 上可靠）
+    // 换幕即触发（React effect 监听，比挂在 timeupdate 上可靠；companionId 异步加载完成后也要补跑一次）
     const currentSceneIdx = currentScene?.index ?? -1;
     useEffect(() => {
         if (needFile) return;
         if (currentSceneIdx < 0) return;
+        if (!companionId) return;
         const scene = scenes.find(s => s.index === currentSceneIdx);
         if (scene) maybeAutoGenerate(scene);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [currentSceneIdx, needFile]);
+    }, [currentSceneIdx, needFile, companionId]);
 
     // ── 手动生成当前场弹幕 ──
     const handleGenerateDanmaku = useCallback(() => {
+        if (!companionIdRef.current) {
+            showNotice("先在片架选择陪伴角色，才能生成她的弹幕");
+            return;
+        }
         const scene = findCurrentScene(scenesRef.current, positionRef.current);
         if (!scene || generatingSceneRef.current !== null) return;
         generatingSceneRef.current = scene.index;
@@ -397,7 +402,47 @@ export function MoviePlayer({ movie, onBack }: Props) {
         </>
     );
 
-    // 影院层（portal 到 body）：铺满真实视口，横竖屏自适应，顶栏下滑唤出
+    // 讨论 UI（悬浮球 + 点外关闭 + 面板）：普通视图与影院层共用同一实例
+    const discussionJsx = (
+        <>
+            {!showDiscuss && !needFile && (
+                <button
+                    onClick={handleToggleDiscuss}
+                    style={{
+                        position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
+                        width: 52, height: 52, borderRadius: "50%", zIndex: 25,
+                        background: "linear-gradient(135deg, #6c5ce7, #a29bfe)",
+                        color: "#fff", border: "2px solid rgba(255,255,255,0.25)",
+                        cursor: "pointer", fontWeight: 600, fontSize: 12,
+                        boxShadow: "0 4px 14px rgba(0,0,0,0.45)",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        lineHeight: 1.2, padding: 4, wordBreak: "break-all",
+                    }}
+                >{companionName.slice(0, 4)}</button>
+            )}
+            {showDiscuss && (
+                <div
+                    onClick={handleToggleDiscuss}
+                    style={{ position: "absolute", inset: 0, zIndex: 29, background: "rgba(0,0,0,0.15)" }}
+                />
+            )}
+            <MovieDiscussPanel
+                movie={movie}
+                cues={cues}
+                companionId={companionId}
+                getPosition={() => positionRef.current}
+                sceneStart={currentScene?.startSeconds ?? 0}
+                sceneEnd={currentScene?.endSeconds ?? 0}
+                danmakuList={danmakuList}
+                generatingScene={generatingSceneIdx !== null}
+                onGenerateDanmaku={handleGenerateDanmaku}
+                onClose={handleToggleDiscuss}
+                visible={showDiscuss}
+            />
+        </>
+    );
+
+    // 影院层（portal 到 body）：铺满真实视口，横竖屏自适应，暂停时显示顶栏
     const cinemaLayer = cinema && typeof document !== "undefined" ? createPortal(
         <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "#000", display: "flex", flexDirection: "column" }}>
             <div
@@ -414,50 +459,7 @@ export function MoviePlayer({ movie, onBack }: Props) {
                     <div className="flex items-center gap-3 px-4" style={{ height: 48 }}>{barButtons}</div>
                 </div>
             )}
-            {/* 悬浮球 */}
-            {!showDiscuss && (
-                <button
-                    onClick={handleToggleDiscuss}
-                    style={{
-                        position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
-                        width: 52, height: 52, borderRadius: "50%", zIndex: 25,
-                        background: "linear-gradient(135deg, #6c5ce7, #a29bfe)",
-                        color: "#fff", border: "2px solid rgba(255,255,255,0.25)",
-                        cursor: "pointer", fontWeight: 600, fontSize: 12,
-                        boxShadow: "0 4px 14px rgba(0,0,0,0.45)",
-                        display: "flex", alignItems: "center", justifyContent: "center",
-                        lineHeight: 1.2, padding: 4, wordBreak: "break-all",
-                    }}
-                >{companionName.slice(0, 4)}</button>
-            )}
-            {/* 点击面板外部收起 */}
-            {showDiscuss && (
-                <div
-                    onClick={handleToggleDiscuss}
-                    style={{ position: "absolute", inset: 0, zIndex: 29, background: "rgba(0,0,0,0.15)" }}
-                />
-            )}
-            {/* 讨论面板（常驻挂载） */}
-            <div
-                style={{
-                    position: "absolute", inset: 0, zIndex: 30,
-                    visibility: showDiscuss ? "visible" : "hidden",
-                    pointerEvents: showDiscuss ? "auto" : "none",
-                }}
-            >
-                <MovieDiscussPanel
-                    movie={movie}
-                    cues={cues}
-                    companionId={companionId}
-                    getPosition={() => positionRef.current}
-                    sceneStart={currentScene?.startSeconds ?? 0}
-                    sceneEnd={currentScene?.endSeconds ?? 0}
-                    danmakuList={danmakuList}
-                    generatingScene={generatingSceneIdx !== null}
-                    onGenerateDanmaku={handleGenerateDanmaku}
-                    onClose={handleToggleDiscuss}
-                />
-            </div>
+            {discussionJsx}
         </div>,
         document.body,
     ) : null;
@@ -506,6 +508,9 @@ export function MoviePlayer({ movie, onBack }: Props) {
             )}
 
             {cinemaLayer}
+
+            {/* 讨论 UI：普通视图（非影院模式时挂载） */}
+            {!cinema && discussionJsx}
 
             {/* 分段结构弹窗 */}
             {showSegments && (
