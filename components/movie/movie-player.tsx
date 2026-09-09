@@ -392,9 +392,18 @@ export function MoviePlayer({ movie, onBack }: Props) {
     const applyAudioOffset = useCallback((video: HTMLVideoElement | null, offset: number) => {
         if (!video || typeof window === "undefined") return;
         try {
+            const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+            // 校准为 0 时恢复原生播放，避免 WebAudio 改道在部分壳/设备上造成无声
+            if (offset <= 0) {
+                if (audioSrcRef.current) {
+                    try { audioSrcRef.current.disconnect(); } catch { /* ignore */ }
+                    audioSrcRef.current = null;
+                }
+                audioGraphElRef.current = null;
+                return;
+            }
+            if (!Ctx) return;
             if (!audioCtxRef.current) {
-                const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-                if (!Ctx) return;
                 audioCtxRef.current = new Ctx();
                 audioDelayRef.current = audioCtxRef.current.createDelay(5.0);
                 audioDelayRef.current.connect(audioCtxRef.current.destination);
