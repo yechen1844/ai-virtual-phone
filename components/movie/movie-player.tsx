@@ -33,9 +33,9 @@ export function MoviePlayer({ movie, onBack }: Props) {
     const [companionId, setCompanionId] = useState("");
     const [showDiscuss, setShowDiscuss] = useState(false);
     const [showSegments, setShowSegments] = useState(false);
-    // 影院模式：portal 到 body 的铺满视口层（脱离 float 虚拟手机边框），横竖屏自适应
+    // 影院模式：portal 到 body 的铺满视口层（脱离 float 虚拟手机边框），横竖屏自适应；暂停时显示顶栏
     const [cinema, setCinema] = useState(false);
-    const [showTopBar, setShowTopBar] = useState(true);
+    const [playing, setPlaying] = useState(false);
     const [danmakuList, setDanmakuList] = useState<MovieDanmaku[]>([]);
     const [generatingSceneIdx, setGeneratingSceneIdx] = useState<number | null>(null);
     const [danmakuNotice, setDanmakuNotice] = useState("");
@@ -56,7 +56,6 @@ export function MoviePlayer({ movie, onBack }: Props) {
     const companionIdRef = useRef("");
     const pressTimerRef = useRef<number | null>(null);
     const rateRef = useRef(1);
-    const immersiveTopSwipeRef = useRef<number | null>(null);
     // 影院模式切换时移交播放状态：新 video 元素加载后跳回原位置并恢复播放
     const pendingSeekRef = useRef<number | null>(null);
     const pendingPlayRef = useRef(false);
@@ -263,7 +262,6 @@ export function MoviePlayer({ movie, onBack }: Props) {
         }
         const next = !cinema;
         setCinema(next);
-        setShowTopBar(!next);
         if (next && typeof document !== "undefined" && !document.fullscreenElement) {
             // 尝试系统级全屏（隐藏浏览器 UI / 壳层状态栏）；失败则纯应用内铺满
             window.setTimeout(() => {
@@ -279,14 +277,7 @@ export function MoviePlayer({ movie, onBack }: Props) {
         return () => document.removeEventListener("fullscreenchange", onFsChange);
     }, []);
 
-    // 影院模式唤出顶栏后 4 秒自动隐藏
-    useEffect(() => {
-        if (!cinema || !showTopBar) return;
-        const t = window.setTimeout(() => setShowTopBar(false), 4000);
-        return () => window.clearTimeout(t);
-    }, [cinema, showTopBar]);
-
-    // 长按三倍速 + 影院模式顶部边缘下滑唤出顶栏
+    // 长按三倍速
     const clearPressTimer = useCallback(() => {
         if (pressTimerRef.current !== null) {
             window.clearTimeout(pressTimerRef.current);
@@ -302,10 +293,6 @@ export function MoviePlayer({ movie, onBack }: Props) {
     const handleAreaPointerDown = useCallback((e: React.PointerEvent) => {
         if (needFile) return;
         const rect = videoAreaRef.current?.getBoundingClientRect();
-        if (cinema && rect && e.clientY < rect.top + 32) {
-            immersiveTopSwipeRef.current = e.clientY;
-            return;
-        }
         const video = videoRef.current;
         if (!video || video.paused) return;
         if (rect && e.clientY > rect.bottom - 64) return;
@@ -318,17 +305,9 @@ export function MoviePlayer({ movie, onBack }: Props) {
                 setSpeedActive(true);
             }
         }, 450);
-    }, [needFile, cinema, clearPressTimer]);
-
-    const handleAreaPointerMove = useCallback((e: React.PointerEvent) => {
-        if (immersiveTopSwipeRef.current !== null && e.clientY - immersiveTopSwipeRef.current > 40) {
-            immersiveTopSwipeRef.current = null;
-            setShowTopBar(true);
-        }
-    }, []);
+    }, [needFile, clearPressTimer]);
 
     const handleAreaPointerUp = useCallback(() => {
-        immersiveTopSwipeRef.current = null;
         clearPressTimer();
     }, [clearPressTimer]);
 
@@ -352,6 +331,8 @@ export function MoviePlayer({ movie, onBack }: Props) {
             src={videoUrl ?? undefined}
             controls
             playsInline
+            onPlay={() => setPlaying(true)}
+            onPause={() => setPlaying(false)}
             onTimeUpdate={handleTimeUpdate}
             onSeeking={handleSeeking}
             onLoadedMetadata={handleLoadedMetadata}
@@ -398,7 +379,6 @@ export function MoviePlayer({ movie, onBack }: Props) {
 
     const videoAreaHandlers = {
         onPointerDown: handleAreaPointerDown,
-        onPointerMove: handleAreaPointerMove,
         onPointerUp: handleAreaPointerUp,
         onPointerCancel: handleAreaPointerUp,
         onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
@@ -428,8 +408,8 @@ export function MoviePlayer({ movie, onBack }: Props) {
                 {videoJsx}
                 {overlayJsx}
             </div>
-            {/* 下滑唤出的顶栏浮层 */}
-            {showTopBar && (
+            {/* 顶栏浮层：暂停时显示，播放时隐藏 */}
+            {!playing && (
                 <div style={{ position: "absolute", top: 0, left: 0, right: 0, zIndex: 40, paddingTop: "max(18px, env(safe-area-inset-top, 18px))", background: "rgba(13,15,26,0.92)", borderBottom: "1px solid #232636" }}>
                     <div className="flex items-center gap-3 px-4" style={{ height: 48 }}>{barButtons}</div>
                 </div>
