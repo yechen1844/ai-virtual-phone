@@ -40,6 +40,12 @@ type CharState = {
     imageErrors: Record<string, string>;
     /** 正在生图的 roomId 集合 */
     generatingImageRooms: Set<string>;
+    /** 一键探索全部物品：是否正在批量探索 / 进度 / 当前物品 / 取消标记 */
+    batchExploring: boolean;
+    batchTotal: number;
+    batchDone: number;
+    batchCurrent: string | null;
+    batchCancelled: boolean;
 };
 
 type ItemDetail = {
@@ -58,7 +64,7 @@ const charStates = new Map<string, CharState>();
 
 function getCharState(charId: string): CharState {
     let s = charStates.get(charId);
-    if (!s) { s = { layout: null, isGenerating: false, error: null, loaded: false, itemHtmlCache: {}, loadingItemKeys: new Set(), lastItemError: null, imageErrors: {}, generatingImageRooms: new Set() }; charStates.set(charId, s); }
+    if (!s) { s = { layout: null, isGenerating: false, error: null, loaded: false, itemHtmlCache: {}, loadingItemKeys: new Set(), lastItemError: null, imageErrors: {}, generatingImageRooms: new Set(), batchExploring: false, batchTotal: 0, batchDone: 0, batchCurrent: null, batchCancelled: false }; charStates.set(charId, s); }
     return s;
 }
 
@@ -334,6 +340,64 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
         rerender();
     }
 
+    // ── 一键探索全部物品（批量，不记忆选择/进度） ──
+    async function handleExploreAll(charId: string) {
+        const cs = getCharState(charId);
+        if (cs.isGenerating || cs.batchExploring) return;
+        const layout = cs.layout;
+        if (!layout) return;
+
+        const entries: { room: DwellingRoom; furniture: DwellingFurniture; item: DwellingFurnitureItem }[] = [];
+        for (const room of layout.rooms) {
+            for (const f of room.furniture) {
+                for (const item of f.items) {
+                    entries.push({ room, furniture: f, item });
+                }
+            }
+        }
+        if (entries.length === 0) return;
+
+        cs.batchExploring = true;
+        cs.batchTotal = entries.length;
+        cs.batchDone = 0;
+        cs.batchCurrent = entries[0].item.name;
+        cs.batchCancelled = false;
+        cs.lastItemError = null;
+        rerender();
+
+        try {
+            for (const { room, furniture, item } of entries) {
+                if (cs.batchCancelled) break;
+                // 布局在批量期间被重建/删除：取消，避免污染新布局
+                if (cs.layout !== layout) break;
+                const key = itemKey(room.id, item.id);
+                if (cs.itemHtmlCache[key]) { cs.batchDone += 1; cs.batchCurrent = item.name; rerender(); continue; }
+
+                cs.batchCurrent = item.name;
+                rerender();
+                const { html, error } = await generateItemHtml(charId, room.name, furniture.label, item.name, item.preview);
+                if (html) {
+                    cs.itemHtmlCache[key] = html;
+                    void saveItemHtml(charId, room.id, item.id, html);
+                } else if (error) {
+                    cs.lastItemError = error;
+                }
+                cs.batchDone += 1;
+                rerender();
+            }
+        } finally {
+            cs.batchExploring = false;
+            cs.batchCurrent = null;
+            cs.batchCancelled = false;
+            rerender();
+        }
+    }
+
+    function handleCancelExploreAll(charId: string) {
+        getCharState(charId).batchCancelled = true;
+        rerender();
+    }
+
     const cs = activeCharId ? getCharState(activeCharId) : null;
     const activeRoom = cs?.layout?.rooms[activeRoomIdx] ?? null;
 
@@ -404,6 +468,9 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
                         </button>
                     ))}
                     <div className="dw-tabs-actions">
+                        <button className="dw-tab-action" onClick={() => handleExploreAll(activeCharId)} disabled={cs.isGenerating || cs.batchExploring} title="一键探索全部物品">
+                            <Wand2 size={13} />
+                        </button>
                         <button className="dw-tab-action" onClick={() => setShowRefreshConfirm(true)} disabled={cs.isGenerating} title="重新生成">
                             <RefreshCw size={13} />
                         </button>
@@ -411,6 +478,16 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
                             <Trash2 size={13} />
                         </button>
                     </div>
+                </div>
+            )}
+
+            {cs?.batchExploring && (
+                <div className="dw-batch-bar" role="status" aria-live="polite">
+                    <span className="dwelling-spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />
+                    <span className="dw-batch-text">
+                        正在探索 {cs.batchCurrent ?? "…"} · {cs.batchDone}/{cs.batchTotal}
+                    </span>
+                    <button className="dw-batch-cancel" onClick={() => handleCancelExploreAll(activeCharId)}>停止</button>
                 </div>
             )}
 

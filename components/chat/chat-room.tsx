@@ -1137,6 +1137,12 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
     const [showSettings, setShowSettings] = useState(false);
     const [showVoiceCall, setShowVoiceCall] = useState(false);
     const [showVideoCall, setShowVideoCall] = useState(false);
+    const [callMinimized, setCallMinimized] = useState(false);
+
+    // 通话结束后重置小窗状态，避免下一次通话仍以小窗形式开始
+    useEffect(() => {
+        if (!showVoiceCall && !showVideoCall) setCallMinimized(false);
+    }, [showVoiceCall, showVideoCall]);
     const [callInitiator, setCallInitiator] = useState<"user" | "character">("user");
     const [callInitiatorName, setCallInitiatorName] = useState<string>("");
     const [userIdentity, setUserIdentity] = useState<UserIdentity | null>(null);
@@ -1341,6 +1347,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
 
     const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
     const startPosRef = useRef<{ x: number, y: number } | null>(null);
+    const swipeRef = useRef<{ pointerId: number; startX: number; startY: number; active: boolean } | null>(null);
+    const swipeQuoteTriggeredRef = useRef(false);
     const longPressTriggeredRef = useRef(false);
 
     const scrollRef = useRef<HTMLDivElement>(null);
@@ -4726,6 +4734,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
 
         const anchor = { x: e.clientX, y: e.clientY };
         startPosRef.current = anchor;
+        swipeRef.current = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, active: false };
+        swipeQuoteTriggeredRef.current = false;
         longPressTriggeredRef.current = false;
 
         if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
@@ -4738,21 +4748,29 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
 
     const handleMessagePointerUp = (e: React.PointerEvent) => {
         startPosRef.current = null;
+        swipeRef.current = null;
+        const bubbleEl = e.currentTarget as HTMLElement | null;
+        if (bubbleEl) bubbleEl.style.transform = "";
         if (longPressTimerRef.current) {
             clearTimeout(longPressTimerRef.current);
             longPressTimerRef.current = null;
         }
-        // If a long press just triggered, stop the event from becoming a click
-        if (longPressTriggeredRef.current) {
+        // If a long press or swipe-quote just triggered, stop the event from becoming a click
+        if (longPressTriggeredRef.current || swipeQuoteTriggeredRef.current) {
             e.stopPropagation();
             e.preventDefault();
             longPressTriggeredRef.current = false;
+            swipeQuoteTriggeredRef.current = false;
         }
     };
 
-    const handleMessagePointerCancel = () => {
+    const handleMessagePointerCancel = (e?: React.PointerEvent) => {
         startPosRef.current = null;
+        swipeRef.current = null;
+        const bubbleEl = e?.currentTarget as HTMLElement | null;
+        if (bubbleEl) bubbleEl.style.transform = "";
         longPressTriggeredRef.current = false;
+        swipeQuoteTriggeredRef.current = false;
         if (longPressTimerRef.current) {
             clearTimeout(longPressTimerRef.current);
             longPressTimerRef.current = null;
@@ -5388,54 +5406,30 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
     const editingMessage = editingMessageId ? messages.find(m => m.id === editingMessageId) : null;
     const editingSystemInstruction = editingMessage ? isSystemInstructionMessage(editingMessage) : false;
 
-    if (showVoiceCall) {
-        if (session.isGroup && groupCharacters.length > 0) {
-            return (
-                <GroupCallScreen
-                    type="voice"
-                    session={session}
-                    characters={groupCharacters}
-                    initiator={callInitiator}
-                    initiatorName={callInitiatorName}
-                    onEnd={() => returnFromCall(() => setShowVoiceCall(false))}
-                />
-            );
-        }
-        if (character) {
-            return (
-                <VoiceCallScreen
-                    session={session}
-                    character={character}
-                    initiator={callInitiator}
-                    onEnd={() => returnFromCall(() => setShowVoiceCall(false))}
-                />
-            );
-        }
+    if (showVoiceCall && session.isGroup && groupCharacters.length > 0) {
+        return (
+            <GroupCallScreen
+                type="voice"
+                session={session}
+                characters={groupCharacters}
+                initiator={callInitiator}
+                initiatorName={callInitiatorName}
+                onEnd={() => returnFromCall(() => setShowVoiceCall(false))}
+            />
+        );
     }
 
-    if (showVideoCall) {
-        if (session.isGroup && groupCharacters.length > 0) {
-            return (
-                <GroupCallScreen
-                    type="video"
-                    session={session}
-                    characters={groupCharacters}
-                    initiator={callInitiator}
-                    initiatorName={callInitiatorName}
-                    onEnd={() => returnFromCall(() => setShowVideoCall(false))}
-                />
-            );
-        }
-        if (character) {
-            return (
-                <VideoCallScreen
-                    session={session}
-                    character={character}
-                    initiator={callInitiator}
-                    onEnd={() => returnFromCall(() => setShowVideoCall(false))}
-                />
-            );
-        }
+    if (showVideoCall && session.isGroup && groupCharacters.length > 0) {
+        return (
+            <GroupCallScreen
+                type="video"
+                session={session}
+                characters={groupCharacters}
+                initiator={callInitiator}
+                initiatorName={callInitiatorName}
+                onEnd={() => returnFromCall(() => setShowVideoCall(false))}
+            />
+        );
     }
 
     const chatRoomBackgroundStyle = bgImageResolved ? {
@@ -6033,6 +6027,26 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                                                 onPointerCancel: handleMessagePointerCancel,
                                                 onPointerLeave: handleMessagePointerCancel,
                                                 onPointerMove: (e: React.PointerEvent) => {
+                                                    // 右滑触发引用（QQ 式）：滑动超过阈值且横向意图明显时引用该消息
+                                                    const s = swipeRef.current;
+                                                    if (s && s.pointerId === e.pointerId && !s.active) {
+                                                        const dx = e.clientX - s.startX;
+                                                        const dy = Math.abs(e.clientY - s.startY);
+                                                        if (dx > 70 && dx > dy * 1.5) {
+                                                            s.active = true;
+                                                            swipeQuoteTriggeredRef.current = true;
+                                                            setQuotingMessage(msg);
+                                                            handleMessagePointerCancel();
+                                                            return;
+                                                        }
+                                                        // 横向进行中：给一点实时位移反馈
+                                                        if (dx > 8 && dx > dy) {
+                                                            e.currentTarget.style.transform = `translateX(${Math.min(dx, 28)}px)`;
+                                                        } else {
+                                                            e.currentTarget.style.transform = "";
+                                                        }
+                                                        return;
+                                                    }
                                                     if (startPosRef.current) {
                                                         const dx = Math.abs(e.clientX - startPosRef.current.x);
                                                         const dy = Math.abs(e.clientY - startPosRef.current.y);
@@ -6740,6 +6754,29 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                         ) : chatToast}
                     </div>
                 </div>
+            )}
+
+            {/* 单聊通话：全屏 or 小窗。组件常驻（不卸载）保证音频/识别/摄像头不中断；
+                小窗时聊天界面保持可用，小窗可拖动、可最大化。 */}
+            {showVoiceCall && character && !session.isGroup && (
+                <VoiceCallScreen
+                    session={session}
+                    character={character}
+                    initiator={callInitiator}
+                    minimized={callMinimized}
+                    onToggleMinimize={setCallMinimized}
+                    onEnd={() => returnFromCall(() => setShowVoiceCall(false))}
+                />
+            )}
+            {showVideoCall && character && !session.isGroup && (
+                <VideoCallScreen
+                    session={session}
+                    character={character}
+                    initiator={callInitiator}
+                    minimized={callMinimized}
+                    onToggleMinimize={setCallMinimized}
+                    onEnd={() => returnFromCall(() => setShowVideoCall(false))}
+                />
             )}
 
         </div >

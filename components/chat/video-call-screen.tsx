@@ -21,6 +21,7 @@ import { useCallKeyboardOffsetStyle } from "./use-call-keyboard-offset";
 import { CallSttWarningDialog, hideCallSttWarningPermanently, isCallSttWarningHidden } from "./call-stt-warning-dialog";
 import { isAndroidBrowser, isIOSDevice } from "./voice-input-platform";
 import { CallVolumeControl } from "./call-volume-control";
+import { CallMiniWindow } from "./call-mini-window";
 import { startIncomingCallVibration } from "@/lib/call-vibration";
 
 // ── Types ───────────────────────────────────────────
@@ -45,6 +46,9 @@ type VideoCallScreenProps = {
     onEnd: () => void;
     onConnect?: () => void;
     initiator?: "user" | "character";
+    /** 小窗模式：组件常驻保持通话，仅改为浮动小窗渲染 */
+    minimized?: boolean;
+    onToggleMinimize?: (minimized: boolean) => void;
 };
 
 function stripBilingualForSpeech(text: string): string {
@@ -56,7 +60,7 @@ function stripBilingualForSpeech(text: string): string {
 
 // ── Component ───────────────────────────────────────
 
-export function VideoCallScreen({ session, character, onEnd, onConnect, initiator = "user" }: VideoCallScreenProps) {
+export function VideoCallScreen({ session, character, onEnd, onConnect, initiator = "user", minimized = false, onToggleMinimize }: VideoCallScreenProps) {
     // 同 voice-call-screen：iOS 保留 Web Speech 免提 + Web Audio 播放；
     // 其余设备改按住说话 + 云端转写，播放走媒体元素。没配识别时回落旧行为。
     const iosDeviceRef = useRef(isIOSDevice());
@@ -582,6 +586,38 @@ export function VideoCallScreen({ session, character, onEnd, onConnect, initiato
 
     // ── Render ──────────────────────────────────────
 
+    const miniStatusLabel = callState === "CONNECTING" || callState === "ENDED"
+        ? stateLabel()
+        : `${formatTime(callDuration)} · ${stateLabel()}`;
+
+    if (minimized) {
+        const miniPreview = cameraEnabled ? (
+            <video
+                autoPlay
+                playsInline
+                muted
+                ref={(el) => { if (el && cameraStreamRef.current && el.srcObject !== cameraStreamRef.current) { el.srcObject = cameraStreamRef.current; el.play().catch(() => {}); } }}
+                className="call-mini-preview-video"
+            />
+        ) : undefined;
+        return (
+            <CallMiniWindow
+                title={character.name}
+                subtitle={miniStatusLabel}
+                avatar={character.avatar}
+                preview={miniPreview}
+                muted={isMuted}
+                speakerMuted={isSpeakerMuted}
+                showMute={!holdToTalk}
+                showSpeaker
+                onToggleMute={() => setIsMuted(!isMuted)}
+                onToggleSpeaker={() => setIsSpeakerMuted((v) => !v)}
+                onHangup={handleHangup}
+                onMaximize={() => onToggleMinimize?.(false)}
+            />
+        );
+    }
+
     return (
         <div className="absolute inset-0 z-[100] flex flex-col bg-black text-white overflow-hidden call-keyboard-shift" style={keyboardOffsetStyle}>
             <CallVolumeControl />
@@ -681,6 +717,17 @@ export function VideoCallScreen({ session, character, onEnd, onConnect, initiato
                     {callState !== "CONNECTING" && callState !== "ENDED" ? `${formatTime(callDuration)} · ` : ""}
                     {stateLabel()}
                 </div>
+                <button
+                    type="button"
+                    className="call-minimize-btn"
+                    onClick={() => onToggleMinimize?.(true)}
+                    aria-label="缩小通话"
+                    title="缩小通话"
+                >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+                    </svg>
+                </button>
             </div>
 
             {/* Subtitle log — scrollable */}

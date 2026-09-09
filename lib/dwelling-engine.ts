@@ -267,19 +267,29 @@ export async function generateDwellingLayout(
             }
         }
 
-        // Items mode: merge new items into old layout structure
+        // Items mode: merge new items into old layout structure.
+        // LLM 生成的房间/家具 id 可能发生漂移，若只按 `room.id_furniture.id` 精确匹配，
+        // 一旦 id 不一致就永远不会替换 items，导致"刷新物品"结果与旧布局完全一致、
+        // 已探索的旧物品内容也一直保留。因此这里先按 id 精确匹配，再按 房间名+家具label 兜底。
         if (mode === "items" && oldCached) {
             const oldLayout = structuredClone(oldCached.layout);
-            const newItemsMap = new Map<string, typeof layout.rooms[0]["furniture"][0]["items"]>();
+            type DwItems = typeof layout.rooms[0]["furniture"][0]["items"];
+            const byId = new Map<string, DwItems>();
+            const byName = new Map<string, DwItems>();
             for (const room of layout.rooms) {
                 for (const f of room.furniture) {
-                    newItemsMap.set(`${room.id}_${f.id}`, f.items);
+                    byId.set(`${room.id}_${f.id}`, f.items);
+                    const nameKey = `${room.name}|${f.label}`;
+                    if (!byName.has(nameKey)) byName.set(nameKey, f.items);
                 }
             }
             for (const room of oldLayout.rooms) {
                 for (const f of room.furniture) {
-                    const newItems = newItemsMap.get(`${room.id}_${f.id}`);
-                    if (newItems) f.items = newItems;
+                    const newItems =
+                        byId.get(`${room.id}_${f.id}`) ??
+                        byName.get(`${room.name}|${f.label}`) ??
+                        f.items;
+                    f.items = newItems;
                 }
             }
             layout = oldLayout;
