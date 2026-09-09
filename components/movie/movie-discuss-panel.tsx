@@ -5,7 +5,7 @@ import { createOrGetSession, loadChatMessages, pushChatMessage, isMovieDiscussMe
 import { parseAIResponse } from "@/lib/rich-message-parser";
 import { splitBilingualText } from "@/lib/bilingual-text";
 import { loadCharacters } from "@/lib/character-storage";
-import { buildMovieDiscussContext, generateMovieChat } from "@/lib/movie-engine";
+import { buildMovieDiscussContext, generateMovieChat, normalizeDanmakuSeconds } from "@/lib/movie-engine";
 import { saveDanmaku } from "@/lib/movie-storage";
 import type { Movie, SubtitleCue, MovieDanmaku } from "@/lib/movie-types";
 
@@ -206,17 +206,20 @@ export function MovieDiscussPanel({ movie, cues, companionId, getPosition, scene
                         freshStateValues: i === 0 ? freshStateValues : undefined,
                     });
                 }
-                // 弹幕动作落库：相对秒数 + 当前场起点 = 绝对时间
+                // 弹幕动作落库：模型给的是电影绝对秒数（与字幕同基准），归一化到本场后换算绝对时间
                 if (result.actions.length > 0 && companion) {
-                    const items = result.actions.map((action, i) => ({
-                        id: `mdk_${movie.id}_${Date.now().toString(36)}_${i}`,
-                        movieId: movie.id,
-                        timeSeconds: Math.max(sceneStart, sceneStart + action.timeSeconds),
-                        characterId: companion.id,
-                        characterName: companion.name,
-                        content: action.content.slice(0, 50),
-                        createdAt: new Date().toISOString(),
-                    }));
+                    const items = result.actions.map((action, i) => {
+                        const rel = normalizeDanmakuSeconds(action.timeSeconds, sceneStart, sceneEnd) ?? 0;
+                        return {
+                            id: `mdk_${movie.id}_${Date.now().toString(36)}_${i}`,
+                            movieId: movie.id,
+                            timeSeconds: sceneStart + rel,
+                            characterId: companion.id,
+                            characterName: companion.name,
+                            content: action.content.slice(0, 50),
+                            createdAt: new Date().toISOString(),
+                        };
+                    });
                     await saveDanmaku(items);
                 }
                 if (typeof window !== "undefined") window.dispatchEvent(new Event("movie-discuss-updated"));

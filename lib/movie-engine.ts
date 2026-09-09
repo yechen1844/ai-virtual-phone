@@ -251,7 +251,7 @@ function buildDiscussFallback(params: {
         "- 回复简短自然，像朋友间坐在沙发上小声聊天，不要写长文影评",
         "- 你只知道已经播放过的内容，绝对不要剧透后面的剧情",
         "- 你的记忆和性格与平时聊天完全一致",
-        "- 如果你想发一条弹幕，先正常回复，再在末尾追加动作尾注：【发弹幕 秒=N】内容（N 为当前场内秒数，内容 ≤30 字）",
+        "- 如果你想发一条弹幕，先正常回复，再在末尾追加动作尾注：【发弹幕 秒=N】内容（N 用整部电影的绝对秒数，和字幕时间戳同一时间基准；内容 ≤30 字）",
         "- 禁止用星号（*）或括号包裹动作描写、神态描写或旁白",
         "</movie_instruction>",
     ].join("\n");
@@ -697,17 +697,41 @@ export async function generateMovieChat(
 
 // ── 弹幕批量生成（进新场自动 / 手动补充）──
 
-/** 解析 [弹幕 秒=N]内容[/弹幕]（容忍缺失闭合标签），N 为场内相对秒数 */
-const DANMAKU_GLOBAL_RE = /\[弹幕\s*秒\s*[=＝]\s*(\d+)\s*\]([^[\n]*(?:\n[^[\n]*)*)/g;
+/** 解析 [弹幕 秒=N]内容[/弹幕]（容忍缺失闭合标签，支持 秒=125 或 秒=02:05），N 理论上为场内相对秒数 */
+const DANMAKU_GLOBAL_RE = /\[弹幕\s*秒\s*[=＝]\s*(\d+)(?::(\d{1,2}))?\s*\]([^[\n]*(?:\n[^[\n]*)*)/g;
 
 export function parseDanmakuResponse(raw: string): { timeSeconds: number; content: string }[] {
     const items: { timeSeconds: number; content: string }[] = [];
     for (const m of raw.matchAll(DANMAKU_GLOBAL_RE)) {
-        const rel = Number(m[1]);
-        const content = (m[2] || "").trim();
-        if (Number.isFinite(rel) && content) items.push({ timeSeconds: rel, content });
+        // 秒=MM:SS 形式按分:秒换算
+        let n = Number(m[1]);
+        if (m[2] !== undefined) n = n * 60 + Number(m[2]);
+        const content = (m[3] || "").trim();
+        if (Number.isFinite(n) && content) items.push({ timeSeconds: n, content });
     }
     return items;
+}
+
+/**
+ * 把模型给出的弹幕秒数归一化到本场内的相对秒数。
+ * 模型常犯的错：把「本场内的相对秒数」理解成整部电影的绝对秒数/绝对分钟数。
+ * 归一化启发：N 超过本场时长时，尝试按绝对秒或绝对分钟解读并换算回来；实在压不回就收拢到场内。
+ * 返回 null 表示无法使用。
+ */
+export function normalizeDanmakuSeconds(n: number, sceneStart: number, sceneEnd: number): number | null {
+    if (!Number.isFinite(n) || n < 0) return null;
+    const dur = Math.max(1, sceneEnd - sceneStart);
+    let rel = n;
+    if (rel > dur) {
+        if (rel >= sceneStart && rel <= sceneEnd) {
+            rel = rel - sceneStart; // 模型给的是整部电影的绝对秒数
+        } else if (rel * 60 >= sceneStart && rel * 60 <= sceneEnd) {
+            rel = rel * 60 - sceneStart; // 模型给的是绝对分钟数
+        } else {
+            rel = Math.min(rel, dur); // 兜底：收拢到场内
+        }
+    }
+    return Math.min(Math.max(rel, 0), Math.max(0, dur - 1));
 }
 
 function buildDanmakuFallback(params: {
@@ -732,8 +756,8 @@ function buildDanmakuFallback(params: {
         "",
         p.frameHint,
         "",
-        "请以该角色的口吻为本场生成 5~10 条弹幕，散布在本场时间轴的不同时间点上。",
-        "格式：[弹幕 秒=N]内容[/弹幕]，N 为本场范围内的秒数。",
+        "请以该角色的口吻为本场生成 5~10 条弹幕，散布在本场的不同剧情点上。",
+        "格式：[弹幕 秒=N]内容[/弹幕]。注意：N 用整部电影的绝对秒数（和上面字幕的时间戳同一时间基准，例如字幕显示 00:41:30 附近的剧情就写 秒=2490），不要用本场开头算起的相对秒数。",
         "要求：",
         "- 每条 ≤30 字，口语化、自然、符合角色的性格",
         "- 可以吐槽、感叹、联想、共情、玩梗，但不要复述字幕原文",
@@ -809,7 +833,9 @@ export async function generateMovieDanmaku(
 
     const items: MovieDanmaku[] = [];
     for (const d of parseDanmakuResponse(responseText)) {
-        const abs = Math.min(Math.max(scene.startSeconds + d.timeSeconds, scene.startSeconds), Math.max(scene.endSeconds - 1, scene.startSeconds));
+        const rel = normalizeDanmakuSeconds(d.timeSeconds, scene.startSeconds, scene.endSeconds);
+        if (rel === null) continue;
+        const abs = scene.startSeconds + rel;
         items.push({
             id: `mdk_${movie.id}_${scene.index}_${Date.now().toString(36)}_${items.length}`,
             movieId: movie.id,

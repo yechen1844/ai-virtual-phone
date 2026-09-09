@@ -6,7 +6,7 @@ import type { PresetConfig } from "./settings-types";
 import { getCheckPhonePromptTags } from "./checkphone-config";
 
 export const BUILTIN_PRESET_ID = "builtin_default_v1";
-export const BUILTIN_PRESET_VERSION = 266; // 升版本会用出厂内容重写用户的内置预设副本（自定义会丢），非必要不升
+export const BUILTIN_PRESET_VERSION = 267; // 升版本会用出厂内容重写用户的内置预设副本（自定义会丢），非必要不升
 
 export function createBuiltinPreset(): PresetConfig {
     const now = Date.now();
@@ -3965,8 +3965,8 @@ export function createBuiltinPreset(): PresetConfig {
                     "",
                     "{{frameHint}}",
                     "",
-                    "请以{{char}}的口吻为本场生成 5~10 条弹幕，散布在本场时间轴的不同时间点上。",
-                    "格式：[弹幕 秒=N]内容[/弹幕]，N 为本场范围内的秒数。",
+                    "请以{{char}}的口吻为本场生成 5~10 条弹幕，散布在本场的不同剧情点上。",
+                    "格式：[弹幕 秒=N]内容[/弹幕]。注意：N 用整部电影的绝对秒数（和上面字幕的时间戳同一时间基准，例如字幕显示 00:41:30 附近的剧情就写 秒=2490），不要用本场开头算起的相对秒数。",
                     "要求：",
                     "- 每条 ≤30 字，口语化、自然、符合{{char}}的性格",
                     "- 可以吐槽、感叹、联想、共情、玩梗，但不要复述字幕原文",
@@ -4005,7 +4005,7 @@ export function createBuiltinPreset(): PresetConfig {
                     "- 回复简短自然，像朋友间坐在沙发上小声聊天，不要写长文影评",
                     "- 你只知道已经播放过的内容，绝对不要剧透后面的剧情",
                     "- 你的记忆和性格与平时聊天完全一致",
-                    "- 如果你想发一条弹幕，先正常回复，再在末尾追加动作尾注：【发弹幕 秒=N】内容（N 为当前场内秒数，内容 ≤30 字）",
+                    "- 如果你想发一条弹幕，先正常回复，再在末尾追加动作尾注：【发弹幕 秒=N】内容（N 用整部电影的绝对秒数，和字幕时间戳同一时间基准；内容 ≤30 字）",
                     "- 禁止用星号（*）或括号包裹动作描写、神态描写或旁白",
                     "{{chatBilingualInstruction}}",
                     "</movie_instruction>",
