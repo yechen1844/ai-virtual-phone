@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { ChevronLeft, RefreshCw, Trash2, Wand2, X } from "lucide-react";
+import { ChevronLeft, RefreshCw, Trash2, Wand2, X, History } from "lucide-react";
 import type { Character } from "@/lib/character-types";
 import { loadCharacters } from "@/lib/character-storage";
 import type { DwellingLayout, DwellingRoom, DwellingFurniture, DwellingFurnitureItem } from "@/lib/dwelling-storage";
@@ -16,6 +16,14 @@ import {
     collectRoomImageRefs,
 } from "@/lib/dwelling-storage";
 import { generateDwellingLayout, generateItemHtml, type DwellingRefreshMode } from "@/lib/dwelling-engine";
+import {
+    recordDwellingHistoryEvent,
+    loadDwellingHistoryEntries,
+    removeDwellingHistoryEntry,
+    clearDwellingHistory,
+    type DwellingHistoryEntry,
+    type DwellingHistoryKind,
+} from "@/lib/dwelling-history";
 import { pinyin } from "pinyin-pro";
 import { getDwellingImageAvailability, generateDwellingRoomImage, cancelDwellingRoomImage } from "@/lib/dwelling-image";
 import { deleteMediaRef, loadMediaObjectUrl } from "@/lib/media-cache-storage";
@@ -84,6 +92,23 @@ function charChipEn(name: string): string {
     return en;
 }
 
+/** 历史记录类型标签 */
+const DWELLING_HISTORY_KIND_LABELS: Record<DwellingHistoryKind, string> = {
+    layout: "布局",
+    refresh_items: "刷新",
+    explore: "探索",
+    explore_batch: "批量",
+};
+
+function formatHistoryTime(ts: string): string {
+    try {
+        const d = new Date(ts);
+        return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    } catch {
+        return ts;
+    }
+}
+
 export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
     const [characters, setCharacters] = useState<Character[]>([]);
     const [activeCharId, setActiveCharId] = useState<string | null>(null);
@@ -92,6 +117,8 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
     const rerender = () => forceUpdate(n => n + 1);
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
     const [showRefreshConfirm, setShowRefreshConfirm] = useState(false);
+    const [historyOpen, setHistoryOpen] = useState(false);
+    const [historyEntries, setHistoryEntries] = useState<DwellingHistoryEntry[]>([]);
     const [itemDetail, setItemDetail] = useState<ItemDetail | null>(null);
     const [imageEnabled, setImageEnabled] = useState(true);
     const [imageConfigured, setImageConfigured] = useState(false);
@@ -182,6 +209,11 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
         }
         cs.layout = newLayout;
         cs.loaded = true;
+        recordDwellingHistoryEvent(charId, {
+            kind: mode === "items" ? "refresh_items" : "layout",
+            title: mode === "items" ? "刷新了物品（保留房间结构）" : "生成了全新的房间布局",
+            detail: `${newLayout.rooms.length} 个房间 · ${newLayout.rooms.reduce((n, r) => n + r.furniture.reduce((m, f) => m + f.items.length, 0), 0)} 件物品`,
+        });
         // Items mode: clear HTML cache for items with new IDs (changed items)
         if (mode === "items") {
             const newKeys = new Set<string>();
@@ -333,6 +365,11 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
         if (html) {
             cs.itemHtmlCache[key] = html;
             void saveItemHtml(charId, roomId, item.id, html);
+            recordDwellingHistoryEvent(charId, {
+                kind: "explore",
+                title: `探索了「${item.name}」`,
+                detail: `${room.name} · ${furniture.label}`,
+            });
             const currentRoom = activeCharIdRef.current === charId ? cs.layout?.rooms[activeRoomIdxRef.current] : null;
             if (currentRoom?.id === roomId) openItemDetail(room, furniture, item, html);
         }
@@ -365,6 +402,7 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
         cs.lastItemError = null;
         rerender();
 
+        let exploredCount = 0;
         try {
             for (const { room, furniture, item } of entries) {
                 if (cs.batchCancelled) break;
@@ -379,6 +417,7 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
                 if (html) {
                     cs.itemHtmlCache[key] = html;
                     void saveItemHtml(charId, room.id, item.id, html);
+                    exploredCount += 1;
                 } else if (error) {
                     cs.lastItemError = error;
                 }
@@ -386,9 +425,17 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
                 rerender();
             }
         } finally {
+            const wasCancelled = cs.batchCancelled;
             cs.batchExploring = false;
             cs.batchCurrent = null;
             cs.batchCancelled = false;
+            if (exploredCount > 0) {
+                recordDwellingHistoryEvent(charId, {
+                    kind: "explore_batch",
+                    title: `一键探索了 ${exploredCount} 件物品`,
+                    detail: wasCancelled && exploredCount < entries.length ? "已手动停止" : undefined,
+                });
+            }
             rerender();
         }
     }
@@ -396,6 +443,26 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
     function handleCancelExploreAll(charId: string) {
         getCharState(charId).batchCancelled = true;
         rerender();
+    }
+
+    // ── 历史记录（懒加载：仅在打开面板时读取） ──
+    function openHistory() {
+        setHistoryEntries(loadDwellingHistoryEntries(activeCharIdRef.current ?? ""));
+        setHistoryOpen(true);
+    }
+
+    function handleDeleteHistoryEntry(entryId: string) {
+        const charId = activeCharIdRef.current;
+        if (!charId) return;
+        removeDwellingHistoryEntry(charId, entryId);
+        setHistoryEntries(loadDwellingHistoryEntries(charId));
+    }
+
+    function handleClearHistory() {
+        const charId = activeCharIdRef.current;
+        if (!charId) return;
+        clearDwellingHistory(charId);
+        setHistoryEntries([]);
     }
 
     const cs = activeCharId ? getCharState(activeCharId) : null;
@@ -406,6 +473,9 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
             <div className="dwelling-header">
                 <button className="dw-back" onClick={onClose}><ChevronLeft size={18} /></button>
                 <h1>栖 所<span className="dw-title-en">DWELLING</span></h1>
+                <button className="dw-history-btn" onClick={openHistory} aria-label="历史记录" title="历史记录">
+                    <History size={15} />
+                </button>
             </div>
 
             {characters.length > 1 && (
@@ -468,7 +538,7 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
                         </button>
                     ))}
                     <div className="dw-tabs-actions">
-                        <button className="dw-tab-action" onClick={() => handleExploreAll(activeCharId)} disabled={cs.isGenerating || cs.batchExploring} title="一键探索全部物品">
+                        <button className="dw-tab-action" onClick={() => handleExploreAll(activeCharId!)} disabled={cs.isGenerating || cs.batchExploring} title="一键探索全部物品">
                             <Wand2 size={13} />
                         </button>
                         <button className="dw-tab-action" onClick={() => setShowRefreshConfirm(true)} disabled={cs.isGenerating} title="重新生成">
@@ -487,7 +557,7 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
                     <span className="dw-batch-text">
                         正在探索 {cs.batchCurrent ?? "…"} · {cs.batchDone}/{cs.batchTotal}
                     </span>
-                    <button className="dw-batch-cancel" onClick={() => handleCancelExploreAll(activeCharId)}>停止</button>
+                    <button className="dw-batch-cancel" onClick={() => handleCancelExploreAll(activeCharId!)}>停止</button>
                 </div>
             )}
 
@@ -594,6 +664,40 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
                         <div className="dw-confirm-actions">
                             <button className="dw-confirm-btn dw-confirm-btn-cancel" onClick={() => setShowDeleteConfirm(false)}>再想想</button>
                             <button className="dw-confirm-btn dw-confirm-btn-danger" onClick={() => { setShowDeleteConfirm(false); handleDelete(); }}>挥手告别</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* 历史记录面板 */}
+            {historyOpen && (
+                <div className="dw-history-overlay" onClick={() => setHistoryOpen(false)}>
+                    <div className="dw-history-card" role="dialog" aria-modal="true" aria-label="栖所历史记录" onClick={(e) => e.stopPropagation()}>
+                        <div className="dw-history-head">
+                            <span className="dw-history-title">历史记录</span>
+                            <span className="dw-history-sub">HISTORY</span>
+                            <button className="dw-history-clear" onClick={handleClearHistory}>清空</button>
+                            <button className="dw-history-close" onClick={() => setHistoryOpen(false)} aria-label="关闭">
+                                <X size={13} />
+                            </button>
+                        </div>
+                        <div className="dw-history-body">
+                            {historyEntries.length === 0 && (
+                                <div className="dw-history-empty">还没有生成或探索记录</div>
+                            )}
+                            {historyEntries.map((entry) => (
+                                <div key={entry.id} className="dw-history-row">
+                                    <span className="dw-history-kind">{DWELLING_HISTORY_KIND_LABELS[entry.kind]}</span>
+                                    <div className="dw-history-main">
+                                        <div className="dw-history-row-title">{entry.title}</div>
+                                        {entry.detail && <div className="dw-history-row-detail">{entry.detail}</div>}
+                                        <div className="dw-history-row-time">{formatHistoryTime(entry.timestamp)}</div>
+                                    </div>
+                                    <button className="dw-history-del" aria-label="删除该记录" onClick={() => handleDeleteHistoryEntry(entry.id)}>
+                                        <Trash2 size={13} />
+                                    </button>
+                                </div>
+                            ))}
                         </div>
                     </div>
                 </div>

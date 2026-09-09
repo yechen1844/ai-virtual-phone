@@ -1008,6 +1008,9 @@
   min-width: 0;
   -webkit-user-select: none;
   user-select: none;
+  /* 允许浏览器处理纵向滚动，横向滑动事件完整交给 JS（右滑引用手势），
+     避免移动端滚动接管后发出 pointercancel 掐断手势 */
+  touch-action: pan-y;
 }
 .chat-bubble-role-user[data-active],
 .chat-bubble-role-assistant[data-active] {

@@ -1347,7 +1347,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
 
     const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
     const startPosRef = useRef<{ x: number, y: number } | null>(null);
-    const swipeRef = useRef<{ pointerId: number; startX: number; startY: number; active: boolean } | null>(null);
+    const swipeRef = useRef<{ pointerId: number; startX: number; startY: number; active: boolean; locked: boolean } | null>(null);
     const swipeQuoteTriggeredRef = useRef(false);
     const longPressTriggeredRef = useRef(false);
 
@@ -4734,7 +4734,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
 
         const anchor = { x: e.clientX, y: e.clientY };
         startPosRef.current = anchor;
-        swipeRef.current = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, active: false };
+        swipeRef.current = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, active: false, locked: false };
         swipeQuoteTriggeredRef.current = false;
         longPressTriggeredRef.current = false;
 
@@ -6032,18 +6032,27 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                                                     if (s && s.pointerId === e.pointerId && !s.active) {
                                                         const dx = e.clientX - s.startX;
                                                         const dy = Math.abs(e.clientY - s.startY);
-                                                        if (dx > 70 && dx > dy * 1.5) {
+                                                        if (!s.locked && dx > 8 && dx > dy * 1.5) {
+                                                            // 锁定横向手势：取消长按定时器并捕获指针，
+                                                            // 防止手指滑出小气泡边界（pointerleave）或列表滚动（pointercancel）中断手势
+                                                            s.locked = true;
+                                                            if (longPressTimerRef.current) {
+                                                                clearTimeout(longPressTimerRef.current);
+                                                                longPressTimerRef.current = null;
+                                                            }
+                                                            try { (e.currentTarget as HTMLElement).setPointerCapture(s.pointerId); } catch { /* ignore */ }
+                                                        }
+                                                        if (s.locked && dx > 70) {
                                                             s.active = true;
                                                             swipeQuoteTriggeredRef.current = true;
+                                                            (e.currentTarget as HTMLElement).style.transform = "";
                                                             setQuotingMessage(msg);
-                                                            handleMessagePointerCancel();
+                                                            handleMessagePointerCancel(e);
                                                             return;
                                                         }
                                                         // 横向进行中：给一点实时位移反馈
-                                                        if (dx > 8 && dx > dy) {
-                                                            e.currentTarget.style.transform = `translateX(${Math.min(dx, 28)}px)`;
-                                                        } else {
-                                                            e.currentTarget.style.transform = "";
+                                                        if (s.locked) {
+                                                            (e.currentTarget as HTMLElement).style.transform = `translateX(${Math.min(dx, 28)}px)`;
                                                         }
                                                         return;
                                                     }

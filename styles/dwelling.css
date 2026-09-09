@@ -304,6 +304,150 @@
 }
 .dw-batch-cancel:hover { border-color: var(--dw-line-strong); }
 
+/* ── 历史记录面板 ── */
+.dw-history-btn {
+  width: 28px; height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--dw-line);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--dw-dim);
+  cursor: pointer;
+  padding: 0;
+}
+.dw-history-btn:hover { color: var(--dw-ink); border-color: var(--dw-line-strong); }
+
+.dw-history-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.5);
+}
+.dw-history-card {
+  width: min(420px, 92vw);
+  max-height: min(72vh, 540px);
+  display: flex;
+  flex-direction: column;
+  background: var(--dw-panel);
+  border: 1px solid var(--dw-line);
+  border-radius: 14px;
+  color: var(--dw-ink);
+  overflow: hidden;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+.dw-history-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 13px 14px;
+  border-bottom: 1px solid var(--dw-line);
+  flex-shrink: 0;
+}
+.dw-history-title {
+  font-size: calc(15px*var(--app-text-scale,1));
+  letter-spacing: 3px;
+}
+.dw-history-sub {
+  font-size: 9px;
+  letter-spacing: 2px;
+  color: var(--dw-faint);
+}
+.dw-history-clear {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--dw-line);
+  border-radius: 999px;
+  color: var(--dw-dim);
+  padding: 3px 12px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.dw-history-clear:hover { color: var(--dw-ink); border-color: var(--dw-line-strong); }
+.dw-history-close {
+  flex-shrink: 0;
+  width: 24px; height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--dw-line);
+  border-radius: 50%;
+  color: var(--dw-dim);
+  cursor: pointer;
+  padding: 0;
+}
+.dw-history-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dw-history-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--dw-line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.dw-history-kind {
+  flex-shrink: 0;
+  font-size: 10px;
+  letter-spacing: 2px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--dw-line);
+  color: var(--dw-dim);
+  margin-top: 1px;
+}
+.dw-history-main { flex: 1; min-width: 0; }
+.dw-history-row-title {
+  font-size: calc(13px*var(--app-text-scale,1));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dw-history-row-detail {
+  font-size: 11px;
+  color: var(--dw-dim);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dw-history-row-time {
+  font-size: 10px;
+  color: var(--dw-faint);
+  margin-top: 3px;
+  letter-spacing: 1px;
+}
+.dw-history-del {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--dw-faint);
+  cursor: pointer;
+  padding: 4px;
+}
+.dw-history-del:hover { color: #c98a8e; }
+.dw-history-empty {
+  text-align: center;
+  color: var(--dw-dim);
+  padding: 28px 0;
+  font-size: calc(12px*var(--app-text-scale,1));
+  letter-spacing: 2px;
+}
+
 /* ══ Stage view（全屏铺底，玻璃栏浮在其上） ══ */
 .dw2-stage {
   position: absolute;

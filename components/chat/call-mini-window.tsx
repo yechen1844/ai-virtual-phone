@@ -5,7 +5,7 @@ import { useRef, useState, type ReactNode } from "react";
 type CallMiniWindowProps = {
   title: string;
   subtitle?: string;
-  avatar?: string;
+  avatar?: string | null;
   /** 视频通话时传入实时的本地摄像头画面（<video>）节点；未传则显示头像。 */
   preview?: ReactNode;
   muted?: boolean;

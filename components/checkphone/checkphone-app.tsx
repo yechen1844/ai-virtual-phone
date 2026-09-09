@@ -516,6 +516,8 @@ export function CheckPhoneApp({ onClose }: CheckPhoneAppProps) {
   );
   const activeState = activeCharId ? states[activeCharId] : undefined;
   const manifest = activeState?.manifest ?? null;
+  // 桌面实际安装/显示的 App（top 12 + dock 4）。一键生成只针对桌面上的 App，避免对未上桌面的 App 做冗余生成。
+  const desktopApps = sanitizeCheckPhoneAppIds(manifest?.allAppIds);
   const isEmbeddedAppOpen =
     !!activeCharacter &&
     !!selectedAppId &&
@@ -542,12 +544,12 @@ export function CheckPhoneApp({ onClose }: CheckPhoneAppProps) {
   }
 
   function setAllGenApps(checked: boolean) {
-    setGenUnchecked(checked ? new Set(CHECKPHONE_EMBEDDED_APP_IDS) : new Set());
+    setGenUnchecked(checked ? new Set(desktopApps) : new Set());
   }
 
   async function startGenerateAll() {
     if (!activeCharId || genRunning) return;
-    const selected = CHECKPHONE_EMBEDDED_APP_IDS.filter((id) => !genUnchecked.has(id));
+    const selected = desktopApps.filter((id) => !genUnchecked.has(id));
     if (selected.length === 0) {
       setGenFailed(["未选择任何 App"]);
       return;
@@ -1154,21 +1156,25 @@ export function CheckPhoneApp({ onClose }: CheckPhoneAppProps) {
               <div className="cp-gen-head">
                 <div>
                   <h3>一键生成全部 App</h3>
-                  <p>为当前角色一次性生成所选 App 的内容，将在后台依次执行</p>
+                  <p>为当前角色桌面上的 App 一次性生成内容（在后台依次执行）</p>
                 </div>
                 <button type="button" className="cp-gen-close" aria-label="关闭" onClick={() => setGenDialogOpen(false)}>
                   <X size={16} strokeWidth={2} />
                 </button>
               </div>
+              {desktopApps.length === 0 ? (
+                <div className="cp-gen-empty">该角色还没有桌面清单，请先点击刷新生成桌面。</div>
+              ) : (
+              <>
               <div className="cp-gen-toolbar">
                 <button type="button" onClick={() => setAllGenApps(true)}>全选</button>
                 <button type="button" onClick={() => setAllGenApps(false)}>全不选</button>
                 <span className="cp-gen-count">
-                  已选 {CHECKPHONE_EMBEDDED_APP_IDS.filter((id) => !genUnchecked.has(id)).length} / {CHECKPHONE_EMBEDDED_APP_IDS.length}
+                  已选 {desktopApps.filter((id) => !genUnchecked.has(id)).length} / {desktopApps.length}
                 </span>
               </div>
               <div className="cp-gen-list">
-                {CHECKPHONE_EMBEDDED_APP_IDS.map((appId) => {
+                {desktopApps.map((appId) => {
                   const spec = CHECKPHONE_APP_SPECS[appId];
                   const checked = !genUnchecked.has(appId);
                   return (
@@ -1185,6 +1191,8 @@ export function CheckPhoneApp({ onClose }: CheckPhoneAppProps) {
                   );
                 })}
               </div>
+              </>
+              )}
               {genFailed.length > 0 && (
                 <div className="cp-gen-errors">
                   {genFailed.map((msg, index) => <div key={index}>{msg}</div>)}
@@ -1195,7 +1203,7 @@ export function CheckPhoneApp({ onClose }: CheckPhoneAppProps) {
                 <button
                   type="button"
                   className="ui-btn ui-btn-primary"
-                  disabled={CHECKPHONE_EMBEDDED_APP_IDS.filter((id) => !genUnchecked.has(id)).length === 0}
+                  disabled={desktopApps.length === 0 || desktopApps.filter((id) => !genUnchecked.has(id)).length === 0}
                   onClick={startGenerateAll}
                 >
                   一键生成
