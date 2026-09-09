@@ -137,8 +137,18 @@ export async function loadProgress(movieId: string): Promise<WatchProgress | nul
 }
 
 export async function saveProgress(progress: WatchProgress): Promise<void> {
-    await db.progress.put(progress);
-    _progressCache.set(progress.movieId, progress);
+    // 合并式写入：新记录没带的字段（尤其 companionCharacterId）保留旧值。
+    // 播放器打开瞬间视频加载就会触发一次进度保存，此时陪伴角色尚未异步加载完，
+    // 覆盖式写入会把分段时选好的陪伴角色抹掉（表现为「未选择陪伴角色」）。
+    const existing = _progressCache.get(progress.movieId) ?? (await db.progress.get(progress.movieId)) ?? null;
+    const merged: WatchProgress = {
+        ...existing,
+        ...progress,
+        companionCharacterId: progress.companionCharacterId ?? existing?.companionCharacterId,
+        segmented: progress.segmented || existing?.segmented || false,
+    };
+    await db.progress.put(merged);
+    _progressCache.set(merged.movieId, merged);
 }
 
 // ── Danmaku ──

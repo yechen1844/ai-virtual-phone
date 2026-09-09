@@ -329,6 +329,56 @@ export function MoviePlayer({ movie, onBack }: Props) {
         });
     }, []);
 
+    // ── 陪伴角色选择（可随时查看/更换，不需重新分段）──
+    const [showCompanionPick, setShowCompanionPick] = useState(false);
+    const characters = loadCharacters();
+    const handlePickCompanion = (id: string) => {
+        setCompanionId(id);
+        setShowCompanionPick(false);
+        void saveProgress({
+            movieId: movie.id,
+            positionSeconds: positionRef.current,
+            companionCharacterId: id,
+            segmented: true,
+            lastWatchAt: new Date().toISOString(),
+        });
+    };
+
+    // 陪伴选择弹层（放进 overlayJsx，普通视图与影院层都可用）
+    const companionPickerJsx = showCompanionPick && (
+        <div
+            onClick={() => setShowCompanionPick(false)}
+            style={{ position: "absolute", inset: 0, zIndex: 45, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center" }}
+        >
+            <div
+                onClick={e => e.stopPropagation()}
+                style={{ width: "min(300px, 84%)", maxHeight: "70%", overflowY: "auto", background: "#161927", border: "1px solid #2c3046", borderRadius: 14, padding: 14 }}
+            >
+                <p className="ts-14" style={{ fontWeight: 600, marginBottom: 10 }}>选择陪你观影的角色</p>
+                {characters.map(c => (
+                    <button
+                        key={c.id}
+                        onClick={() => handlePickCompanion(c.id)}
+                        style={{
+                            display: "block", width: "100%", textAlign: "left", marginBottom: 6,
+                            padding: "9px 12px", borderRadius: 10,
+                            background: c.id === companionId ? "#6c5ce7" : "#1f2334",
+                            color: c.id === companionId ? "#fff" : "#c9cce0",
+                            border: "none", cursor: "pointer",
+                        }}
+                    >
+                        <span className="ts-14">{c.name}{c.id === companionId ? " · 当前" : ""}</span>
+                    </button>
+                ))}
+                <button
+                    className="ts-14"
+                    onClick={() => setShowCompanionPick(false)}
+                    style={{ width: "100%", marginTop: 4, padding: "8px 0", borderRadius: 10, background: "none", border: "1px solid #2c3046", color: "#8f93a8", cursor: "pointer" }}
+                >取消</button>
+            </div>
+        </div>
+    );
+
     // 共用的视频元素（同一时刻只挂载一份：普通视图或影院层）
     const videoJsx = needFile ? null : (
         <video
@@ -379,6 +429,7 @@ export function MoviePlayer({ movie, onBack }: Props) {
                     {danmakuNotice}
                 </div>
             )}
+            {companionPickerJsx}
         </>
     );
 
@@ -395,6 +446,7 @@ export function MoviePlayer({ movie, onBack }: Props) {
             <button className="ts-14" onClick={onBack} style={{ background: "none", border: "none", color: "#8f93a8", padding: "4px 8px", cursor: "pointer" }}>‹ 片架</button>
             <span className="ts-14" style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{movie.title}</span>
             <div style={{ flex: 1 }} />
+            <button className="ts-14" onClick={() => setShowCompanionPick(true)} style={{ background: "none", border: "1px solid #2c3046", color: companionId ? "#a29bfe" : "#e08a95", borderRadius: 8, padding: "4px 10px", cursor: "pointer" }}>陪伴{companionName ? `·${companionName.slice(0, 4)}` : "未选"}</button>
             {scenes.length > 0 && (
                 <button className="ts-14" onClick={() => setShowSegments(true)} style={{ background: "none", border: "1px solid #2c3046", color: "#8f93a8", borderRadius: 8, padding: "4px 10px", cursor: "pointer" }}>分段</button>
             )}
