@@ -76,6 +76,7 @@ export function MoviePlayer({ movie, onBack }: Props) {
             setCompanionId(progress?.companionCharacterId ?? "");
             setPosition(progress?.positionSeconds ?? 0);
             positionRef.current = progress?.positionSeconds ?? 0;
+            setAudioOffset(progress?.audioOffsetSeconds ?? 0);
             setScenes(await loadScenes(movie.id));
             setCues(await loadCues(movie.id));
             setDanmakuList(await loadDanmaku(movie.id));
@@ -83,10 +84,11 @@ export function MoviePlayer({ movie, onBack }: Props) {
         return () => { cancelled = true; };
     }, [movie.id]);
 
-    // 卸载时释放 objectURL 并保存进度
+    // 卸载时释放 objectURL / 音频图 / 保存进度
     useEffect(() => {
         return () => {
             if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+            void audioCtxRef.current?.close().catch(() => {});
             if (positionRef.current > 0) {
                 void saveProgress({
                     movieId: movie.id,
@@ -379,6 +381,88 @@ export function MoviePlayer({ movie, onBack }: Props) {
         </div>
     );
 
+    // ── 音画校准：把声音延后 N 秒（声音比画面快时调大），0~5 秒 ──
+    const [audioOffset, setAudioOffset] = useState(0);
+    const [showAudioPick, setShowAudioPick] = useState(false);
+    const audioCtxRef = useRef<AudioContext | null>(null);
+    const audioSrcRef = useRef<MediaElementAudioSourceNode | null>(null);
+    const audioDelayRef = useRef<DelayNode | null>(null);
+    const audioGraphElRef = useRef<HTMLVideoElement | null>(null);
+
+    const applyAudioOffset = useCallback((video: HTMLVideoElement | null, offset: number) => {
+        if (!video || typeof window === "undefined") return;
+        try {
+            if (!audioCtxRef.current) {
+                const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+                if (!Ctx) return;
+                audioCtxRef.current = new Ctx();
+                audioDelayRef.current = audioCtxRef.current.createDelay(5.0);
+                audioDelayRef.current.connect(audioCtxRef.current.destination);
+            }
+            const ctx = audioCtxRef.current;
+            if (audioGraphElRef.current !== video) {
+                try { audioSrcRef.current?.disconnect(); } catch { /* ignore */ }
+                audioSrcRef.current = ctx.createMediaElementSource(video);
+                audioSrcRef.current.connect(audioDelayRef.current!);
+                audioGraphElRef.current = video;
+            }
+            if (audioDelayRef.current) audioDelayRef.current.delayTime.value = Math.min(Math.max(offset, 0), 5);
+            if (ctx.state === "suspended") void ctx.resume().catch(() => {});
+        } catch {
+            // 音频路由失败则保持原生音频，不影响播放
+        }
+    }, []);
+
+    const handleAdjustAudioOffset = useCallback((delta: number) => {
+        const next = Math.min(Math.max(audioOffset + delta, 0), 5);
+        setAudioOffset(next);
+        void saveProgress({
+            movieId: movie.id,
+            positionSeconds: positionRef.current,
+            companionCharacterId: companionId || undefined,
+            segmented: true,
+            lastWatchAt: new Date().toISOString(),
+            audioOffsetSeconds: next,
+        });
+        applyAudioOffset(videoRef.current, next);
+    }, [audioOffset, movie.id, companionId, applyAudioOffset]);
+
+    // 音画校准弹层（放进 overlayJsx，普通视图与影院层都可用）
+    const audioPickerJsx = showAudioPick && (
+        <div
+            onClick={() => setShowAudioPick(false)}
+            style={{ position: "absolute", inset: 0, zIndex: 45, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center" }}
+        >
+            <div
+                onClick={e => e.stopPropagation()}
+                style={{ width: "min(300px, 84%)", background: "#161927", border: "1px solid #2c3046", borderRadius: 14, padding: 14 }}
+            >
+                <p className="ts-14" style={{ fontWeight: 600, marginBottom: 6 }}>音画校准</p>
+                <p className="ts-14" style={{ color: "#8f93a8", lineHeight: 1.6, marginBottom: 10 }}>
+                    声音比画面快就调大（把声音延后），每次 ±0.5 秒。当前声音延后 {audioOffset.toFixed(1)} 秒。
+                </p>
+                <div className="flex items-center justify-center gap-3" style={{ marginBottom: 12 }}>
+                    <button
+                        className="ts-14"
+                        onClick={() => handleAdjustAudioOffset(-0.5)}
+                        style={{ padding: "8px 14px", borderRadius: 10, background: "#1f2334", color: "#e8e9f0", border: "none", cursor: "pointer" }}
+                    >−0.5s</button>
+                    <span className="ts-14" style={{ fontWeight: 700, color: "#a29bfe", minWidth: 52, textAlign: "center" }}>{audioOffset.toFixed(1)}s</span>
+                    <button
+                        className="ts-14"
+                        onClick={() => handleAdjustAudioOffset(0.5)}
+                        style={{ padding: "8px 14px", borderRadius: 10, background: "#1f2334", color: "#e8e9f0", border: "none", cursor: "pointer" }}
+                    >+0.5s</button>
+                </div>
+                <button
+                    className="ts-14"
+                    onClick={() => setShowAudioPick(false)}
+                    style={{ width: "100%", padding: "8px 0", borderRadius: 10, background: "none", border: "1px solid #2c3046", color: "#8f93a8", cursor: "pointer" }}
+                >完成</button>
+            </div>
+        </div>
+    );
+
     // 共用的视频元素（同一时刻只挂载一份：普通视图或影院层）
     const videoJsx = needFile ? null : (
         <video
@@ -386,8 +470,8 @@ export function MoviePlayer({ movie, onBack }: Props) {
             src={videoUrl ?? undefined}
             controls
             playsInline
-            onPlay={() => setPlaying(true)}
-            onPause={() => setPlaying(false)}
+            onPlay={() => { setPlaying(true); applyAudioOffset(videoRef.current, audioOffset); }}
+            onPause={() => { setPlaying(false); clearPressTimer(); }}
             onTimeUpdate={handleTimeUpdate}
             onSeeking={handleSeeking}
             onLoadedMetadata={handleLoadedMetadata}
@@ -430,6 +514,7 @@ export function MoviePlayer({ movie, onBack }: Props) {
                 </div>
             )}
             {companionPickerJsx}
+            {audioPickerJsx}
         </>
     );
 
@@ -446,6 +531,7 @@ export function MoviePlayer({ movie, onBack }: Props) {
             <button className="ts-14" onClick={onBack} style={{ background: "none", border: "none", color: "#8f93a8", padding: "4px 8px", cursor: "pointer" }}>‹ 片架</button>
             <span className="ts-14" style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{movie.title}</span>
             <div style={{ flex: 1 }} />
+            <button className="ts-14" onClick={() => setShowAudioPick(true)} style={{ background: "none", border: "1px solid #2c3046", color: audioOffset > 0 ? "#a29bfe" : "#8f93a8", borderRadius: 8, padding: "4px 10px", cursor: "pointer" }}>音画{audioOffset > 0 ? `·${audioOffset.toFixed(1)}s` : ""}</button>
             <button className="ts-14" onClick={() => setShowCompanionPick(true)} style={{ background: "none", border: "1px solid #2c3046", color: companionId ? "#a29bfe" : "#e08a95", borderRadius: 8, padding: "4px 10px", cursor: "pointer" }}>陪伴{companionName ? `·${companionName.slice(0, 4)}` : "未选"}</button>
             {scenes.length > 0 && (
                 <button className="ts-14" onClick={() => setShowSegments(true)} style={{ background: "none", border: "1px solid #2c3046", color: "#8f93a8", borderRadius: 8, padding: "4px 10px", cursor: "pointer" }}>分段</button>

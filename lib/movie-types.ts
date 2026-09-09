@@ -55,6 +55,8 @@ export type WatchProgress = {
     /** 是否已完成分段 */
     segmented: boolean;
     lastWatchAt: string;
+    /** 音画校准：声音延后秒数（0~5），声音比画面快时调大 */
+    audioOffsetSeconds?: number;
 };
 
 export type MovieDanmaku = {

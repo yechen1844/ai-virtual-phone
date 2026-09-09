@@ -145,6 +145,7 @@ export async function saveProgress(progress: WatchProgress): Promise<void> {
         ...existing,
         ...progress,
         companionCharacterId: progress.companionCharacterId ?? existing?.companionCharacterId,
+        audioOffsetSeconds: progress.audioOffsetSeconds ?? existing?.audioOffsetSeconds,
         segmented: progress.segmented || existing?.segmented || false,
     };
     await db.progress.put(merged);
