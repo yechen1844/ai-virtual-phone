@@ -6027,12 +6027,13 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                                                 onPointerCancel: handleMessagePointerCancel,
                                                 onPointerLeave: handleMessagePointerCancel,
                                                 onPointerMove: (e: React.PointerEvent) => {
-                                                    // 右滑触发引用（QQ 式）：滑动超过阈值且横向意图明显时引用该消息
+                                                    // 横滑触发引用（QQ 式）：左滑或右滑均可，滑动超过阈值且横向意图明显时引用该消息
                                                     const s = swipeRef.current;
                                                     if (s && s.pointerId === e.pointerId && !s.active) {
                                                         const dx = e.clientX - s.startX;
+                                                        const adx = Math.abs(dx);
                                                         const dy = Math.abs(e.clientY - s.startY);
-                                                        if (!s.locked && dx > 8 && dx > dy * 1.5) {
+                                                        if (!s.locked && adx > 8 && adx > dy * 1.2) {
                                                             // 锁定横向手势：取消长按定时器并捕获指针，
                                                             // 防止手指滑出小气泡边界（pointerleave）或列表滚动（pointercancel）中断手势
                                                             s.locked = true;
@@ -6042,7 +6043,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                                                             }
                                                             try { (e.currentTarget as HTMLElement).setPointerCapture(s.pointerId); } catch { /* ignore */ }
                                                         }
-                                                        if (s.locked && dx > 70) {
+                                                        if (s.locked && adx > 60) {
                                                             s.active = true;
                                                             swipeQuoteTriggeredRef.current = true;
                                                             (e.currentTarget as HTMLElement).style.transform = "";
@@ -6052,7 +6053,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                                                         }
                                                         // 横向进行中：给一点实时位移反馈
                                                         if (s.locked) {
-                                                            (e.currentTarget as HTMLElement).style.transform = `translateX(${Math.min(dx, 28)}px)`;
+                                                            (e.currentTarget as HTMLElement).style.transform = `translateX(${Math.max(-28, Math.min(28, dx))}px)`;
                                                         }
                                                         return;
                                                     }
