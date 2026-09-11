@@ -321,6 +321,18 @@ export function ReadingInteractionDialog({ onClose }: Props) {
                     <p className="reading-settings-inline-note">
                         <span>批注时一并生成 ~150 字情节摘要，注入后续批注和讨论的上下文。当摘要总字数达到上限时，自动提炼为当前的 1/3，保留关键情节。旧摘要保留存储但不注入。</span>
                     </p>
+                    <div className="reading-settings-toggle-row">
+                        <span className="reading-settings-toggle-label">
+                            回读时仍注入最新前情提要
+                        </span>
+                        <Toggle
+                            checked={config.alwaysInjectLatestDistilled === true}
+                            onChange={(next) => setConfig((prev) => ({ ...prev, alwaysInjectLatestDistilled: next }))}
+                        />
+                    </div>
+                    <p className="reading-settings-inline-note">
+                        <span>开启后，无论当前读到哪，始终只注入最新、最全面的那条前情提要——回读时 char 仍记得全部已看过的情节。关闭则按当前阅读位置动态判定：提炼点还没读到时不注入，避免剧透。</span>
+                    </p>
                 </section>
             </div>
         </ContentDialog>

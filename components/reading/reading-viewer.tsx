@@ -262,6 +262,16 @@ export function ReadingViewer({ book, onBack }: Props) {
     }, [showCharPicker, charPickerClosing]);
     const [showChat, setShowChat] = useState(false);
     const [chatExpanded, setChatExpanded] = useState(false);
+    type ChatDockSide = false | "left" | "right";
+    const parseDocked = (raw: string | null): ChatDockSide => {
+        try {
+            if (!raw) return false;
+            const parsed = JSON.parse(raw) as { docked?: unknown };
+            return parsed.docked === "left" || parsed.docked === "right" ? parsed.docked : false;
+        } catch {
+            return false;
+        }
+    };
     const [chatOffset, setChatOffset] = useState<{ x: number; y: number }>(() => {
         try {
             const raw = localStorage.getItem(CHAT_FLOAT_POS_KEY);
@@ -275,6 +285,9 @@ export function ReadingViewer({ book, onBack }: Props) {
         }
         return { x: 0, y: 0 };
     });
+    // 悬浮球贴边收纳态：拖到屏幕左/右边缘时收缩成贴边小条（点击/向内滑动可唤出）
+    const [chatDocked, setChatDocked] = useState<ChatDockSide>(() => parseDocked(localStorage.getItem(CHAT_FLOAT_POS_KEY)));
+    const dockDragRef = useRef<{ pointerId: number; startX: number; startY: number } | null>(null);
     const [isDragging, setIsDragging] = useState(false);
     const [chatInput, setChatInput] = useState("");
     const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -791,9 +804,11 @@ export function ReadingViewer({ book, onBack }: Props) {
 
     const getReadingSummaryForContext = useCallback(async (chapterIdx: number, paragraphIdx: number): Promise<string> => {
         const all = await loadSummaries(book.id);
-        const toInject = getSummariesForInjection(all, chapterIdx, paragraphIdx);
+        const toInject = getSummariesForInjection(all, chapterIdx, paragraphIdx, {
+            alwaysLatestDistilled: readingConfig.alwaysInjectLatestDistilled === true,
+        });
         return formatReadingSummary(toInject);
-    }, [book.id]);
+    }, [book.id, readingConfig.alwaysInjectLatestDistilled]);
 
     const loadExistingAnnotationsForItems = useCallback(async (items: ParagraphRef[]) => {
         const chapterIndexes = [...new Set(items.map((item) => item.chapterIndex))];
@@ -1683,6 +1698,7 @@ export function ReadingViewer({ book, onBack }: Props) {
         setTimeout(() => {
             setShowChat(false);
             setChatExpanded(false);
+            setChatDocked(false); // 关闭聊天后回到完整悬浮球（收纳条只通过拖拽边缘进入）
             setChatClosing(false);
         }, 200);
     };
@@ -1749,9 +1765,9 @@ export function ReadingViewer({ book, onBack }: Props) {
         };
     };
 
-    const persistChatFloatPos = (offset: { x: number; y: number }) => {
+    const persistChatFloatPos = (offset: { x: number; y: number }, docked: ChatDockSide = false) => {
         try {
-            localStorage.setItem(CHAT_FLOAT_POS_KEY, JSON.stringify(clampChatOffset(offset)));
+            localStorage.setItem(CHAT_FLOAT_POS_KEY, JSON.stringify({ ...clampChatOffset(offset), docked }));
         } catch {
             // ignore storage errors
         }
@@ -1780,8 +1796,9 @@ export function ReadingViewer({ book, onBack }: Props) {
         };
         const onResetPos = () => {
             setChatOffset({ x: 0, y: 0 });
+            setChatDocked(false);
             try {
-                localStorage.setItem(CHAT_FLOAT_POS_KEY, JSON.stringify({ x: 0, y: 0 }));
+                localStorage.setItem(CHAT_FLOAT_POS_KEY, JSON.stringify({ x: 0, y: 0, docked: false }));
             } catch {
                 // ignore storage errors
             }
@@ -1815,10 +1832,18 @@ export function ReadingViewer({ book, onBack }: Props) {
             const maxX = window.innerWidth - CHAT_FLOAT_MARGIN * 2 - width;
             const leftDist = target.x;
             const rightDist = maxX - target.x;
+            const side: ChatDockSide = leftDist <= rightDist ? "left" : "right";
             target = { x: leftDist <= rightDist ? 0 : maxX, y: target.y };
+            if (!showChat) {
+                // 悬浮球拖到边缘 → 收纳为贴边小条（省空间；点击/向内滑动可唤出）
+                setChatDocked(side);
+                persistChatFloatPos(target, side);
+                return;
+            }
         }
+        setChatDocked(false);
         setChatOffset(target);
-        persistChatFloatPos(target);
+        persistChatFloatPos(target, false);
     };
 
     const handleChatLaunchClick = () => {
@@ -1827,6 +1852,32 @@ export function ReadingViewer({ book, onBack }: Props) {
             return;
         }
         handleOpenChat();
+    };
+
+    // 收纳小条：点击 → 直接打开聊天；向屏幕内滑动 → 同样唤出
+    const handleDockDragStart = (e: React.PointerEvent<HTMLElement>) => {
+        if (e.pointerType === "mouse" && e.button !== 0) return;
+        dockDragRef.current = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY };
+        chatMovedRef.current = false;
+        e.currentTarget.setPointerCapture?.(e.pointerId);
+    };
+    const handleDockDragMove = (e: React.PointerEvent<HTMLElement>) => {
+        const drag = dockDragRef.current;
+        if (!drag || drag.pointerId !== e.pointerId) return;
+        const dx = e.clientX - drag.startX;
+        const inward = chatDocked === "left" ? dx : -dx;
+        if (inward > 18) {
+            dockDragRef.current = null;
+            chatMovedRef.current = true; // 吞掉随后派生的 click，避免重复唤出
+            setChatDocked(false);
+            handleOpenChat();
+        }
+    };
+    const handleDockDragEnd = (e: React.PointerEvent<HTMLElement>) => {
+        const drag = dockDragRef.current;
+        if (!drag || drag.pointerId !== e.pointerId) return;
+        dockDragRef.current = null;
+        e.currentTarget.releasePointerCapture?.(e.pointerId);
     };
 
     const chatFloatingStyle = {
@@ -2523,7 +2574,23 @@ export function ReadingViewer({ book, onBack }: Props) {
                 </div>
             </footer>
 
-            {!showChat && (
+            {!showChat && chatDocked ? (
+                <button
+                    type="button"
+                    onClick={() => { if (shouldIgnoreChatAction()) return; handleOpenChat(); }}
+                    className={`reading-chat-dock reading-chat-dock--${chatDocked}`}
+                    aria-label="唤出聊天"
+                    title="唤出聊天（点击或向内滑动）"
+                    style={{
+                        transform: `translate3d(0, ${chatOffset.y + 8}px, 0)`,
+                        transition: isDragging ? "none" : undefined,
+                    }}
+                    onPointerDown={handleDockDragStart}
+                    onPointerMove={handleDockDragMove}
+                    onPointerUp={handleDockDragEnd}
+                    onPointerCancel={handleDockDragEnd}
+                />
+            ) : !showChat && (
                 <button
                     onClick={handleChatLaunchClick}
                     className="reading-chat-launch"
@@ -2981,7 +3048,9 @@ export function ReadingViewer({ book, onBack }: Props) {
                             const center = getReadingCenter();
                             let displaySummaries: ReadingSummary[] = [];
                             if (summaryDialogTab === "injected") {
-                                displaySummaries = getSummariesForInjection(summaries, center.chapterIndex, center.paragraphIndex);
+                                displaySummaries = getSummariesForInjection(summaries, center.chapterIndex, center.paragraphIndex, {
+                                    alwaysLatestDistilled: readingConfig.alwaysInjectLatestDistilled === true,
+                                });
                             } else if (summaryDialogTab === "distilled") {
                                 displaySummaries = summaries.filter(s => s.isDistilled);
                             } else {

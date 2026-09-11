@@ -475,11 +475,11 @@ export function formatReadingSummary(summariesToInject: ReadingSummary[]): strin
 
 /**
  * 按当前位置动态过滤应注入的摘要（全部以当前阅读位置判定）：
- * - 普通摘要：endParagraph 不晚于当前位置即注入（摘要描述的是已读情节，跳读/回读时为 char 提供细粒度前情）
- * - 提炼摘要：当前位置超过其覆盖范围（distilledUpTo）时注入——覆盖范围已全部读过，不会剧透；
- *   还在覆盖范围内时不注入（其内容含未读情节），改由已读部分的细粒度旧摘要回退补位
- * - 覆盖过滤随位置动态生效：提炼摘要接管后（currentPos > distilledUpTo），覆盖范围内的旧摘要不再
- *   重复注入（其情节已并入提炼摘要）；接管前旧摘要按位置正常注入
+ * - 提炼摘要：多条时只注入「当前位置已读过的提炼摘要中覆盖最远的一条」——即一条从开头到最新提炼点的
+ *   总前情提要（每次提炼都以更早的提炼为源，内容已包含它们，不重复注入）；
+ *   最新提炼点尚未读到时不注入（其内容含未读情节，防剧透），改由已读部分的细粒度旧摘要回退补位
+ * - 普通摘要：endParagraph 不晚于当前位置即注入（摘要描述的是已读情节，跳读/回读时提供细粒度前情）；
+ *   已被上面注入的提炼摘要覆盖（位置 ≤ 其 distilledUpTo）的不再重复注入
  * - 提炼时 distilledUpTo 会截断到当时阅读位置（见 distillSummariesIfNeeded），避免 prefetch 预生成的
  *   超前摘要把覆盖范围推到未读区域、导致提炼摘要长期无法接管
  */
@@ -487,27 +487,36 @@ export function getSummariesForInjection(
     allSummaries: ReadingSummary[],
     chapterIndex: number,
     paragraphIndex: number,
+    options?: { alwaysLatestDistilled?: boolean },
 ): ReadingSummary[] {
     const currentPos = encodeReadingPosition(chapterIndex, paragraphIndex);
     const result: ReadingSummary[] = [];
 
+    // 确定当前生效的那一条提炼摘要（永远最多一条，呈现为「一条从开头到提炼点的总前情提要」）：
+    // - alwaysLatestDistilled 开启：无视阅读位置，始终取覆盖最远（最新最全面）的一条——回读时 char 仍记得全部已看情节
+    // - 默认（关闭）：只从「提炼点已被读过」的提炼摘要中取覆盖最远的一条；最新提炼点尚未读到时不注入（防剧透），
+    //   由已读部分的细粒度旧摘要回退补位
+    const distilledCandidates = allSummaries.filter(s => s.isDistilled && typeof s.distilledUpTo === "number");
+    let activeDistilled: ReadingSummary | null = null;
+    if (distilledCandidates.length > 0) {
+        const sorted = [...distilledCandidates].sort((a, b) => (b.distilledUpTo ?? 0) - (a.distilledUpTo ?? 0));
+        activeDistilled = options?.alwaysLatestDistilled === true
+            ? sorted[0]
+            : sorted.find(s => currentPos > (s.distilledUpTo ?? 0)) ?? null;
+    }
+
     for (const s of allSummaries) {
         if (s.isDistilled) {
-            // 提炼摘要：读到其覆盖范围之后才注入（覆盖范围全部已读，不剧透）
-            if (s.distilledUpTo !== undefined && currentPos > s.distilledUpTo) {
+            if (activeDistilled && s.id === activeDistilled.id) {
                 result.push(s);
             }
         } else {
             // 普通摘要：检查是否不晚于当前位置（摘要末段=当前段也算已读，摘要描述的是已读内容）
             const summaryPos = encodeReadingPosition(s.chapterIndex, s.endParagraph);
             if (summaryPos > currentPos) continue;
-            // 已被某条提炼摘要覆盖、且该提炼摘要已接管（当前位置超过其覆盖范围）时不再注入，避免重复
-            const coveredByDistilled = allSummaries.some(
-                d => d.isDistilled
-                    && d.distilledUpTo !== undefined
-                    && d.distilledUpTo >= summaryPos
-                    && currentPos > d.distilledUpTo,
-            );
+            // 已被当前注入的提炼摘要覆盖时不再注入，避免同一情节双份出现
+            const coveredByDistilled = activeDistilled !== null
+                && (activeDistilled.distilledUpTo ?? 0) >= summaryPos;
             if (!coveredByDistilled) result.push(s);
         }
     }

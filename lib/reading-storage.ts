@@ -94,8 +94,11 @@ export type ReadingInteractionConfig = {
     pdfPreloadRadius: number;
     /** PDF 预加载：开启后阅读时提前渲染后续页，滚动更平滑 */
     pdfPreloadEnabled: boolean;
-    /** 摘要字数上限：达到此字数时触发提炼（压缩为当前的 1/3），默认 5000 */
+    /** 摘要字数上限：达到此字数时触发提炼（压缩为当前的 1/3），默认 3000 */
     maxSummariesChars: number;
+    /** 前情提要注入策略：开启后无论读到哪，始终只注入最新、最全面的一条提炼摘要（char 记得全部已看情节）；
+     *  关闭则按当前阅读位置动态判定（提炼点未读到的不注入，防剧透），默认关闭 */
+    alwaysInjectLatestDistilled: boolean;
 };
 
 export const DEFAULT_READING_INTERACTION_CONFIG: ReadingInteractionConfig = {
@@ -113,7 +116,8 @@ export const DEFAULT_READING_INTERACTION_CONFIG: ReadingInteractionConfig = {
     pdfZoom: 1,
     pdfPreloadRadius: 3,
     pdfPreloadEnabled: true,
-    maxSummariesChars: 5000,
+    maxSummariesChars: 3000,
+    alwaysInjectLatestDistilled: false,
 };
 
 export async function hydrateReadingStorage(): Promise<void> {
@@ -284,10 +288,16 @@ export function loadReadingInteractionConfig(): ReadingInteractionConfig {
     try {
         const raw = kvGet(READING_INTERACTION_CONFIG_KEY);
         if (!raw) return DEFAULT_READING_INTERACTION_CONFIG;
-        return {
+        const parsed = JSON.parse(raw) as Partial<ReadingInteractionConfig>;
+        const merged: ReadingInteractionConfig = {
             ...DEFAULT_READING_INTERACTION_CONFIG,
-            ...JSON.parse(raw),
+            ...parsed,
         };
+        // 迁移：旧默认 5000 视为「未自定义过」，跟随新默认降为 3000；手动改过其他值的保留
+        if (parsed.maxSummariesChars === 5000) {
+            merged.maxSummariesChars = DEFAULT_READING_INTERACTION_CONFIG.maxSummariesChars;
+        }
+        return merged;
     } catch {
         return DEFAULT_READING_INTERACTION_CONFIG;
     }
