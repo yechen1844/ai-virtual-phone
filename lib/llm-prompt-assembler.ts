@@ -153,6 +153,7 @@ type PromptBlock = {
     marker: string;
     fromHistory?: boolean;
     imageUrl?: string;      // vision: image URL/data URL attached to this prompt block
+    extraImageUrls?: string[]; // vision: 附加图片（小红书分享多图注入，仅发送后第一轮）
     reasoning?: string;
     openRouterReasoningDetails?: unknown[];
     toolCalls?: LLMToolCallPayload[];
@@ -220,6 +221,23 @@ function getPromptVisionImageUrl(msg: ChatMessage): string | undefined {
         return stickerUrl || undefined;
     }
     return undefined;
+}
+
+/**
+ * 小红书分享多图注入：仅当该消息是本轮历史的最后一条用户消息时生效（即发送后的第一轮回复）。
+ * 不走 mediaUrl/原生视觉白名单，因此不受 visionImagePromptLimit（原生图片注入上限）裁剪。
+ */
+function getXhsVisionImageUrls(msg: ChatMessage, history?: ChatMessage[]): string[] {
+    if (msg.role !== "user" || msg.mediaType !== "xiaohongshu_note_share") return [];
+    if (!history?.length) return [];
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+        const candidate = history[i];
+        if (candidate.role !== "user") continue;
+        if (candidate.id !== msg.id) return [];
+        return (msg.mediaData?.xiaohongshuImages ?? [])
+            .filter((url): url is string => typeof url === "string" && url.startsWith("data:image/"));
+    }
+    return [];
 }
 
 function formatDirectVisionBody(msg: ChatMessage, userName: string, charName: string): string {
@@ -568,14 +586,22 @@ function pushChronologicalShortTermBlocks(params: {
 
         let body = stripStateAndInnerForPrompt(msg.content);
         let imageUrl: string | undefined;
+        let extraImageUrls: string[] | undefined;
 
+        const xhsImageUrls = visionEnabled ? getXhsVisionImageUrls(msg, history) : [];
         if (msg.mediaType) {
-            const visionImageUrl = visionEnabled ? getPromptVisionImageUrl(msg) : undefined;
-            if (visionImageUrl) {
-                body = formatDirectVisionBody(msg, resolvedUserName, characterName);
-                imageUrl = visionImageUrl;
+            if (xhsImageUrls.length) {
+                // 小红书分享多图：正文保留分享文本原样，全部图片作为视觉部件注入
+                imageUrl = xhsImageUrls[0];
+                extraImageUrls = xhsImageUrls.slice(1);
             } else {
-                body = formatRichMediaForHistory(msg, resolvedUserName, characterName);
+                const visionImageUrl = visionEnabled ? getPromptVisionImageUrl(msg) : undefined;
+                if (visionImageUrl) {
+                    body = formatDirectVisionBody(msg, resolvedUserName, characterName);
+                    imageUrl = visionImageUrl;
+                } else {
+                    body = formatRichMediaForHistory(msg, resolvedUserName, characterName);
+                }
             }
         }
 
@@ -593,6 +619,7 @@ function pushChronologicalShortTermBlocks(params: {
             marker: `History [${item.historyIndex}]`,
             fromHistory: true,
             imageUrl,
+            extraImageUrls,
         });
 
         if (msg.isRetracted) {
@@ -1038,15 +1065,23 @@ export function assemblePromptPayload(input: AssemblerInput): LLMMessage[] {
             prevRole = promptRole;
             let body = stripStateAndInnerForPrompt(msg.content);
             let imageUrl: string | undefined;
+            let extraImageUrls: string[] | undefined;
 
+            const xhsImageUrls = visionEnabled ? getXhsVisionImageUrls(msg, history) : [];
             // Format rich-media messages as bracket markers so the AI sees them in context
             if (msg.mediaType) {
-                const visionImageUrl = visionEnabled ? getPromptVisionImageUrl(msg) : undefined;
-                if (visionImageUrl) {
-                    body = formatDirectVisionBody(msg, resolvedUserName, character?.name || "对方");
-                    imageUrl = visionImageUrl;
+                if (xhsImageUrls.length) {
+                    // 小红书分享多图：正文保留分享文本原样，全部图片作为视觉部件注入
+                    imageUrl = xhsImageUrls[0];
+                    extraImageUrls = xhsImageUrls.slice(1);
                 } else {
-                    body = formatRichMediaForHistory(msg, resolvedUserName, character?.name || "对方");
+                    const visionImageUrl = visionEnabled ? getPromptVisionImageUrl(msg) : undefined;
+                    if (visionImageUrl) {
+                        body = formatDirectVisionBody(msg, resolvedUserName, character?.name || "对方");
+                        imageUrl = visionImageUrl;
+                    } else {
+                        body = formatRichMediaForHistory(msg, resolvedUserName, character?.name || "对方");
+                    }
                 }
             }
 
@@ -1063,6 +1098,7 @@ export function assemblePromptPayload(input: AssemblerInput): LLMMessage[] {
                 marker: `History [${distFromBottom}]`,
                 fromHistory: true,
                 imageUrl,
+                extraImageUrls,
             });
 
             // Retracted: keep the original message above, then append a system notice
@@ -1115,6 +1151,9 @@ export function assemblePromptPayload(input: AssemblerInput): LLMMessage[] {
             const parts: LLMContentPart[] = [];
             if (processedText) parts.push({ type: "text", text: processedText });
             parts.push({ type: "image_url", image_url: { url: b.imageUrl, detail: "low" } });
+            for (const extraUrl of b.extraImageUrls ?? []) {
+                parts.push({ type: "image_url", image_url: { url: extraUrl, detail: "low" } });
+            }
             finalPayload.push({
                 role: b.role,
                 content: parts,
@@ -1253,6 +1292,10 @@ export function formatRichMediaForHistory(msg: ChatMessage, userName: string, ch
                 title: d?.xiaohongshuTitle,
                 body: d?.xiaohongshuBody,
                 description: d?.xiaohongshuDescription,
+                noteType: d?.xiaohongshuNoteType,
+                tags: d?.xiaohongshuTags,
+                hotComments: d?.xiaohongshuHotComments,
+                stats: d?.xiaohongshuStats,
             });
         case "accept_red_packet":
             if (isGroup && d?.claimer && d?.owner) return `[${d.claimer}领取了${d.owner}的红包]`;
@@ -1746,11 +1789,19 @@ function pushGroupChronologicalShortTermBlocks(params: {
 
         let body = msg.content;
         let imageUrl: string | undefined;
+        let extraImageUrls: string[] | undefined;
 
-        const visionImageUrl = visionEnabled ? getPromptVisionImageUrl(msg) : undefined;
-        if (visionImageUrl) {
-            body = formatAnnotatedVisionBody(msg, body);
-            imageUrl = visionImageUrl;
+        const xhsImageUrls = visionEnabled ? getXhsVisionImageUrls(msg, history) : [];
+        if (xhsImageUrls.length) {
+            // 小红书分享多图：正文保留分享文本原样，全部图片作为视觉部件注入
+            imageUrl = xhsImageUrls[0];
+            extraImageUrls = xhsImageUrls.slice(1);
+        } else {
+            const visionImageUrl = visionEnabled ? getPromptVisionImageUrl(msg) : undefined;
+            if (visionImageUrl) {
+                body = formatAnnotatedVisionBody(msg, body);
+                imageUrl = visionImageUrl;
+            }
         }
 
         const isAssistantImage = imageUrl && msg.role === "assistant" && msg.mediaType === "media_file";
@@ -1765,6 +1816,7 @@ function pushGroupChronologicalShortTermBlocks(params: {
             marker: `History [${item.historyIndex}]`,
             fromHistory: true,
             imageUrl,
+            extraImageUrls,
         });
     });
 
@@ -2228,11 +2280,19 @@ export function assembleGroupPromptPayload(input: GroupAssemblerInput): LLMMessa
             prevRole = promptRole;
             let body = msg.content; // Already annotated with [SenderName]: prefix
             let imageUrl: string | undefined;
+            let extraImageUrls: string[] | undefined;
 
-            const visionImageUrl = groupVisionEnabled ? getPromptVisionImageUrl(msg) : undefined;
-            if (visionImageUrl) {
-                body = formatAnnotatedVisionBody(msg, body);
-                imageUrl = visionImageUrl;
+            const xhsImageUrls = groupVisionEnabled ? getXhsVisionImageUrls(msg, history) : [];
+            if (xhsImageUrls.length) {
+                // 小红书分享多图：正文保留分享文本原样，全部图片作为视觉部件注入
+                imageUrl = xhsImageUrls[0];
+                extraImageUrls = xhsImageUrls.slice(1);
+            } else {
+                const visionImageUrl = groupVisionEnabled ? getPromptVisionImageUrl(msg) : undefined;
+                if (visionImageUrl) {
+                    body = formatAnnotatedVisionBody(msg, body);
+                    imageUrl = visionImageUrl;
+                }
             }
 
             const isAssistantImage = imageUrl && msg.role === "assistant" && msg.mediaType === "media_file";
@@ -2248,6 +2308,7 @@ export function assembleGroupPromptPayload(input: GroupAssemblerInput): LLMMessa
                 marker: `History [${distFromBottom}]`,
                 fromHistory: true,
                 imageUrl,
+                extraImageUrls,
             });
         });
     }
@@ -2279,6 +2340,9 @@ export function assembleGroupPromptPayload(input: GroupAssemblerInput): LLMMessa
             const parts: LLMContentPart[] = [];
             if (processedText) parts.push({ type: "text", text: processedText });
             parts.push({ type: "image_url", image_url: { url: b.imageUrl, detail: "low" } });
+            for (const extraUrl of b.extraImageUrls ?? []) {
+                parts.push({ type: "image_url", image_url: { url: extraUrl, detail: "low" } });
+            }
             finalPayload.push({
                 role: b.role,
                 content: parts,

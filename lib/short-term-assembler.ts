@@ -279,6 +279,10 @@ export function loadNativeTimeline(
                     title: msg.mediaData?.xiaohongshuTitle,
                     body: msg.mediaData?.xiaohongshuBody,
                     description: msg.mediaData?.xiaohongshuDescription,
+                    noteType: msg.mediaData?.xiaohongshuNoteType,
+                    tags: msg.mediaData?.xiaohongshuTags,
+                    hotComments: msg.mediaData?.xiaohongshuHotComments,
+                    stats: msg.mediaData?.xiaohongshuStats,
                 });
                 else if (msg.mediaType === "location") content = `[位置:${msg.mediaData?.label || ""}]`;
             }
@@ -390,6 +394,10 @@ export function loadNativeTimeline(
                     title: msg.mediaData?.xiaohongshuTitle,
                     body: msg.mediaData?.xiaohongshuBody,
                     description: msg.mediaData?.xiaohongshuDescription,
+                    noteType: msg.mediaData?.xiaohongshuNoteType,
+                    tags: msg.mediaData?.xiaohongshuTags,
+                    hotComments: msg.mediaData?.xiaohongshuHotComments,
+                    stats: msg.mediaData?.xiaohongshuStats,
                 });
                 else if (msg.mediaType === "media_file") {
                     const ft = msg.mediaData?.fileType;

@@ -200,6 +200,9 @@ export type ChatMessage = {
         xiaohongshuImageAssetId?: string;
         xiaohongshuCoverIcon?: string;
         xiaohongshuTone?: string;
+        xiaohongshuImages?: string[];             // 全部配图 data URL（仅发送后第一轮注入视觉，不进聊天 UI）
+        xiaohongshuHotComments?: { nickname: string; content: string; likedCount?: number | string }[]; // 首屏热评
+        xiaohongshuStats?: string;                // 互动数据描述（赞/藏/评）
         callDuration?: string;    // 通话时长（如 05:23）
         voiceDuration?: number;   // 语音条时长（秒）
         synthesizedFromText?: string; // 语音条当前音频对应的合成文本

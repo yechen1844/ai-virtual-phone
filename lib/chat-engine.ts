@@ -289,6 +289,8 @@ function isVisionPromptImageMessage(msg: ChatMessage): boolean {
     return msg.mediaType === "image"
         || (msg.role === "user" && msg.mediaType === "sticker" && Boolean(msg.mediaData?.stickerUrl))
         || (msg.mediaType === "media_file" && msg.mediaData?.fileType === "image");
+    // 注意：xiaohongshu_note_share 的多图注入不走这里——它不使用 mediaUrl，
+    // 在 llm-prompt-assembler 组装块时单独处理，从而不受 visionImagePromptLimit 裁剪。
 }
 
 function hasVisionPromptImageData(msg: ChatMessage): boolean {
