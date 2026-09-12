@@ -224,30 +224,15 @@ export function useTouchSort(
             }
 
             const { top, bottom } = getScrollViewport(lock.el);
-
-            // 触发位置：不只看手指，还看"被拖拽条目"的上下边缘。
-            // 顶栏是覆盖在列表之上的，手指很难伸进顶栏下方那条贴顶窄带；
-            // 改用被拖条目最上缘判定"要向上滚"，只要条目顶部接近可视顶就开始滚，天然绕开顶栏遮挡。
-            const draggedItem = d.items[d.index];
-            let triggerTop = d.latestY;
-            let triggerBottom = d.latestY;
-            if (draggedItem) {
-                const rowTop = draggedItem.top + (d.latestY - d.startY) + getScrollDelta(d);
-                triggerTop = Math.min(d.latestY, rowTop);
-                triggerBottom = Math.max(d.latestY, rowTop + draggedItem.height);
-            }
-
-            // 激活带宽随可视高度自适应放大，保证两端都容易触发；同时封顶避免中间区被吃掉
-            const edge = Math.min(220, Math.max(AUTO_SCROLL_EDGE, (bottom - top) * 0.25));
-            const distanceToTop = triggerTop - top;
-            const distanceToBottom = bottom - triggerBottom;
+            const distanceToTop = d.latestY - top;
+            const distanceToBottom = bottom - d.latestY;
             let scrollStep = 0;
 
-            if (distanceToTop < edge) {
-                const ratio = Math.max(0, Math.min(1, 1 - distanceToTop / edge));
+            if (distanceToTop < AUTO_SCROLL_EDGE) {
+                const ratio = Math.max(0, Math.min(1, 1 - distanceToTop / AUTO_SCROLL_EDGE));
                 scrollStep = -Math.ceil(ratio * ratio * AUTO_SCROLL_MAX_STEP);
-            } else if (distanceToBottom < edge) {
-                const ratio = Math.max(0, Math.min(1, 1 - distanceToBottom / edge));
+            } else if (distanceToBottom < AUTO_SCROLL_EDGE) {
+                const ratio = Math.max(0, Math.min(1, 1 - distanceToBottom / AUTO_SCROLL_EDGE));
                 scrollStep = Math.ceil(ratio * ratio * AUTO_SCROLL_MAX_STEP);
             }
 
