@@ -239,25 +239,6 @@ export async function generateDwellingLayout(
     try {
         const llmMessages = await buildDwellingMessages(characterId, preset, worldBooks, regexes, appTags, dwellingContext);
 
-        // items 模式补充硬性指令（与预设解耦）：BUILTIN_PRESET_VERSION 不升版时，
-        // 用户本地仍是旧版内置预设副本，只改预设块文本对已有用户不生效，故在代码侧追加。
-        // 旧提示词把旧物品清单全量列出又满是"保持/保留"措辞，模型极易原样复述导致刷新无变化。
-        if (mode === "items") {
-            llmMessages.push({
-                role: "system",
-                content: [
-                    "<dwelling_refresh_hard_requirements>",
-                    "本次是「刷新物品」：刷新的意义就是让屋子随时间推移产生看得见的实质变化。",
-                    "以下是硬性要求，优先级高于其他规则：",
-                    "- 严禁原样复述 <dwellingContext> 中已有的物品清单；若输出的物品与旧清单完全相同，本次任务视为失败。",
-                    "- 每件家具下的物品必须至少发生一处实质变化：新增一件、移除一件或替换一件，具体结合最近的时间推移、天气季节、节日、剧情事件与{{char}}的近期互动来决定。",
-                    "- 只有确实还留在原处的物品才保留原有 ID；被替换或移除的物品不要保留，新出现的物品使用全新 ID。",
-                    "- 变化要合理自然，符合{{char}}的性格与生活习惯，不要为变而变、堆砌离谱物品。",
-                    "</dwelling_refresh_hard_requirements>",
-                ].join("\n"),
-            });
-        }
-
         const rawOutput = await sendLLMRequest(apiConfig, preset, llmMessages, regexes, {
             characterName: loadCharacters().find(c => c.id === characterId)?.name,
         }, {
@@ -286,29 +267,19 @@ export async function generateDwellingLayout(
             }
         }
 
-        // Items mode: merge new items into old layout structure.
-        // LLM 生成的房间/家具 id 可能发生漂移，若只按 `room.id_furniture.id` 精确匹配，
-        // 一旦 id 不一致就永远不会替换 items，导致"刷新物品"结果与旧布局完全一致、
-        // 已探索的旧物品内容也一直保留。因此这里先按 id 精确匹配，再按 房间名+家具label 兜底。
+        // Items mode: merge new items into old layout structure
         if (mode === "items" && oldCached) {
             const oldLayout = structuredClone(oldCached.layout);
-            type DwItems = typeof layout.rooms[0]["furniture"][0]["items"];
-            const byId = new Map<string, DwItems>();
-            const byName = new Map<string, DwItems>();
+            const newItemsMap = new Map<string, typeof layout.rooms[0]["furniture"][0]["items"]>();
             for (const room of layout.rooms) {
                 for (const f of room.furniture) {
-                    byId.set(`${room.id}_${f.id}`, f.items);
-                    const nameKey = `${room.name}|${f.label}`;
-                    if (!byName.has(nameKey)) byName.set(nameKey, f.items);
+                    newItemsMap.set(`${room.id}_${f.id}`, f.items);
                 }
             }
             for (const room of oldLayout.rooms) {
                 for (const f of room.furniture) {
-                    const newItems =
-                        byId.get(`${room.id}_${f.id}`) ??
-                        byName.get(`${room.name}|${f.label}`) ??
-                        f.items;
-                    f.items = newItems;
+                    const newItems = newItemsMap.get(`${room.id}_${f.id}`);
+                    if (newItems) f.items = newItems;
                 }
             }
             layout = oldLayout;
