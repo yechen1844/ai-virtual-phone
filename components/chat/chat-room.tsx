@@ -1140,11 +1140,6 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
     const [showVoiceCall, setShowVoiceCall] = useState(false);
     const [showVideoCall, setShowVideoCall] = useState(false);
     const [callMinimized, setCallMinimized] = useState(false);
-
-    // 通话结束后重置小窗状态，避免下一次通话仍以小窗形式开始
-    useEffect(() => {
-        if (!showVoiceCall && !showVideoCall) setCallMinimized(false);
-    }, [showVoiceCall, showVideoCall]);
     const [callInitiator, setCallInitiator] = useState<"user" | "character">("user");
     const [callInitiatorName, setCallInitiatorName] = useState<string>("");
     const [userIdentity, setUserIdentity] = useState<UserIdentity | null>(null);
@@ -5399,6 +5394,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
     // Shared handler: reload messages + re-trigger scroll-to-bottom after call ends
     const returnFromCall = (hide: () => void) => {
         hide();
+        setCallMinimized(false);
         needsInitialScrollRef.current = true;
         prevMsgCountRef.current = 0;
         syncMessagesFromStorage();
@@ -5408,6 +5404,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
     const editingMessage = editingMessageId ? messages.find(m => m.id === editingMessageId) : null;
     const editingSystemInstruction = editingMessage ? isSystemInstructionMessage(editingMessage) : false;
 
+    // 群聊通话没有缩小悬浮窗，维持原有的整屏早退渲染
     if (showVoiceCall && session.isGroup && groupCharacters.length > 0) {
         return (
             <GroupCallScreen
@@ -5433,6 +5430,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
             />
         );
     }
+    // 单聊语音/视频通话改为在下方主返回内联渲染（而非提前 return），
+    // 这样缩小为悬浮窗时聊天页与通话组件可以同时挂载，通话状态（计时/字幕）不会丢失。
 
     const chatRoomBackgroundStyle = bgImageResolved ? {
         backgroundColor: "#fff",
@@ -6777,25 +6776,28 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                 </div>
             )}
 
-            {/* 单聊通话：全屏 or 小窗。组件常驻（不卸载）保证音频/识别/摄像头不中断；
-                小窗时聊天界面保持可用，小窗可拖动、可最大化。 */}
-            {showVoiceCall && character && !session.isGroup && (
+            {/* 单聊语音/视频通话：内联挂载（而非提前 return），使缩小为悬浮窗时通话组件
+                不被卸载，计时/字幕等状态得以保留；组件内部依据 minimized 决定渲染
+                全屏界面还是左侧悬浮窗 */}
+            {showVoiceCall && character && (
                 <VoiceCallScreen
                     session={session}
                     character={character}
                     initiator={callInitiator}
                     minimized={callMinimized}
-                    onToggleMinimize={setCallMinimized}
+                    onMinimize={() => setCallMinimized(true)}
+                    onRestore={() => setCallMinimized(false)}
                     onEnd={() => returnFromCall(() => setShowVoiceCall(false))}
                 />
             )}
-            {showVideoCall && character && !session.isGroup && (
+            {showVideoCall && character && (
                 <VideoCallScreen
                     session={session}
                     character={character}
                     initiator={callInitiator}
                     minimized={callMinimized}
-                    onToggleMinimize={setCallMinimized}
+                    onMinimize={() => setCallMinimized(true)}
+                    onRestore={() => setCallMinimized(false)}
                     onEnd={() => returnFromCall(() => setShowVideoCall(false))}
                 />
             )}
