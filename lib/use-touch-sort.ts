@@ -42,34 +42,6 @@ const INITIAL: DragState = {
 const AUTO_SCROLL_EDGE = 120;
 const AUTO_SCROLL_MAX_STEP = 30;
 
-/**
- * 找到真正承担滚动的元素：从拖拽容器往上找第一个「纵向可滚动且确实溢出」的祖先。
- * 不能写死 .page-body——不同页面/模式下真正的滚动容器可能是别的节点，
- * 写错会导致自动滚动把 scrollTop 写到一个根本不滚的元素上（表现为拖拽时滚不动）。
- */
-function findScrollableAncestor(start: HTMLElement): HTMLElement {
-    const isScrollableY = (el: HTMLElement) => {
-        const style = window.getComputedStyle(el);
-        if (!/(auto|scroll|overlay)/.test(style.overflowY)) return false;
-        return el.scrollHeight - el.clientHeight > 1;
-    };
-
-    // 优先 .page-body（页面主滚动区，大多数页面的实际滚动容器）
-    const pageBody = start.closest(".page-body") as HTMLElement | null;
-    if (pageBody && isScrollableY(pageBody)) return pageBody;
-
-    let node: HTMLElement | null = start.parentElement;
-    while (node) {
-        if (isScrollableY(node)) return node;
-        node = node.parentElement;
-    }
-
-    // 兜底：即使暂时没溢出也沿用 .page-body / 文档滚动元素
-    return pageBody
-        || (document.scrollingElement as HTMLElement | null)
-        || document.documentElement;
-}
-
 export function useTouchSort(
     onReorder: (from: number, to: number) => void,
     longPressMs = 400,
@@ -130,7 +102,11 @@ export function useTouchSort(
 
     const lockScroll = useCallback((container: HTMLElement) => {
         const d = dragRef.current;
-        const scrollEl = findScrollableAncestor(container);
+        const scrollEl = (
+            container.closest(".page-body") ||
+            document.scrollingElement ||
+            document.documentElement
+        ) as HTMLElement;
 
         d.scrollLock = {
             el: scrollEl,
@@ -201,17 +177,10 @@ export function useTouchSort(
         if (el === document.scrollingElement || el === document.documentElement || el === document.body) {
             return { top: 0, bottom: window.innerHeight };
         }
-        const viewportH = window.innerHeight;
         const rect = el.getBoundingClientRect();
-        // 可视范围必须夹进视口：滚动容器若有一部分移出视口，未夹紧时"向上"激活区
-        // 会落到屏幕上方之外而永远触发不了 —— 表现就是拖拽时只能向下滚、不能向上滚。
-        const visibleTop = Math.min(Math.max(rect.top, 0), viewportH);
-        const visibleBottom = Math.max(Math.min(rect.bottom, viewportH), visibleTop);
         const header = el.closest(".page-shell")?.querySelector(".page-header");
         const headerBottom = header instanceof HTMLElement ? header.getBoundingClientRect().bottom : rect.top;
-        // 顶边界不越过页头（避免贴页头拖拽时条目被页头遮住），并夹在可视范围内保证可达
-        const top = Math.min(Math.max(visibleTop, headerBottom), visibleBottom);
-        return { top, bottom: visibleBottom };
+        return { top: Math.max(rect.top, headerBottom - AUTO_SCROLL_EDGE), bottom: rect.bottom };
     }, []);
 
     const startAutoScroll = useCallback(() => {
