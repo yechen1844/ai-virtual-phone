@@ -308,6 +308,17 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
     const [draggedPromptIndex, setDraggedPromptIndex] = useState<number | null>(null); // 电脑端 HTML5 拖拽源 index
     const [dragOverIndex, setDragOverIndex] = useState<number | null>(null); // 电脑端拖拽悬停目标 index
 
+    // 触屏设备禁用原生 HTML5 拖拽。
+    // 否则长按会被浏览器接管为原生拖拽：只有被拖的那一条跟着走（单条拖拽影子），
+    // 且原生拖拽没有边缘自动滚动；同时它会和 useTouchSort 的触摸长按排序抢手势 ——
+    // 表现就是"有时判定成功(多条抬起、可滚动)、有时判定成原生拖拽(单条、滚不动)"。
+    // 粗指针(手机/平板/壳)一律关闭，细指针(鼠标)保留电脑端拖拽。
+    const [allowHtml5Drag, setAllowHtml5Drag] = useState(false);
+    useEffect(() => {
+        setAllowHtml5Drag(!window.matchMedia("(pointer: coarse)").matches);
+    }, []);
+    const lastTouchAtRef = useRef(0);
+
     const toggleFilterTag = useCallback((tag: string) => {
         setAppFilterTags(prev => {
             const next = new Set(prev);
@@ -1620,7 +1631,7 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                     leftSwipeDisabled={selectMode}
                                                     rightSwipeEnabled
                                                     onSwipeRight={() => handleSwipeRightSelect(prompt.identifier)}
-                                                    onTouchStart={isEditing ? undefined : (e) => onPromptTouchStart(index, e)}
+                                                    onTouchStart={isEditing ? undefined : (e) => { lastTouchAtRef.current = Date.now(); onPromptTouchStart(index, e); }}
                                                     actions={selectMode ? null : (
                                                         <>
                                                             <button
@@ -1683,9 +1694,11 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                         if (appFilterMode === "only-show") return undefined;
                                                         return matchesSelectedAppTags(prompt, appFilterTags) ? "1" : "0";
                                                     })()}
-                                                    draggable={!isEditing}
+                                                    draggable={!isEditing && allowHtml5Drag}
                                                     onDragStart={(e) => {
                                                         if (isEditing) { e.preventDefault(); return; }
+                                                        // 触摸刚发生过 → 这是浏览器接管长按发起的原生拖拽，必须让位给触摸排序
+                                                        if (Date.now() - lastTouchAtRef.current < 1500) { e.preventDefault(); return; }
                                                         setDraggedPromptIndex(index);
                                                         setDragOverIndex(null);
                                                         swipe.close();
