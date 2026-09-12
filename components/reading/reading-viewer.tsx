@@ -285,8 +285,9 @@ export function ReadingViewer({ book, onBack }: Props) {
         }
         return { x: 0, y: 0 };
     });
-    // 悬浮球贴边收纳态：拖到屏幕左/右边缘时收缩成贴边小条（点击/向内滑动可唤出）
+    // 悬浮球贴边收纳态：拖到屏幕左/右边缘时收缩为贴边半球（点击/向内滑动唤出）
     const [chatDocked, setChatDocked] = useState<ChatDockSide>(() => parseDocked(localStorage.getItem(CHAT_FLOAT_POS_KEY)));
+    const chatDockedRef = useRef<ChatDockSide>(chatDocked);
     const dockDragRef = useRef<{ pointerId: number; startX: number; startY: number } | null>(null);
     const [isDragging, setIsDragging] = useState(false);
     const [chatInput, setChatInput] = useState("");
@@ -1854,7 +1855,10 @@ export function ReadingViewer({ book, onBack }: Props) {
         handleOpenChat();
     };
 
-    // 收纳小条：点击 → 直接打开聊天；向屏幕内滑动 → 同样唤出
+    // 收纳半球：点击 → 打开聊天；向屏幕内滑动 → 同样唤出。
+    // 触摸阈值放宽到 8px 且用 ref 读取当前贴边侧，避免「滑不出来 / 触感不灵敏」。
+    const DOCK_SLIDE_TRIGGER = 8;
+    chatDockedRef.current = chatDocked;
     const handleDockDragStart = (e: React.PointerEvent<HTMLElement>) => {
         if (e.pointerType === "mouse" && e.button !== 0) return;
         dockDragRef.current = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY };
@@ -1865,8 +1869,10 @@ export function ReadingViewer({ book, onBack }: Props) {
         const drag = dockDragRef.current;
         if (!drag || drag.pointerId !== e.pointerId) return;
         const dx = e.clientX - drag.startX;
-        const inward = chatDocked === "left" ? dx : -dx;
-        if (inward > 18) {
+        const dy = e.clientY - drag.startY;
+        const inward = chatDockedRef.current === "left" ? dx : -dx;
+        // 向内滑动超过阈值即唤出；竖向位移明显占优时视为滚动，不误触
+        if (inward >= DOCK_SLIDE_TRIGGER && inward > Math.abs(dy)) {
             dockDragRef.current = null;
             chatMovedRef.current = true; // 吞掉随后派生的 click，避免重复唤出
             setChatDocked(false);
@@ -2581,15 +2587,16 @@ export function ReadingViewer({ book, onBack }: Props) {
                     className={`reading-chat-dock reading-chat-dock--${chatDocked}`}
                     aria-label="唤出聊天"
                     title="唤出聊天（点击或向内滑动）"
-                    style={{
-                        transform: `translate3d(0, ${chatOffset.y + 8}px, 0)`,
-                        transition: isDragging ? "none" : undefined,
-                    }}
+                    style={{ transform: `translate3d(0, ${chatOffset.y}px, 0)` }}
                     onPointerDown={handleDockDragStart}
                     onPointerMove={handleDockDragMove}
                     onPointerUp={handleDockDragEnd}
                     onPointerCancel={handleDockDragEnd}
-                />
+                >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        {chatDocked === "left" ? <polyline points="9 6 15 12 9 18" /> : <polyline points="15 6 9 12 15 18" />}
+                    </svg>
+                </button>
             ) : !showChat && (
                 <button
                     onClick={handleChatLaunchClick}

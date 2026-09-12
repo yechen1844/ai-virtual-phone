@@ -4184,51 +4184,61 @@
   user-select: none;
   cursor: grab;
   rotate: -1deg;
-  transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  /* 静止时半透明，降低对正文的遮挡；触摸/拖动时恢复清晰 */
+  opacity: 0.74;
+  transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275), opacity 0.25s ease;
+}
+.reading-chat-launch:hover,
+.reading-chat-launch:active {
+  opacity: 1;
 }
 .reading-chat-launch:active {
   transform: scale(0.92);
 }
-/* 悬浮球贴边收纳条：球拖到屏幕左/右边缘时收缩成细长贴边把手，点击/向内滑动唤出聊天 */
+/* 悬浮球贴边收纳半球：球拖到屏幕左/右边缘时收缩为贴边半透明毛玻璃半球，
+   触摸区比细条大得多（不再「碰不到/滑不出来」），半透明避免遮挡正文，点击或向内滑动唤出聊天 */
 .reading-app-surface .reading-chat-dock {
   position: absolute;
   bottom: max(12px, env(safe-area-inset-bottom));
   /* 与悬浮球同层级，避免被顶栏/底栏遮挡 */
   z-index: 48;
-  width: 10px;
-  height: 72px;
+  width: 32px;
+  height: 64px;
   padding: 0;
-  border: 1px solid #e2d5be;
-  background: #fffef7;
-  box-shadow: 0 2px 10px rgba(80, 60, 30, 0.12), 0 1px 2px rgba(80, 60, 30, 0.06);
+  border: 1px solid rgba(226, 213, 190, 0.62);
+  background: rgba(255, 254, 247, 0.42);
+  backdrop-filter: blur(6px) saturate(1.05);
+  -webkit-backdrop-filter: blur(6px) saturate(1.05);
+  box-shadow: 0 2px 12px rgba(80, 60, 30, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(150, 130, 95, 0.72);
   touch-action: none;
   user-select: none;
   cursor: pointer;
-  transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease, transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
 }
 .reading-app-surface .reading-chat-dock--left {
   left: 0;
   border-left: none;
-  border-radius: 0 10px 10px 0;
+  border-radius: 0 999px 999px 0;
 }
 .reading-app-surface .reading-chat-dock--right {
   right: 0;
   border-right: none;
-  border-radius: 10px 0 0 10px;
+  border-radius: 999px 0 0 999px;
 }
-.reading-app-surface .reading-chat-dock::after {
-  content: "";
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 3px;
-  height: 26px;
-  border-radius: 2px;
-  background: #d8c9ad;
-  transform: translate(-50%, -50%);
+/* 触摸/悬停时变清晰实心，给出明确反馈 */
+.reading-app-surface .reading-chat-dock:hover,
+.reading-app-surface .reading-chat-dock:active {
+  background: rgba(255, 254, 247, 0.92);
+  border-color: rgba(226, 213, 190, 0.9);
+  color: rgba(120, 100, 66, 0.95);
+  box-shadow: 0 3px 16px rgba(80, 60, 30, 0.14);
 }
 .reading-app-surface .reading-chat-dock:active {
-  filter: brightness(0.97);
+  transform: scale(0.94);
 }
 .reading-chat-float {
   position: absolute;
