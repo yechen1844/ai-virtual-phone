@@ -1,11 +1,11 @@
 // lib/reading-engine.ts — LLM integration for Reading feature.
 // All prompts go through the preset system via assemblePromptPayload. No extra message push.
 
-import type { Book, BookChapter, ReadingAnnotation, ReadingSummary } from "./reading-types";
-import type { ChatSession } from "./chat-storage";
-import { loadChatMessages, pushChatMessage } from "./chat-storage";
+import type { Book, BookChapter, ReadingAnnotation, ReadingSummary, ReadingEssay, ReadingNote } from "./reading-types";
+import type { ChatSession, ChatMessage } from "./chat-storage";
+import { loadChatMessages, pushChatMessage, isReadingNoteMessage } from "./chat-storage";
 import { loadCharacters } from "./character-storage";
-import { loadReadingInteractionConfig, loadSummaries, saveSummary, getTotalSummaryChars, encodeReadingPosition } from "./reading-storage";
+import { loadReadingInteractionConfig, loadSummaries, saveSummary, getTotalSummaryChars, encodeReadingPosition, loadEssays, saveEssay, loadNotes, saveNote } from "./reading-storage";
 import {
     resolveBinding,
     loadBindingConfig,
@@ -66,6 +66,8 @@ async function resolveReadingInput(
         chapterContent: string;
         annotationHistory: string;
         readingSummary?: string;
+        readingEssay?: string;
+        readingNote?: string;
         history?: ReturnType<typeof loadChatMessages>;
     },
 ): Promise<{ input: AssemblerInput; apiConfig: ApiConfig | null; preset: PresetConfig | null } | null> {
@@ -132,6 +134,8 @@ async function resolveReadingInput(
         chapterContent: options.chapterContent,
         annotationHistory: options.annotationHistory,
         readingSummary: options.readingSummary,
+        readingEssay: options.readingEssay,
+        readingNote: options.readingNote,
         chatBilingualInstruction: buildReadingBilingualInstruction(
             readingConfig.bilingualTranslationEnabled === true,
             readingConfig.bilingualTranslationPrompt,
@@ -161,6 +165,16 @@ async function callReadingLLM(
 }
 
 // ── Format helpers ──
+
+/**
+ * 读取阅读链路用的聊天历史：剔除「读书笔记」消息。
+ * 笔记已由 getLatestNoteForInjection 显式注入最新一篇；若历史里再带一份，
+ * 既会重复出现，也会把过往多篇笔记一起塞进上下文导致膨胀。
+ * （记忆管线不受影响：时间线投影直接读存储，笔记仍会进入短期/长期记忆。）
+ */
+export function loadReadingHistory(sessionId: string): ChatMessage[] {
+    return loadChatMessages(sessionId).filter(msg => !isReadingNoteMessage(msg));
+}
 
 function formatChapterContent(paragraphs: string[]): string {
     return paragraphs.map((p, i) => `[${i + 1}] ${p}`).join("\n\n");
@@ -265,7 +279,7 @@ export async function generateAnnotations(
     chapter: BookChapter,
     existingAnnotations: ReadingAnnotation[],
     characterId: string,
-): Promise<{ annotations: ReadingAnnotation[]; summary: ReadingSummary | null }> {
+): Promise<{ annotations: ReadingAnnotation[]; summary: ReadingSummary | null; essay: ReadingEssay | null }> {
     return generateAnnotationBatch(
         book,
         chapter.title,
@@ -286,10 +300,16 @@ export async function generateAnnotationBatch(
     existingAnnotations: ReadingAnnotation[],
     characterId: string,
     readingSummary?: string,
-): Promise<{ annotations: ReadingAnnotation[]; summary: ReadingSummary | null }> {
+    /** 该角色的主聊天历史（含共读讨论消息），让批注理解用户近况；由调用方按开关决定是否传入 */
+    history?: ChatMessage[],
+    /** 已注入格式的随笔文本（含标签），由调用方按当前位置过滤后传入 */
+    readingEssay?: string,
+    /** 已注入格式的最新读书笔记文本（含标签） */
+    readingNote?: string,
+): Promise<{ annotations: ReadingAnnotation[]; summary: ReadingSummary | null; essay: ReadingEssay | null }> {
     const character = loadCharacters().find(c => c.id === characterId);
     if (!character) throw new Error("角色不存在");
-    if (targets.length === 0) return { annotations: [], summary: null };
+    if (targets.length === 0) return { annotations: [], summary: null, essay: null };
 
     const resolved = await resolveReadingInput(characterId, ["reading", "annotate"], {
         bookTitle: book.title,
@@ -297,6 +317,9 @@ export async function generateAnnotationBatch(
         chapterContent: formatBatchChapterContent(targets),
         annotationHistory: formatBatchAnnotationHistory(existingAnnotations, targets),
         readingSummary,
+        history,
+        readingEssay,
+        readingNote,
     });
     if (!resolved) throw new Error("未找到 API 配置，请在设置中绑定 API");
 
@@ -356,7 +379,28 @@ export async function generateAnnotationBatch(
         };
     }
 
-    return { annotations: results, summary };
+    // Parse <essay>...</essay>（读书随笔：两句话、第一人称、承载当时情绪）
+    let essay: ReadingEssay | null = null;
+    const essayMatch = responseText.match(/<essay>([\s\S]*?)<\/essay>/i);
+    if (essayMatch && essayMatch[1].trim()) {
+        const firstTarget = targets[0];
+        const lastTarget = targets[targets.length - 1];
+        essay = {
+            id: `re_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            bookId: book.id,
+            characterId,
+            characterName: character.name,
+            chapterIndex: firstTarget.chapterIndex,
+            startParagraph: firstTarget.paragraphIndex,
+            endParagraph: lastTarget.paragraphIndex,
+            // 前缀角色名：便于 char 之后以第一人称认出"这是我自己写的随笔"
+            content: `${character.name}的随笔：${essayMatch[1].trim()}`,
+            isDistilled: false,
+            createdAt: new Date().toISOString(),
+        };
+    }
+
+    return { annotations: results, summary, essay };
 }
 
 export async function previewReadingAnnotationPrompt(
@@ -399,7 +443,7 @@ export async function previewReadingDiscussPrompt(
     const character = loadCharacters().find(c => c.id === characterId);
     if (!character) throw new Error("角色不存在");
 
-    const history = loadChatMessages(session.id);
+    const history = loadReadingHistory(session.id);
     const resolved = await resolveReadingInput(characterId, ["reading", "discuss"], {
         bookTitle: book.title,
         chapterTitle: context.chapterTitle,
@@ -425,11 +469,13 @@ export async function generateReadingChat(
     context: ReadingDiscussContext,
     characterId: string,
     readingSummary?: string,
+    readingEssay?: string,
+    readingNote?: string,
 ): Promise<string | null> {
     const character = loadCharacters().find(c => c.id === characterId);
     if (!character) return null;
 
-    const history = loadChatMessages(session.id);
+    const history = loadReadingHistory(session.id);
 
     const resolved = await resolveReadingInput(characterId, ["reading", "discuss"], {
         bookTitle: book.title,
@@ -437,6 +483,8 @@ export async function generateReadingChat(
         chapterContent: context.chapterContent,
         annotationHistory: formatAnnotationActionContext(context.annotations),
         readingSummary,
+        readingEssay,
+        readingNote,
         history,
     });
     if (!resolved) return null;
@@ -647,4 +695,238 @@ export async function distillSummariesIfNeeded(
     // 重试完仍失败：只 warn 上报，绝不删除已生成摘要。
     console.warn("[Reading] Summary distillation failed after retries:", lastError);
     return null;
+}
+
+// ── Reading Essay（读书随笔：与摘要同批生成，按角色绑定，承载当时情绪） ──
+
+/** 格式化随笔文本供注入预设模板。 */
+export function formatReadingEssay(essays: ReadingEssay[]): string {
+    if (essays.length === 0) return "";
+    const lines = essays.map(e => {
+        if (e.isDistilled) return `【随笔·提炼】${e.content}`;
+        return `【第${e.chapterIndex + 1}章 · 段落${e.startParagraph + 1}-${e.endParagraph + 1}】${e.content}`;
+    });
+    return `<reading_essay>\n以下是{{char}}之前读这本书时留下的随笔，保留着当时的情绪（供你保持情感连续）：\n${lines.join("\n")}\n</reading_essay>\n`;
+}
+
+/**
+ * 按当前位置动态过滤应注入的随笔（与摘要同构）：
+ * - 提炼随笔：多条时只注入「当前位置已读过的提炼随笔中覆盖最远的一条」，其余不注入
+ * - 普通随笔：endParagraph 不晚于当前位置即注入；已被当前生效的提炼随笔覆盖的不重复注入
+ * - options.alwaysLatestDistilled：开启「回读时仍注入最新前情提要」时，提炼随笔无视位置始终取覆盖最远一条
+ */
+export function getEssaysForInjection(
+    allEssays: ReadingEssay[],
+    chapterIndex: number,
+    paragraphIndex: number,
+    options?: { alwaysLatestDistilled?: boolean },
+): ReadingEssay[] {
+    const currentPos = encodeReadingPosition(chapterIndex, paragraphIndex);
+    const result: ReadingEssay[] = [];
+
+    const distilledCandidates = allEssays.filter(e => e.isDistilled && typeof e.distilledUpTo === "number");
+    let activeDistilled: ReadingEssay | null = null;
+    if (distilledCandidates.length > 0) {
+        const sorted = [...distilledCandidates].sort((a, b) => (b.distilledUpTo ?? 0) - (a.distilledUpTo ?? 0));
+        activeDistilled = options?.alwaysLatestDistilled === true
+            ? sorted[0]
+            : sorted.find(e => currentPos > (e.distilledUpTo ?? 0)) ?? null;
+    }
+
+    for (const e of allEssays) {
+        if (e.isDistilled) {
+            if (activeDistilled && e.id === activeDistilled.id) result.push(e);
+        } else {
+            const essayPos = encodeReadingPosition(e.chapterIndex, e.endParagraph);
+            if (essayPos > currentPos) continue;
+            const covered = activeDistilled !== null && (activeDistilled.distilledUpTo ?? 0) >= essayPos;
+            if (!covered) result.push(e);
+        }
+    }
+
+    return result;
+}
+
+function getFarthestEssayDistilledCoverage(allEssays: ReadingEssay[]): number {
+    let max = 0;
+    for (const e of allEssays) {
+        if (e.isDistilled && typeof e.distilledUpTo === "number" && e.distilledUpTo > max) max = e.distilledUpTo;
+    }
+    return max;
+}
+
+/** 应参与下一轮提炼的随笔：最新一条提炼随笔 + 所有未被既有提炼覆盖的普通随笔。 */
+export function getDistillableEssays(allEssays: ReadingEssay[]): ReadingEssay[] {
+    const coverage = getFarthestEssayDistilledCoverage(allEssays);
+    const distilled = allEssays.filter(e => e.isDistilled);
+    const latestDistilled = distilled.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
+    const uncoveredNormal = allEssays.filter(e =>
+        !e.isDistilled
+        && encodeReadingPosition(e.chapterIndex, e.endParagraph) > coverage,
+    );
+    const out: ReadingEssay[] = [];
+    if (latestDistilled) out.push(latestDistilled);
+    out.push(...uncoveredNormal);
+    return out;
+}
+
+/** 待提炼随笔的总字数（仅统计可提炼部分）。 */
+export function getDistillableEssayChars(allEssays: ReadingEssay[]): number {
+    return getDistillableEssays(allEssays).reduce((sum, e) => sum + e.content.length, 0);
+}
+
+/**
+ * 随笔超过上限时提炼为当前的 1/3，保留旧随笔不删除。
+ * 覆盖范围同样截断到当前阅读位置（与摘要一致，避免预生成超前导致提炼长期无法接管）。
+ */
+export async function distillEssaysIfNeeded(
+    bookId: string,
+    characterId: string,
+    maxChars: number,
+    options?: { force?: boolean; currentReadingPos?: number },
+): Promise<ReadingEssay | null> {
+    const force = options?.force === true;
+    const essays = await loadEssays(bookId, characterId);
+    const distillable = getDistillableEssays(essays);
+    const totalChars = getDistillableEssayChars(essays);
+    if (!force && totalChars <= maxChars) return null;
+    if (distillable.length === 0) return null;
+
+    const bindings = loadBindingConfig();
+    const slot = resolveBinding(bindings, characterId, "reading");
+    const apiConfigId = slot.apiConfigId;
+    if (!apiConfigId) return null;
+    const apiConfig = loadApiConfigs().find(c => c.id === apiConfigId);
+    if (!apiConfig) return null;
+
+    const targetChars = Math.max(1, Math.floor((force ? Math.max(totalChars, 1) : totalChars) / 3));
+    const essayText = distillable.map(e => {
+        if (e.isDistilled) return e.content;
+        return `【第${e.chapterIndex + 1}章】${e.content}`;
+    }).join("\n");
+
+    const prompt = `以下是{{char}}在阅读一部长篇小说过程中陆续写下的读书随笔（按时间顺序，第一人称，记录了当时的情绪与感受）。请把它们提炼为一份更简短的版本，总字数约${targetChars}字，保留情绪与感受的连贯性和重要变化，删去重复。保持第一人称口吻。只输出提炼后的文本，不要输出任何其他内容：\n\n${essayText}`;
+
+    const MAX_ATTEMPTS = 2;
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+        try {
+            const result = await simpleLLMCall(apiConfig, [
+                { role: "user", content: prompt },
+            ], { label: "阅读随笔·提炼" });
+
+            if (!result.content || result.content.trim().length === 0) {
+                lastError = new Error("提炼返回空内容");
+                if (attempt < MAX_ATTEMPTS - 1) continue;
+                break;
+            }
+
+            const lastEssay = distillable[distillable.length - 1];
+            const lastEssayPos = lastEssay
+                ? encodeReadingPosition(lastEssay.chapterIndex, lastEssay.endParagraph)
+                : 0;
+            const distilledUpTo = typeof options?.currentReadingPos === "number"
+                ? Math.min(lastEssayPos, options.currentReadingPos)
+                : lastEssayPos;
+
+            const distilled: ReadingEssay = {
+                id: `re_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                bookId,
+                characterId,
+                characterName: loadCharacters().find(c => c.id === characterId)?.name ?? "",
+                chapterIndex: -1,
+                startParagraph: -1,
+                endParagraph: lastEssay?.endParagraph ?? -1,
+                content: result.content.trim(),
+                isDistilled: true,
+                distilledUpTo,
+                createdAt: new Date().toISOString(),
+            };
+
+            await saveEssay(distilled);
+            return distilled;
+        } catch (err) {
+            lastError = err;
+            if (attempt < MAX_ATTEMPTS - 1) continue;
+            break;
+        }
+    }
+    console.warn("[Reading] Essay distillation failed after retries:", lastError);
+    return null;
+}
+
+// ── Reading Note（读书笔记：每次阅读会话一篇，只注入最新一篇） ──
+
+/** 格式化读书笔记供注入预设模板（只注入传入的那一篇）。 */
+export function formatReadingNote(note: ReadingNote | null): string {
+    if (!note) return "";
+    return `<reading_note>\n${note.content}\n</reading_note>\n`;
+}
+
+/**
+ * 选出应注入的那一篇笔记：只取最新一篇。
+ * - 默认：该笔记的覆盖起点必须已被读过（当前位置不早于其起点），否则视为"还没读到"不注入
+ * - options.alwaysLatestDistilled（回读开关）：无视位置，始终注入最新一篇，让 char 记得上次读到哪
+ */
+export function getLatestNoteForInjection(
+    allNotes: ReadingNote[],
+    chapterIndex: number,
+    paragraphIndex: number,
+    options?: { alwaysLatestDistilled?: boolean },
+): ReadingNote | null {
+    if (allNotes.length === 0) return null;
+    const sorted = [...allNotes].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+    const latest = sorted[0];
+    if (options?.alwaysLatestDistilled === true) return latest;
+    const currentPos = encodeReadingPosition(chapterIndex, paragraphIndex);
+    const startPos = encodeReadingPosition(latest.startChapterIndex, latest.startParagraph);
+    return currentPos >= startPos ? latest : null;
+}
+
+/**
+ * 生成一篇读书笔记（供共读窗按钮手动触发）。
+ * 返回笔记正文（第一人称，开头带「角色名的读书笔记：」）；失败返回 null。
+ */
+export async function generateReadingNote(
+    session: ChatSession,
+    book: Book,
+    context: ReadingDiscussContext,
+    characterId: string,
+    readingSummary?: string,
+    readingEssay?: string,
+    readingNote?: string,
+): Promise<string | null> {
+    const character = loadCharacters().find(c => c.id === characterId);
+    if (!character) return null;
+
+    const history = loadReadingHistory(session.id);
+
+    const resolved = await resolveReadingInput(characterId, ["reading", "note"], {
+        bookTitle: book.title,
+        chapterTitle: context.chapterTitle,
+        chapterContent: context.chapterContent,
+        annotationHistory: formatAnnotationActionContext(context.annotations),
+        readingSummary,
+        readingEssay,
+        readingNote,
+        history,
+    });
+    if (!resolved) return null;
+
+    const { input, apiConfig, preset } = resolved;
+    const llmMessages = assemblePromptPayload(input);
+    const responseText = await callReadingLLM(
+        apiConfig!,
+        preset,
+        llmMessages,
+        character.name,
+        input.regexes,
+        input.appTags,
+        input.userIdentity?.name,
+    );
+    if (!responseText) return null;
+
+    // 统一加前缀：让 char 之后以第一人称读到能认出「这是我自己写的」
+    const body = responseText.trim().replace(/^#*\s*/, "");
+    return `${character.name}的读书笔记：${body}`;
 }

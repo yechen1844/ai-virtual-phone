@@ -1,7 +1,7 @@
 // lib/reading-storage.ts — Dexie IndexedDB persistence for Reading feature.
 
 import Dexie from "dexie";
-import type { Book, BookChapter, ReadingProgress, ReadingAnnotation, ReadingSummary } from "./reading-types";
+import type { Book, BookChapter, ReadingProgress, ReadingAnnotation, ReadingSummary, ReadingEssay, ReadingNote } from "./reading-types";
 import { kvGet, kvSet, registerKvMigration } from "./kv-db";
 import { DEFAULT_READING_BILINGUAL_PROMPT } from "./bilingual-prompt-defaults";
 
@@ -13,6 +13,8 @@ class ReadingDB extends Dexie {
     progress!: Dexie.Table<ReadingProgress, string>;
     annotations!: Dexie.Table<ReadingAnnotation, string>;
     summaries!: Dexie.Table<ReadingSummary, string>;
+    essays!: Dexie.Table<ReadingEssay, string>;
+    notes!: Dexie.Table<ReadingNote, string>;
     rawFiles!: Dexie.Table<{ bookId: string; data: Blob }, string>;
 
     constructor() {
@@ -44,6 +46,17 @@ class ReadingDB extends Dexie {
             rawFiles: "bookId",
             summaries: "id, bookId, [bookId+chapterIndex]",
         });
+        // v5：读书随笔（按角色绑定）与读书笔记（每次阅读会话一篇）。只新增表，不动既有表结构。
+        this.version(5).stores({
+            books: "id, createdAt",
+            chapters: "id, bookId, [bookId+index]",
+            progress: "bookId",
+            annotations: "id, [bookId+chapterIndex]",
+            rawFiles: "bookId",
+            summaries: "id, bookId, [bookId+chapterIndex]",
+            essays: "id, bookId, [bookId+characterId], [bookId+characterId+chapterIndex]",
+            notes: "id, bookId, [bookId+characterId]",
+        });
     }
 }
 
@@ -56,6 +69,8 @@ let _chaptersCache: Map<string, BookChapter[]> = new Map();
 let _progressCache: Map<string, ReadingProgress> = new Map();
 let _annotationsCache: Map<string, ReadingAnnotation[]> = new Map(); // key: bookId:chapterIndex
 let _summariesCache: Map<string, ReadingSummary[]> = new Map(); // key: bookId
+let _essaysCache: Map<string, ReadingEssay[]> = new Map(); // key: bookId:characterId
+let _notesCache: Map<string, ReadingNote[]> = new Map(); // key: bookId:characterId
 
 const READING_INTERACTION_CONFIG_KEY = "ai_phone_reading_interaction_config_v1";
 registerKvMigration(READING_INTERACTION_CONFIG_KEY);
@@ -99,6 +114,10 @@ export type ReadingInteractionConfig = {
     /** 前情提要注入策略：开启后无论读到哪，始终只注入最新、最全面的一条提炼摘要（char 记得全部已看情节）；
      *  关闭则按当前阅读位置动态判定（提炼点未读到的不注入，防剧透），默认关闭 */
     alwaysInjectLatestDistilled: boolean;
+    /** 批注时是否参考主聊天历史（含共读讨论消息），让批注理解用户近况；默认开启 */
+    annotateIncludeChatHistory: boolean;
+    /** 随笔字数上限：达到后自动提炼为 1/3，默认 1500 */
+    maxEssayChars: number;
 };
 
 export const DEFAULT_READING_INTERACTION_CONFIG: ReadingInteractionConfig = {
@@ -118,6 +137,8 @@ export const DEFAULT_READING_INTERACTION_CONFIG: ReadingInteractionConfig = {
     pdfPreloadEnabled: true,
     maxSummariesChars: 3000,
     alwaysInjectLatestDistilled: false,
+    annotateIncludeChatHistory: true,
+    maxEssayChars: 1500,
 };
 
 export async function hydrateReadingStorage(): Promise<void> {
@@ -149,6 +170,8 @@ export async function deleteBook(bookId: string): Promise<void> {
     await db.progress.delete(bookId);
     await db.annotations.where("[bookId+chapterIndex]").between([bookId, Dexie.minKey], [bookId, Dexie.maxKey]).delete();
     await db.summaries.where("bookId").equals(bookId).delete();
+    await db.essays.where("bookId").equals(bookId).delete();
+    await db.notes.where("bookId").equals(bookId).delete();
     await deleteRawFile(bookId).catch(() => {});
     _booksCache = null;
     _booksCache = await db.books.orderBy("createdAt").reverse().toArray();
@@ -159,6 +182,12 @@ export async function deleteBook(bookId: string): Promise<void> {
         if (key.startsWith(bookId + ":")) _annotationsCache.delete(key);
     }
     _summariesCache.delete(bookId);
+    for (const key of [..._essaysCache.keys()]) {
+        if (key.startsWith(bookId + ":")) _essaysCache.delete(key);
+    }
+    for (const key of [..._notesCache.keys()]) {
+        if (key.startsWith(bookId + ":")) _notesCache.delete(key);
+    }
 }
 
 // ── Chapters ──
@@ -279,6 +308,65 @@ export async function saveSummary(summary: ReadingSummary): Promise<void> {
 
 export function getTotalSummaryChars(summaries: ReadingSummary[]): number {
     return summaries.reduce((sum, s) => sum + s.content.length, 0);
+}
+
+// ── Reading Essays（读书随笔，按角色绑定） ──
+
+function sortEssays(essays: ReadingEssay[]): ReadingEssay[] {
+    return [...essays].sort((a, b) => {
+        if (a.isDistilled !== b.isDistilled) return a.isDistilled ? -1 : 1; // 提炼随笔在前
+        if (a.chapterIndex !== b.chapterIndex) return a.chapterIndex - b.chapterIndex;
+        return a.startParagraph - b.startParagraph;
+    });
+}
+
+export async function loadEssays(bookId: string, characterId: string): Promise<ReadingEssay[]> {
+    const key = `${bookId}:${characterId}`;
+    if (_essaysCache.has(key)) return _essaysCache.get(key)!;
+    const essays = await db.essays.where("[bookId+characterId]").equals([bookId, characterId]).toArray();
+    const sorted = sortEssays(essays);
+    _essaysCache.set(key, sorted);
+    return sorted;
+}
+
+export async function saveEssay(essay: ReadingEssay): Promise<void> {
+    await db.essays.put(essay);
+    const key = `${essay.bookId}:${essay.characterId}`;
+    const cached = _essaysCache.get(key);
+    if (cached) {
+        const idx = cached.findIndex(s => s.id === essay.id);
+        if (idx >= 0) cached[idx] = essay;
+        else cached.push(essay);
+        _essaysCache.set(key, sortEssays(cached));
+    }
+}
+
+export async function loadAllEssays(bookId: string): Promise<ReadingEssay[]> {
+    return db.essays.where("bookId").equals(bookId).toArray();
+}
+
+// ── Reading Notes（读书笔记，每次阅读会话一篇） ──
+
+export async function loadNotes(bookId: string, characterId: string): Promise<ReadingNote[]> {
+    const key = `${bookId}:${characterId}`;
+    if (_notesCache.has(key)) return _notesCache.get(key)!;
+    const notes = await db.notes.where("[bookId+characterId]").equals([bookId, characterId]).toArray();
+    notes.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+    _notesCache.set(key, notes);
+    return notes;
+}
+
+export async function saveNote(note: ReadingNote): Promise<void> {
+    await db.notes.put(note);
+    const key = `${note.bookId}:${note.characterId}`;
+    const cached = _notesCache.get(key);
+    if (cached) {
+        const idx = cached.findIndex(n => n.id === note.id);
+        if (idx >= 0) cached[idx] = note;
+        else cached.push(note);
+        cached.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+        _notesCache.set(key, cached);
+    }
 }
 
 // ── Reading Interaction Config ──

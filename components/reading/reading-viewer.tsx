@@ -20,8 +20,12 @@ import {
     saveSummary,
     getTotalSummaryChars,
     encodeReadingPosition,
+    loadEssays,
+    saveEssay,
+    loadNotes,
+    saveNote,
 } from "@/lib/reading-storage";
-import { generateAnnotationBatch, generateReadingChat, distillSummariesIfNeeded, formatReadingSummary, getDistillableSummaryChars, getSummariesForInjection, parseReadingDiscussResponse, type ReadingDiscussAction, type ReadingDiscussContext } from "@/lib/reading-engine";
+import { generateAnnotationBatch, generateReadingChat, generateReadingNote, distillSummariesIfNeeded, distillEssaysIfNeeded, formatReadingSummary, formatReadingEssay, formatReadingNote, getDistillableSummaryChars, getDistillableEssayChars, getSummariesForInjection, getEssaysForInjection, getLatestNoteForInjection, loadReadingHistory, parseReadingDiscussResponse, type ReadingDiscussAction, type ReadingDiscussContext } from "@/lib/reading-engine";
 import { loadChatMessages, pushChatMessage, deleteChatMessage, editChatMessage, loadChatContacts, createOrGetSession, isReadingDiscussMessage } from "@/lib/chat-storage";
 import type { ChatMessage, ChatSession } from "@/lib/chat-storage";
 import { loadCharacters } from "@/lib/character-storage";
@@ -31,7 +35,7 @@ import { ContentDialog } from "@/components/ui/modal";
 import { Toggle } from "@/components/ui/form";
 import { PdfPageRenderer } from "./reading-pdf-viewer";
 import { decodeTxtArrayBuffer, parsePdfPageRange, PDF_PAGES_PER_CHAPTER, parseTxtContent, parseEpubFile } from "@/lib/reading-parser";
-import type { Book, BookChapter, ReadingAnnotation, ReadingProgress, ReadingSummary } from "@/lib/reading-types";
+import type { Book, BookChapter, ReadingAnnotation, ReadingProgress, ReadingSummary, ReadingEssay, ReadingNote } from "@/lib/reading-types";
 import type { Character } from "@/lib/character-types";
 import { splitBilingualText } from "@/lib/bilingual-text";
 
@@ -293,6 +297,9 @@ export function ReadingViewer({ book, onBack }: Props) {
     const [chatInput, setChatInput] = useState("");
     const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
     const [chatting, setChatting] = useState(false);
+    /** 读书笔记生成中 */
+    const [generatingNote, setGeneratingNote] = useState(false);
+    const [noteActionMsg, setNoteActionMsg] = useState<{ ok: boolean; text: string } | null>(null);
     const [autoAnnotate, setAutoAnnotate] = useState(false);
     const [annotationBatchSize, setAnnotationBatchSize] = useState(isPdf ? 5 : 50);
     const [annotationBatchInput, setAnnotationBatchInput] = useState(String(isPdf ? 5 : 50));
@@ -754,8 +761,10 @@ export function ReadingViewer({ book, onBack }: Props) {
 
     const [annotationError, setAnnotationError] = useState<string | null>(null);
     const [summaries, setSummaries] = useState<ReadingSummary[]>([]);
+    const [essays, setEssays] = useState<ReadingEssay[]>([]);
+    const [notes, setNotes] = useState<ReadingNote[]>([]);
     const [showSummaryDialog, setShowSummaryDialog] = useState(false);
-    const [summaryDialogTab, setSummaryDialogTab] = useState<"injected" | "all" | "distilled">("injected");
+    const [summaryDialogTab, setSummaryDialogTab] = useState<"injected" | "all" | "distilled" | "essay" | "note">("injected");
     const [summaryActionMsg, setSummaryActionMsg] = useState<{ ok: boolean; text: string } | null>(null);
     // 防止"自动生成途中切书"时，旧书的异步 refresh/提炼结果盖到当前书上
     const bookIdRef = useRef(book.id);
@@ -764,6 +773,8 @@ export function ReadingViewer({ book, onBack }: Props) {
     // 切书时立即清空上一本书的摘要缓存，避免显示串书（旧书摘要短暂渲染到新书）
     useEffect(() => {
         setSummaries([]);
+        setEssays([]);
+        setNotes([]);
         setSummaryActionMsg(null);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [book.id]);
@@ -777,6 +788,25 @@ export function ReadingViewer({ book, onBack }: Props) {
 
     useEffect(() => { refreshSummaries(); }, [refreshSummaries]);
 
+    const refreshEssays = useCallback(async () => {
+        if (!companionId) { setEssays([]); return; }
+        const bid = book.id;
+        const loaded = await loadEssays(bid, companionId);
+        if (bookIdRef.current !== bid) return;
+        setEssays(loaded);
+    }, [book.id, companionId]);
+
+    const refreshNotes = useCallback(async () => {
+        if (!companionId) { setNotes([]); return; }
+        const bid = book.id;
+        const loaded = await loadNotes(bid, companionId);
+        if (bookIdRef.current !== bid) return;
+        setNotes(loaded);
+    }, [book.id, companionId]);
+
+    useEffect(() => { refreshEssays(); }, [refreshEssays]);
+    useEffect(() => { refreshNotes(); }, [refreshNotes]);
+
     // 手动提炼：忽略字数上限强制提炼。提炼失败不丢失任何已生成摘要。
     const handleManualDistill = useCallback(async () => {
         if (!companionId) { setSummaryActionMsg({ ok: false, text: "请先绑定伴读角色，才能提炼摘要。" }); return; }
@@ -786,12 +816,17 @@ export function ReadingViewer({ book, onBack }: Props) {
             const maxChars = readingConfig.maxSummariesChars > 0 ? readingConfig.maxSummariesChars : 5000;
             // 截断提炼覆盖范围到当前阅读位置：避免 prefetch 超前摘要把 distilledUpTo 推到未读区域
             const center = getReadingCenter();
+            const currentReadingPos = encodeReadingPosition(center.chapterIndex, center.paragraphIndex);
             const distilled = await distillSummariesIfNeeded(bid, companionId, maxChars, {
                 force: true,
-                currentReadingPos: encodeReadingPosition(center.chapterIndex, center.paragraphIndex),
+                currentReadingPos,
             });
+            // 随笔同批一并提炼（各自独立上限）
+            const maxEssayChars = readingConfig.maxEssayChars > 0 ? readingConfig.maxEssayChars : 1500;
+            await distillEssaysIfNeeded(bid, companionId, maxEssayChars, { force: true, currentReadingPos });
             if (bookIdRef.current !== bid) return; // 提炼途中切书，不动当前书 UI
             await refreshSummaries();
+            await refreshEssays();
             setSummaryActionMsg(distilled
                 ? { ok: true, text: "提炼完成：已生成「前情提要」，原有分段摘要仍保留。注入时读到提炼覆盖之后才用前情提要。" }
                 : { ok: false, text: "提炼未成功（可能是未绑定 API / 模型未返回）。已生成的摘要在存储里没丢，可稍后再试。" });
@@ -801,7 +836,7 @@ export function ReadingViewer({ book, onBack }: Props) {
             setSummaryActionMsg({ ok: false, text: `提炼失败：${e instanceof Error ? e.message : String(e)}（已有摘要不受影响）` });
             await refreshSummaries();
         }
-    }, [book.id, companionId, getReadingCenter, readingConfig.maxSummariesChars, refreshSummaries]);
+    }, [book.id, companionId, getReadingCenter, readingConfig.maxEssayChars, readingConfig.maxSummariesChars, refreshEssays, refreshSummaries]);
 
     const getReadingSummaryForContext = useCallback(async (chapterIdx: number, paragraphIdx: number): Promise<string> => {
         const all = await loadSummaries(book.id);
@@ -810,6 +845,36 @@ export function ReadingViewer({ book, onBack }: Props) {
         });
         return formatReadingSummary(toInject);
     }, [book.id, readingConfig.alwaysInjectLatestDistilled]);
+
+    // 随笔（按角色绑定）：与摘要同构地按当前位置注入，补批注缺失的情感连续性
+    const getReadingEssayForContext = useCallback(async (chapterIdx: number, paragraphIdx: number): Promise<string> => {
+        if (!companionId) return "";
+        const all = await loadEssays(book.id, companionId);
+        const toInject = getEssaysForInjection(all, chapterIdx, paragraphIdx, {
+            alwaysLatestDistilled: readingConfig.alwaysInjectLatestDistilled === true,
+        });
+        return formatReadingEssay(toInject);
+    }, [book.id, companionId, readingConfig.alwaysInjectLatestDistilled]);
+
+    // 读书笔记：只注入最新一篇（默认要求其覆盖起点已读；回读开关开启则始终注入最新一篇）
+    const getReadingNoteForContext = useCallback(async (chapterIdx: number, paragraphIdx: number): Promise<string> => {
+        if (!companionId) return "";
+        const all = await loadNotes(book.id, companionId);
+        const note = getLatestNoteForInjection(all, chapterIdx, paragraphIdx, {
+            alwaysLatestDistilled: readingConfig.alwaysInjectLatestDistilled === true,
+        });
+        return formatReadingNote(note);
+    }, [book.id, companionId, readingConfig.alwaysInjectLatestDistilled]);
+
+    // 一次性取齐三类阅读上下文（摘要/随笔/笔记），供讨论与批注共用
+    const getReadingContextBundle = useCallback(async (chapterIdx: number, paragraphIdx: number) => {
+        const [readingSummary, readingEssay, readingNote] = await Promise.all([
+            getReadingSummaryForContext(chapterIdx, paragraphIdx),
+            getReadingEssayForContext(chapterIdx, paragraphIdx),
+            getReadingNoteForContext(chapterIdx, paragraphIdx),
+        ]);
+        return { readingSummary, readingEssay, readingNote };
+    }, [getReadingEssayForContext, getReadingNoteForContext, getReadingSummaryForContext]);
 
     const loadExistingAnnotationsForItems = useCallback(async (items: ParagraphRef[]) => {
         const chapterIndexes = [...new Set(items.map((item) => item.chapterIndex))];
@@ -990,10 +1055,16 @@ export function ReadingViewer({ book, onBack }: Props) {
             // 「本次阅读体验内不重复」由 generatedBatchesRef（内存）保证。
             const existing = await loadExistingAnnotationsForItems(request.items);
 
-            // 获取当前批次之前的阅读摘要，注入批注上下文
+            // 获取当前批次之前的阅读上下文（摘要 + 随笔 + 最新笔记），注入批注上下文
             const firstItem = request.items[0];
             const lastItem = request.items[request.items.length - 1];
-            const readingSummaryText = await getReadingSummaryForContext(firstItem.chapterIndex, firstItem.paragraphIndex);
+            const { readingSummary: readingSummaryText, readingEssay: readingEssayText, readingNote: readingNoteText } =
+                await getReadingContextBundle(firstItem.chapterIndex, firstItem.paragraphIndex);
+
+            // 批注参考主聊天历史（含共读讨论消息）：让批注理解用户近况与两人关系；
+            // 开关关闭时不传（回到旧行为——批注看不到任何聊天内容）
+            const annotateSession = readingConfig.annotateIncludeChatHistory === true ? getSession() : null;
+            const annotateHistory = annotateSession ? loadReadingHistory(annotateSession.id) : undefined;
 
             const batchResult = await withAnnotationRetry(
                 () => generateAnnotationBatch(
@@ -1007,6 +1078,9 @@ export function ReadingViewer({ book, onBack }: Props) {
                     existing,
                     companionId,
                     readingSummaryText,
+                    annotateHistory,
+                    readingEssayText,
+                    readingNoteText,
                 ),
                 readingConfig.annotationRetryCount > 0 ? readingConfig.annotationRetryCount : 0,
             );
@@ -1043,6 +1117,24 @@ export function ReadingViewer({ book, onBack }: Props) {
                 await refreshSummaries();
             }
 
+            // 保存一并生成的随笔（同样按段落范围去重）。随笔绑定角色，承载当时情绪。
+            const isEssayAlreadyCovered = essays.some(e =>
+                !e.isDistilled
+                && e.chapterIndex === firstItem.chapterIndex
+                && e.startParagraph <= lastItem.paragraphIndex
+                && e.endParagraph >= firstItem.paragraphIndex,
+            );
+            if (batchResult.essay && !isEssayAlreadyCovered) {
+                await saveEssay(batchResult.essay);
+                await refreshEssays();
+                const maxEssayChars = readingConfig.maxEssayChars > 0 ? readingConfig.maxEssayChars : 1500;
+                const essayCenter = getReadingCenter();
+                await distillEssaysIfNeeded(book.id, companionId, maxEssayChars, {
+                    currentReadingPos: encodeReadingPosition(essayCenter.chapterIndex, essayCenter.paragraphIndex),
+                });
+                await refreshEssays();
+            }
+
             return true;
         } catch (err) {
             console.error("[Reading] Annotation error:", err);
@@ -1053,7 +1145,7 @@ export function ReadingViewer({ book, onBack }: Props) {
             annotationInFlightRef.current = false;
             setGenerating(false);
         }
-    }, [book, companionId, loadExistingAnnotationsForItems, readingConfig.annotationRetryCount, readingConfig.maxSummariesChars, getReadingCenter, getReadingSummaryForContext, refreshSummaries, summaries]);
+    }, [book, companionId, essays, getReadingContextBundle, getReadingCenter, loadExistingAnnotationsForItems, readingConfig.annotateIncludeChatHistory, readingConfig.annotationRetryCount, readingConfig.maxEssayChars, readingConfig.maxSummariesChars, getSession, refreshEssays, refreshSummaries, summaries]);
 
     const openAnnotationDialog = (mode: AnnotationDialogMode) => {
         const nextSize = annotationBatchSize || (isPdf ? 5 : 50);
@@ -1605,9 +1697,10 @@ export function ReadingViewer({ book, onBack }: Props) {
                 : chapters;
             const discussContext = buildDiscussContext(sourceChapters);
             if (!discussContext) return;
-            // 注入当前阅读位置（与正文上下文同一焦点来源）之前的摘要
-            const discussSummaryText = await getReadingSummaryForContext(discussContext.focusChapterIndex, discussContext.focusStartParagraph);
-            const rawReply = await generateReadingChat(session, book, discussContext, companionId, discussSummaryText);
+            // 注入当前阅读位置（与正文上下文同一焦点来源）之前的摘要、随笔与最新笔记
+            const { readingSummary: discussSummaryText, readingEssay: discussEssayText, readingNote: discussNoteText } =
+                await getReadingContextBundle(discussContext.focusChapterIndex, discussContext.focusStartParagraph);
+            const rawReply = await generateReadingChat(session, book, discussContext, companionId, discussSummaryText, discussEssayText, discussNoteText);
             if (rawReply) {
                 const { reply, actions } = parseReadingDiscussResponse(rawReply);
                 // Parse like chat: split into parts, extract inner monologue, state values, media
@@ -1640,6 +1733,73 @@ export function ReadingViewer({ book, onBack }: Props) {
             console.error("[Reading] Chat error:", err);
         } finally {
             setChatting(false);
+        }
+    };
+
+    // 写读书笔记：共读窗内手动触发一次。以 char 第一人称写，开头带角色名；
+    // 写入 notes 表 + 一条 origin=reading_note 的聊天消息（与阅读讨论同级，进入记忆管线，但不在主聊天渲染）。
+    const handleGenerateNote = async () => {
+        if (!companionId || generatingNote) return;
+        const session = getSession();
+        if (!session) return;
+        setGeneratingNote(true);
+        setNoteActionMsg(null);
+        const bid = book.id;
+        try {
+            const sourceChapters = isPdf
+                ? await ensurePdfPageRangeParsed(
+                    Math.floor((pdfCurrentPage - 1) / PDF_PAGES_PER_CHAPTER) * PDF_PAGES_PER_CHAPTER + 1,
+                    Math.min(
+                        Math.floor((pdfCurrentPage - 1) / PDF_PAGES_PER_CHAPTER) * PDF_PAGES_PER_CHAPTER + PDF_PAGES_PER_CHAPTER,
+                        pdfTotalPages || Math.floor((pdfCurrentPage - 1) / PDF_PAGES_PER_CHAPTER) * PDF_PAGES_PER_CHAPTER + PDF_PAGES_PER_CHAPTER,
+                    ) - 1,
+                )
+                : chapters;
+            const noteContext = buildDiscussContext(sourceChapters);
+            if (!noteContext) {
+                setNoteActionMsg({ ok: false, text: "当前位置无法定位正文，请稍后再试。" });
+                return;
+            }
+            const { readingSummary, readingEssay, readingNote } =
+                await getReadingContextBundle(noteContext.focusChapterIndex, noteContext.focusStartParagraph);
+            const content = await generateReadingNote(session, book, noteContext, companionId, readingSummary, readingEssay, readingNote);
+            if (bookIdRef.current !== bid) return; // 生成途中切书，丢弃结果
+            if (!content) {
+                setNoteActionMsg({ ok: false, text: "生成失败（可能未绑定 API 或模型未返回），可重试。" });
+                return;
+            }
+
+            // 覆盖区间：上一次笔记的结束位置 → 当前阅读中心（供中断恢复与注入判定）
+            const prev = notes.length > 0 ? notes[notes.length - 1] : null;
+            const noteId = `rn_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+            const msg = pushChatMessage({
+                sessionId: session.id,
+                role: "assistant",
+                content,
+                origin: "reading_note",
+                mediaData: { readingBookTitle: book.title, readingNoteId: noteId },
+            });
+            await saveNote({
+                id: noteId,
+                bookId: bid,
+                characterId: companionId,
+                characterName: companion?.name || "",
+                startChapterIndex: prev ? prev.endChapterIndex : 0,
+                startParagraph: prev ? prev.endParagraph : 0,
+                endChapterIndex: noteContext.focusChapterIndex,
+                endParagraph: noteContext.focusStartParagraph,
+                content,
+                messageId: msg.id,
+                createdAt: new Date().toISOString(),
+            });
+            await refreshNotes();
+            setNoteActionMsg({ ok: true, text: "读书笔记已生成并存入记忆。" });
+        } catch (e) {
+            if (bookIdRef.current !== bid) return;
+            console.warn("[Reading] Note error:", e);
+            setNoteActionMsg({ ok: false, text: `生成失败：${e instanceof Error ? e.message : String(e)}` });
+        } finally {
+            setGeneratingNote(false);
         }
     };
 
@@ -2662,7 +2822,20 @@ export function ReadingViewer({ book, onBack }: Props) {
                                 </div>
                                 <div className="reading-chat-float-header-copy">
                                     <span className="reading-chat-float-title">和{companion?.name || "AI"}讨论该章节</span>
-                                    <span className="reading-chat-float-subtitle">拖拽任意位置移动</span>
+                                    <button
+                                        type="button"
+                                        className="reading-chat-note-btn"
+                                        disabled={generatingNote || !companionId}
+                                        onClick={() => { if (shouldIgnoreChatAction()) return; void handleGenerateNote(); }}
+                                        title="写下这次共读的读书笔记（会存入记忆）"
+                                    >
+                                        {generatingNote ? "正在写读书笔记…" : "写读书笔记"}
+                                    </button>
+                                    {noteActionMsg && (
+                                        <span className="reading-chat-float-subtitle" style={{ color: noteActionMsg.ok ? undefined : "var(--c-warning, #c88719)" }}>
+                                            {noteActionMsg.text}
+                                        </span>
+                                    )}
                                 </div>
                                 <button type="button" onClick={() => { if (shouldIgnoreChatAction()) return; setChatExpanded(false); }} className="reading-chat-float-close" aria-label="收起聊天窗口"><ChevronDown size={18} strokeWidth={2} /></button>
                                 <button type="button" onClick={() => { if (shouldIgnoreChatAction()) return; handleCloseChat(); }} className="reading-chat-float-close" aria-label="关闭聊天悬浮窗"><Minus size={18} strokeWidth={2} /></button>
@@ -3029,8 +3202,8 @@ export function ReadingViewer({ book, onBack }: Props) {
                             </span>
                         )}
                     </div>
-                    <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.75rem" }}>
-                        {(["injected", "all", "distilled"] as const).map(tab => (
+                    <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.75rem", flexWrap: "wrap" }}>
+                        {(["injected", "all", "distilled", "essay", "note"] as const).map(tab => (
                             <button
                                 key={tab}
                                 type="button"
@@ -3045,7 +3218,11 @@ export function ReadingViewer({ book, onBack }: Props) {
                                     cursor: "pointer",
                                 }}
                             >
-                                {tab === "injected" ? "当前注入" : tab === "all" ? "全部摘要" : "提炼记录"}
+                                {tab === "injected" ? "当前注入"
+                                    : tab === "all" ? "全部摘要"
+                                    : tab === "distilled" ? "提炼记录"
+                                    : tab === "essay" ? "读书随笔"
+                                    : "读书笔记"}
                             </button>
                         ))}
                     </div>
@@ -3053,6 +3230,47 @@ export function ReadingViewer({ book, onBack }: Props) {
                         {(() => {
                             // 「当前注入」以真实阅读中心段落定位（与共读讨论同一来源），不再固定章首
                             const center = getReadingCenter();
+
+                            // 读书随笔：全部展示（提炼项置顶）
+                            if (summaryDialogTab === "essay") {
+                                if (essays.length === 0) {
+                                    return (
+                                        <div style={{ color: "var(--c-text-2)", textAlign: "center", padding: "2rem 1rem", fontSize: "0.875rem", lineHeight: 1.8 }}>
+                                            <p>还没有读书随笔。随笔随批注一并生成，每批一条，绑定当前伴读角色。</p>
+                                        </div>
+                                    );
+                                }
+                                return essays.map(e => (
+                                    <div key={e.id} style={{ padding: "0.75rem", marginBottom: "0.5rem", borderRadius: "0.5rem", background: "var(--c-bg-2)", border: e.isDistilled ? "1px solid var(--c-accent)" : "1px solid var(--c-border)" }}>
+                                        <div style={{ fontSize: "0.75rem", color: "var(--c-text-2)", marginBottom: "0.25rem", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                            <span>{e.isDistilled ? `随笔·提炼 · 覆盖到第${Math.floor((e.distilledUpTo ?? 0) / 100000) + 1}章` : `第${e.chapterIndex + 1}章 · 段落${e.startParagraph + 1}-${e.endParagraph + 1}`}</span>
+                                            <span>{e.content.length}字</span>
+                                        </div>
+                                        <div style={{ fontSize: "0.875rem", lineHeight: 1.6, color: "var(--c-text)" }}>{e.content}</div>
+                                    </div>
+                                ));
+                            }
+
+                            // 读书笔记：全部展示（按时间倒序）
+                            if (summaryDialogTab === "note") {
+                                const orderedNotes = [...notes].reverse();
+                                if (orderedNotes.length === 0) {
+                                    return (
+                                        <div style={{ color: "var(--c-text-2)", textAlign: "center", padding: "2rem 1rem", fontSize: "0.875rem", lineHeight: 1.8 }}>
+                                            <p>还没有读书笔记。可以在共读聊天窗里点「写读书笔记」生成一篇。</p>
+                                        </div>
+                                    );
+                                }
+                                return orderedNotes.map(n => (
+                                    <div key={n.id} style={{ padding: "0.75rem", marginBottom: "0.5rem", borderRadius: "0.5rem", background: "var(--c-bg-2)", border: "1px solid var(--c-border)" }}>
+                                        <div style={{ fontSize: "0.75rem", color: "var(--c-text-2)", marginBottom: "0.25rem", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                            <span>{`覆盖：第${n.startChapterIndex + 1}章 → 第${n.endChapterIndex + 1}章`}</span>
+                                            <span>{new Date(n.createdAt).toLocaleString()}</span>
+                                        </div>
+                                        <div style={{ fontSize: "0.875rem", lineHeight: 1.6, color: "var(--c-text)", whiteSpace: "pre-wrap" }}>{n.content}</div>
+                                    </div>
+                                ));
+                            }
                             let displaySummaries: ReadingSummary[] = [];
                             if (summaryDialogTab === "injected") {
                                 displaySummaries = getSummariesForInjection(summaries, center.chapterIndex, center.paragraphIndex, {

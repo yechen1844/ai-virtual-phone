@@ -111,6 +111,8 @@ export interface AssemblerInput {
     chapterContent?: string;
     annotationHistory?: string;
     readingSummary?: string;
+    readingEssay?: string;
+    readingNote?: string;
     movieTitle?: string;
     sceneTitle?: string;
     sceneSummary?: string;
@@ -763,6 +765,8 @@ export function assemblePromptPayload(input: AssemblerInput): LLMMessage[] {
         engine.chapterContent = input.chapterContent ?? "";
         engine.annotationHistory = input.annotationHistory ?? "";
         engine.readingSummary = input.readingSummary ?? "";
+        engine.readingEssay = input.readingEssay ?? "";
+        engine.readingNote = input.readingNote ?? "";
         engine.movieTitle = input.movieTitle ?? "";
         engine.sceneTitle = input.sceneTitle ?? "";
         engine.sceneSummary = input.sceneSummary ?? "";

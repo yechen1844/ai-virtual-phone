@@ -321,6 +321,22 @@ export function ReadingInteractionDialog({ onClose }: Props) {
                     <p className="reading-settings-inline-note">
                         <span>批注时一并生成 ~150 字情节摘要，注入后续批注和讨论的上下文。当摘要总字数达到上限时，自动提炼为当前的 1/3，保留关键情节。旧摘要保留存储但不注入。</span>
                     </p>
+                    <div className="reading-settings-inline-note">
+                        <span>随笔字数上限（达到后自动提炼为 1/3）</span>
+                        <span>{config.maxEssayChars > 0 ? config.maxEssayChars : 1500} 字</span>
+                    </div>
+                    <input
+                        type="range"
+                        className="w-full my-1"
+                        min={500}
+                        max={8000}
+                        step={100}
+                        value={config.maxEssayChars > 0 ? config.maxEssayChars : 1500}
+                        onChange={(e) => setConfig((prev) => ({ ...prev, maxEssayChars: Number(e.target.value) }))}
+                    />
+                    <p className="reading-settings-inline-note">
+                        <span>批注时一并生成两句话的读书随笔（角色第一人称、记录当时的情绪），与摘要同批产出但按角色分开存储；注入共读与批注，维持情感连续性。达到上限后自动提炼。</span>
+                    </p>
                     <div className="reading-settings-toggle-row">
                         <span className="reading-settings-toggle-label">
                             回读时仍注入最新前情提要
@@ -332,6 +348,18 @@ export function ReadingInteractionDialog({ onClose }: Props) {
                     </div>
                     <p className="reading-settings-inline-note">
                         <span>开启后，无论当前读到哪，始终只注入最新、最全面的那条前情提要——回读时 char 仍记得全部已看过的情节。关闭则按当前阅读位置动态判定：提炼点还没读到时不注入，避免剧透。</span>
+                    </p>
+                    <div className="reading-settings-toggle-row">
+                        <span className="reading-settings-toggle-label">
+                            批注参考聊天历史
+                        </span>
+                        <Toggle
+                            checked={config.annotateIncludeChatHistory !== false}
+                            onChange={(next) => setConfig((prev) => ({ ...prev, annotateIncludeChatHistory: next }))}
+                        />
+                    </div>
+                    <p className="reading-settings-inline-note">
+                        <span>开启后，自动批注会参考你们最近的聊天记录（含共读讨论），让批注更懂你最近的状态。聊天记录仅作背景，批注仍只评论书里的内容。关闭则批注看不到任何聊天内容。受「固定短期条数」上限约束，不会无限膨胀。</span>
                     </p>
                 </section>
             </div>

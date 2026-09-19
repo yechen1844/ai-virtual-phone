@@ -73,6 +73,8 @@ export class MacroEngine {
     chapterContent: string = "";
     annotationHistory: string = "";
     readingSummary: string = "";
+    readingEssay: string = "";
+    readingNote: string = "";
     movieTitle: string = "";
     sceneTitle: string = "";
     sceneSummary: string = "";
@@ -235,6 +237,8 @@ export class MacroEngine {
         if (body === "chapterContent") return this.chapterContent || "\x00TRIM\x00";
         if (body === "annotationHistory") return this.annotationHistory || "\x00TRIM\x00";
         if (body === "readingSummary") return this.readingSummary || "\x00TRIM\x00";
+        if (body === "readingEssay") return this.readingEssay || "\x00TRIM\x00";
+        if (body === "readingNote") return this.readingNote || "\x00TRIM\x00";
         if (body === "movieTitle") return this.movieTitle || "\x00TRIM\x00";
         if (body === "sceneTitle") return this.sceneTitle || "\x00TRIM\x00";
         if (body === "sceneSummary") return this.sceneSummary || "\x00TRIM\x00";
@@ -412,7 +416,7 @@ export const STATIC_MACRO_NAMES: ReadonlySet<string> = new Set([
     "phoneAppId", "phoneAppLabel", "phoneSnapshotSummary", "phoneLastRefreshAt",
     // 定居
     "dwellingRoom", "dwellingFurniture", "dwellingItem", "dwellingItemPreview",
-    "bookTitle", "chapterTitle", "chapterContent", "annotationHistory", "readingSummary", "noteWallContext", "diaryEntryContext",
+    "bookTitle", "chapterTitle", "chapterContent", "annotationHistory", "readingSummary", "readingEssay", "readingNote", "noteWallContext", "diaryEntryContext",
     "movieTitle", "sceneTitle", "sceneSummary", "movieSummary", "sceneSubtitleWindow", "frameHint", "sceneBoundaries", "moviePosition",
     "xiaohongshuFeedContext", "xiaohongshuUserPostContext", "xiaohongshuCommentContext", "xiaohongshuMentionContext",
     // 访谈杂志

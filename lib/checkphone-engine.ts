@@ -927,6 +927,7 @@ function normalizeVisibleChatMessages(messages: ChatMessage[]): ChatMessage[] {
   return messages.filter((msg) => {
     if (msg.mediaType === "tool_call" || msg.mediaType === "tool_result" || msg.mediaType === "memory_write_request" || msg.mediaType === "tool_notice") return false;
     if (msg.origin === "reading_discuss" || msg.mediaType === "reading_discuss") return false;
+    if (msg.origin === "reading_note" || msg.mediaType === "reading_note") return false;
     if (msg.role === "system") return false;
     const preview = getChatMessagePreview(msg).trim();
     return !!preview;

@@ -28,6 +28,7 @@ import { loadCoCreateProjectionEntries } from "./cocreate-memory";
 import { stripStateAndInnerForPrompt } from "./prompt-sanitizer";
 import { renderUserNameMacro } from "./user-macro";
 import { loadChatOfflineProjectionEntries } from "./chat-offline-storage";
+import { isComplexMemoryEnabled, loadComplexMemoryConfig } from "./complex-memory/config";
 import { loadCheckPhoneProjectionEntries } from "./checkphone-storage";
 import { loadStardewProjectionEntries } from "./stardew-memory";
 import { formatShoppingPaymentRequestHistory } from "./shopping-payment-request";
@@ -1231,7 +1232,12 @@ export function prepareShortTermContext(
         if (p.kind === "entry") allSurviving.push({ kind: "entry", ts: p.timestamp, entryId: p.entryId });
         else allSurviving.push({ kind: "history", ts: p.timestamp, msgIdx: p.msgIdx });
     }
-    const maxShortTermEntries = options?.maxShortTermEntries ?? 0;
+    // 条数上限：调用方未显式传时，回退到复杂记忆的 fixedShortTermEntries——与主聊天对齐。
+    // 此前只有主聊天传了这个参数，其余 app（阅读/观影/小红书/朋友圈/查手机…）全部漏传，
+    // 导致用户配置的条数上限只对主聊天生效、其它 app 只受 token 预算约束（可能注入数百条）。
+    // 未启用复杂记忆的角色维持原行为（不设条数上限，仅 token 预算）。
+    const maxShortTermEntries = options?.maxShortTermEntries
+        ?? (isComplexMemoryEnabled(characterId) ? loadComplexMemoryConfig().fixedShortTermEntries : 0);
     const kept = maxShortTermEntries > 0 && allSurviving.length > maxShortTermEntries
         ? allSurviving.slice(-maxShortTermEntries)
         : allSurviving;

@@ -4391,6 +4391,169 @@
   font-size: calc(9.9px*var(--app-text-scale,1));
   color: var(--reading-warm-ink-tertiary, #999);
 }
+/* 共读窗内的「写读书笔记」按钮：把这次共读的总结产物写进记忆 */
+.reading-chat-note-btn {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--reading-warm-line, #e2d5be);
+  background: transparent;
+  color: var(--reading-warm-ink-secondary, #7a6a52);
+  font-size: calc(10.5px*var(--app-text-scale,1));
+  line-height: 1.6;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+.reading-chat-note-btn:hover:not(:disabled) {
+  background: var(--reading-warm-surface, #fffef7);
+  border-color: var(--reading-warm-ink-tertiary, #b9a98c);
+  color: var(--reading-warm-ink, #111);
+}
+.reading-chat-note-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+/* 读书笔记便签卡：主聊天里以「阅读便签」呈现，风格贴近阅读 app 的纸感 */
+.chat-reading-note {
+  position: relative;
+  align-self: center;
+  width: min(92%, 520px);
+  margin: 10px auto;
+  padding: 13px 15px 11px 17px;
+  border-radius: 14px;
+  border: 1px solid var(--c-card-border, var(--c-border));
+  background: var(--c-card-bg, var(--c-card));
+  box-shadow: 0 2px 12px rgba(80, 60, 30, 0.07), 0 1px 2px rgba(80, 60, 30, 0.05);
+  overflow: hidden;
+  cursor: pointer;
+}
+/* 左侧书脊色条，呼应阅读 app */
+.chat-reading-note::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--c-accent, var(--c-icon-active, #c8a96a));
+  opacity: 0.85;
+}
+.chat-reading-note-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 9px;
+}
+.chat-reading-note-badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--c-card-border, var(--c-border, rgba(0, 0, 0, 0.12)));
+  color: var(--c-accent, var(--c-icon-active, #a8814a));
+  font-size: calc(11px * var(--app-text-scale, 1));
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+.chat-reading-note-book {
+  font-size: calc(11.5px * var(--app-text-scale, 1));
+  color: var(--c-text-2, var(--c-icon, #999));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-reading-note-body {
+  font-size: calc(13.5px * var(--app-text-scale, 1));
+  line-height: 1.85;
+  color: var(--c-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.chat-reading-note-foot {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--c-border, rgba(0, 0, 0, 0.1));
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: calc(11px * var(--app-text-scale, 1));
+  color: var(--c-text-2, var(--c-icon, #999));
+}
+/* 长笔记在列表里折叠为 5 行，点击整张卡看全文 */
+.chat-reading-note-body--clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.chat-reading-note-more {
+  margin-left: auto;
+  font-size: calc(11px * var(--app-text-scale, 1));
+  color: var(--c-text-2, var(--c-icon, #999));
+  white-space: nowrap;
+  opacity: 0.85;
+}
+.chat-reading-note:hover .chat-reading-note-more {
+  opacity: 1;
+}
+/* 读书笔记全文查看器 */
+.chat-reading-note-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: var(--c-overlay, rgba(0, 0, 0, 0.35));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.chat-reading-note-viewer-card {
+  position: relative;
+  width: min(96%, 560px);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 18px 14px;
+  border-radius: 16px;
+  border: 1px solid var(--c-card-border, rgba(0, 0, 0, 0.12));
+  background: var(--c-card, #fff);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+.chat-reading-note-viewer-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--c-accent, var(--c-icon-active, #c8a96a));
+  opacity: 0.85;
+}
+.chat-reading-note-viewer-body {
+  margin-top: 4px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  font-size: calc(14px * var(--app-text-scale, 1));
+  line-height: 1.9;
+  color: var(--c-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.chat-reading-note-viewer-close {
+  margin-left: auto;
+  padding: 3px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--c-card-border, rgba(0, 0, 0, 0.12));
+  background: transparent;
+  color: var(--c-text-2, var(--c-icon, #999));
+  font-size: calc(11.5px * var(--app-text-scale, 1));
+  cursor: pointer;
+}
+.chat-reading-note-viewer-close:hover {
+  color: var(--c-text);
+}
 .reading-chat-float-body {
   flex: 1;
   min-height: 0;

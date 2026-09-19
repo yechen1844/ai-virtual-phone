@@ -119,12 +119,13 @@ export type ChatMessage = {
         | "tool_result"
         | "memory_write_request"
         | "reading_discuss"
+        | "reading_note"
         | "movie_discuss"
         | "system_instruction"
         | "group_admin_notice"
         | "media_file"
         | `plugin:${string}`; // 聊天插件自定义消息类型（由注册该 kind 的插件渲染气泡）
-    origin?: "chat" | "reading_discuss" | "movie_discuss" | "custom_app" | "custom_app_background";
+    origin?: "chat" | "reading_discuss" | "movie_discuss" | "reading_note" | "custom_app" | "custom_app_background";
     mediaUrl?: string;
     mediaData?: {
         amount?: number;          // 红包/转账金额
@@ -222,6 +223,7 @@ export type ChatMessage = {
         mediaCompressedAt?: string;
         mediaCleanedAt?: string;
         readingBookTitle?: string; // 阅读讨论所属书名，用于 prompt 短期记忆边界
+        readingNoteId?: string;    // 读书笔记：对应 notes 表的 id
         movieTitle?: string;       // 观影讨论所属片名，用于 prompt 短期记忆边界
         moviePositionSeconds?: number; // 观影讨论时的播放位置（秒），用于短期记忆边界进度标注
         appId?: string;
@@ -324,6 +326,11 @@ export function isReadingDiscussMessage(msg: Pick<ChatMessage, "origin" | "media
 
 export function isMovieDiscussMessage(msg: Pick<ChatMessage, "origin" | "mediaType">): boolean {
     return msg.origin === "movie_discuss" || msg.mediaType === "movie_discuss";
+}
+
+/** 读书笔记消息：与阅读讨论同级（存进聊天会话以进入记忆管线），但不在主聊天渲染。 */
+export function isReadingNoteMessage(msg: Pick<ChatMessage, "origin" | "mediaType">): boolean {
+    return msg.origin === "reading_note" || msg.mediaType === "reading_note";
 }
 
 export function isSystemInstructionMessage(msg: Pick<ChatMessage, "role" | "mediaType">): boolean {
@@ -450,6 +457,7 @@ function hasPreviewText(text: string | undefined): boolean {
 function isSessionPreviewCandidate(msg: ChatMessage): boolean {
     if (isReadingDiscussMessage(msg)) return false;
     if (isMovieDiscussMessage(msg)) return false;
+    if (isReadingNoteMessage(msg)) return false;
     if (msg.mediaType === "tool_result" || msg.mediaType === "tool_call") return false;
     if (msg.mediaType === "tool_notice") return false;
     if (msg.mediaType === "memory_write_request") return false;

@@ -1,7 +1,7 @@
 "use client";
 
 import { forwardRef, Fragment, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ChatSession, ChatMessage, CHAT_APP_SETTINGS_UPDATED_EVENT, CHAT_INITIAL_VISIBLE_MESSAGE_COUNT, CHAT_LOAD_MORE_MESSAGE_COUNT, CHAT_REQUEST_REPLY_EVENT, loadChatAppSettings, loadChatMessages, loadChatContacts, loadChatSessions, saveChatSessions, pushChatMessage, updateChatMessage, deleteChatMessage, deleteChatMessagesFrom, deleteChatMessagesAfter, deleteChatMessagesByIds, retractChatMessage, editChatMessage, updateMessageMediaData, replaceResponseBatchWithParts, replaceGroupResponseRound, isReadingDiscussMessage, isMovieDiscussMessage, isSystemInstructionMessage, createResponseBatchId, createResponseRoundId, getLatestStateValues, getLatestCharacterStateValues, compareChatMessages } from "@/lib/chat-storage";
+import { ChatSession, ChatMessage, CHAT_APP_SETTINGS_UPDATED_EVENT, CHAT_INITIAL_VISIBLE_MESSAGE_COUNT, CHAT_LOAD_MORE_MESSAGE_COUNT, CHAT_REQUEST_REPLY_EVENT, loadChatAppSettings, loadChatMessages, loadChatContacts, loadChatSessions, saveChatSessions, pushChatMessage, updateChatMessage, deleteChatMessage, deleteChatMessagesFrom, deleteChatMessagesAfter, deleteChatMessagesByIds, retractChatMessage, editChatMessage, updateMessageMediaData, replaceResponseBatchWithParts, replaceGroupResponseRound, isReadingDiscussMessage, isMovieDiscussMessage, isReadingNoteMessage, isSystemInstructionMessage, createResponseBatchId, createResponseRoundId, getLatestStateValues, getLatestCharacterStateValues, compareChatMessages } from "@/lib/chat-storage";
 import { cleanStreamText } from "@/lib/stream-preview";
 import type { StateValue } from "@/lib/chat-storage";
 import { parseStateValues, mergeStateValues } from "@/lib/state-value-parser";
@@ -1295,6 +1295,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
 
     // Message Actions state
     const [activeMessageId, setActiveMessageId] = useState<string | null>(null);
+    /** 读书笔记全文查看器（点击便签卡打开） */
+    const [readingNoteView, setReadingNoteView] = useState<{ bookTitle?: string; signer: string; timeText: string; content: string } | null>(null);
     const [contextMenuAnchor, setContextMenuAnchor] = useState<ContextMenuAnchor | null>(null);
     const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
     const [selectedMessageIds, setSelectedMessageIds] = useState<Set<string>>(new Set());
@@ -5101,6 +5103,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
         return displayMessages.filter(m => {
             if (isReadingDiscussMessage(m)) return false;
             if (isMovieDiscussMessage(m)) return false;
+            // 读书笔记保留显示（用专属便签卡渲染，见下方 render）
             if (seen.has(m.id)) return false;
             seen.add(m.id);
             return true;
@@ -5688,6 +5691,42 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                     </button>
                 )}
                 {!offlineMode && projectedMessages.map((msg, idx) => {
+                    // ── 读书笔记：以「阅读便签」卡渲染，区别于普通聊天气泡；点击看全文 ──
+                    if (isReadingNoteMessage(msg)) {
+                        const raw = msg.content || "";
+                        const matched = raw.match(/^\s*(.+?)的读书笔记[：:]\s*/);
+                        const signer = matched ? matched[1] : "";
+                        const body = matched ? raw.slice(matched[0].length) : raw;
+                        const noteBookTitle = msg.mediaData?.readingBookTitle;
+                        const noteTime = new Date(msg.createdAt);
+                        const noteTimeText = `${String(noteTime.getHours()).padStart(2, "0")}:${String(noteTime.getMinutes()).padStart(2, "0")}`;
+                        const noteIsLong = body.length > 140;
+                        const openNoteView = () => setReadingNoteView({ bookTitle: noteBookTitle, signer, timeText: noteTimeText, content: body });
+                        return (
+                            <div
+                                key={msg.id}
+                                className="chat-reading-note"
+                                data-role="reading-note"
+                                role="button"
+                                tabIndex={0}
+                                title="点击查看全文"
+                                onClick={openNoteView}
+                                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openNoteView(); } }}
+                            >
+                                <div className="chat-reading-note-head">
+                                    <span className="chat-reading-note-badge">读书笔记</span>
+                                    {noteBookTitle && <span className="chat-reading-note-book">《{noteBookTitle}》</span>}
+                                    {noteIsLong && <span className="chat-reading-note-more">查看全文 ›</span>}
+                                </div>
+                                <div className={`chat-reading-note-body${noteIsLong ? " chat-reading-note-body--clamp" : ""}`}>{body}</div>
+                                <div className="chat-reading-note-foot">
+                                    <span>{signer}</span>
+                                    <span>{noteTimeText}</span>
+                                </div>
+                            </div>
+                        );
+                    }
+
                     // ── Voice call group: collapsed widget ──
                     const vcGroup = voiceCallGroups.groups.find(g => g.startIdx === idx);
                     if (vcGroup) {
@@ -6582,6 +6621,31 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                             {(reasoningViewMode !== "zh" || !reasoningTranslation) && (
                                 <BilingualTextBlock text={reasoningSheetText} mode="markdown" defaultExpanded />
                             )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Reading Note Full-text Viewer */}
+            {readingNoteView && (
+                <div className="chat-reading-note-viewer" onClick={() => setReadingNoteView(null)}>
+                    <div className="chat-reading-note-viewer-card" onClick={(e) => e.stopPropagation()}>
+                        <div className="chat-reading-note-head">
+                            <span className="chat-reading-note-badge">读书笔记</span>
+                            {readingNoteView.bookTitle && <span className="chat-reading-note-book">《{readingNoteView.bookTitle}》</span>}
+                            <button
+                                type="button"
+                                className="chat-reading-note-viewer-close"
+                                onClick={() => setReadingNoteView(null)}
+                                aria-label="关闭"
+                            >
+                                关闭
+                            </button>
+                        </div>
+                        <div className="chat-reading-note-viewer-body">{readingNoteView.content}</div>
+                        <div className="chat-reading-note-foot">
+                            <span>{readingNoteView.signer}</span>
+                            <span>{readingNoteView.timeText}</span>
                         </div>
                     </div>
                 </div>
