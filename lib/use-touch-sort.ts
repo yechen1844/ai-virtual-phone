@@ -37,8 +37,10 @@ const INITIAL: DragState = {
     scrollLock: null, bodyOverflow: "", bodyTouchAction: "", reducedMotion: false,
 };
 
-const AUTO_SCROLL_EDGE = 56;
-const AUTO_SCROLL_MAX_STEP = 14;
+// 拖拽时的边缘自动滚动：激活区域要够大（否则手指稍离屏幕边缘就滚不动），
+// 步长要在接近边缘时明显加速，才能让长列表拖拽时顺畅地一路滚下去。
+const AUTO_SCROLL_EDGE = 120;
+const AUTO_SCROLL_MAX_STEP = 30;
 
 export function useTouchSort(
     onReorder: (from: number, to: number) => void,
@@ -197,10 +199,10 @@ export function useTouchSort(
 
             if (distanceToTop < AUTO_SCROLL_EDGE) {
                 const ratio = Math.max(0, Math.min(1, 1 - distanceToTop / AUTO_SCROLL_EDGE));
-                scrollStep = -Math.ceil(ratio * AUTO_SCROLL_MAX_STEP);
+                scrollStep = -Math.ceil(ratio * ratio * AUTO_SCROLL_MAX_STEP);
             } else if (distanceToBottom < AUTO_SCROLL_EDGE) {
                 const ratio = Math.max(0, Math.min(1, 1 - distanceToBottom / AUTO_SCROLL_EDGE));
-                scrollStep = Math.ceil(ratio * AUTO_SCROLL_MAX_STEP);
+                scrollStep = Math.ceil(ratio * ratio * AUTO_SCROLL_MAX_STEP);
             }
 
             if (scrollStep !== 0) {

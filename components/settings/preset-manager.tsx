@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useContext, useCallback, useMemo } from "react";
-import { Plus, Upload, Download, Trash2, RotateCcw, ChevronLeft, ChevronDown, GripVertical, MessageSquare, AlertCircle, Maximize2, Copy, Replace, CheckSquare, Check, Filter, MoreHorizontal } from "lucide-react";
+import { Plus, Upload, Download, Trash2, RotateCcw, ChevronLeft, ChevronDown, GripVertical, MessageSquare, AlertCircle, Maximize2, Copy, CopyPlus, Replace, CheckSquare, Check, Filter, MoreHorizontal } from "lucide-react";
 import {
     loadPresets,
     savePresets,
@@ -49,12 +49,7 @@ function matchesSelectedAppTags(p: Prompt, tags: Set<string>): boolean {
     return false;
 }
 
-function getPromptTagGroup(p: Prompt, tagGroups = CONTENT_SCOPE_TAG_GROUPS) {
-    const tags = getPromptTags(p);
-    return findTagGroupForTags(tagGroups, tags) ?? tagGroups[0];
-}
-
-function getPromptTagMinor(p: Prompt, group = getPromptTagGroup(p)) {
+function getPromptTagMinor(p: Prompt, group: TagGroupProfile) {
     const tags = getPromptTags(p);
     return group.minors.find(minor => areTagsEqual(minor.tags, tags)) ?? group.minors[0];
 }
@@ -300,12 +295,29 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [selectionPresetId, setSelectionPresetId] = useState<string | null>(null);
     const [confirmDeleteSelected, setConfirmDeleteSelected] = useState(false);
+    const [bulkTagOpen, setBulkTagOpen] = useState(false); // 批量「设范围（tag）」选择面板
+    const [bulkTagGroupId, setBulkTagGroupId] = useState<string>("universal"); // 批量设范围：选中的大类
+    const [bulkTagSelected, setBulkTagSelected] = useState<string[]>([]); // 批量设范围：选中的次级范围 tag
+    const [copyToPresetOpen, setCopyToPresetOpen] = useState(false); // 多选复制到其它预设的面板
 
     // ── 按 App 筛选（高亮/仅显示/仅折叠/同类折叠） ──
     const [appFilterOpen, setAppFilterOpen] = useState(false);
     const [appFilterMode, setAppFilterMode] = useState<AppFilterMode>("highlight");
     const [appFilterTags, setAppFilterTags] = useState<Set<string>>(new Set()); // 选中的大类 tag 集合（可多选）
     const [expandedCollapseGroups, setExpandedCollapseGroups] = useState<Set<string>>(new Set()); // 已展开的折叠组 key
+    const [draggedPromptIndex, setDraggedPromptIndex] = useState<number | null>(null); // 电脑端 HTML5 拖拽源 index
+    const [dragOverIndex, setDragOverIndex] = useState<number | null>(null); // 电脑端拖拽悬停目标 index
+
+    // 触屏设备禁用原生 HTML5 拖拽。
+    // 否则长按会被浏览器接管为原生拖拽：只有被拖的那一条跟着走（单条拖拽影子），
+    // 且原生拖拽没有边缘自动滚动；同时它会和 useTouchSort 的触摸长按排序抢手势 ——
+    // 表现就是"有时判定成功(多条抬起、可滚动)、有时判定成原生拖拽(单条、滚不动)"。
+    // 粗指针(手机/平板/壳)一律关闭，细指针(鼠标)保留电脑端拖拽。
+    const [allowHtml5Drag, setAllowHtml5Drag] = useState(false);
+    useEffect(() => {
+        setAllowHtml5Drag(!window.matchMedia("(pointer: coarse)").matches);
+    }, []);
+    const lastTouchAtRef = useRef(0);
 
     const toggleFilterTag = useCallback((tag: string) => {
         setAppFilterTags(prev => {
@@ -715,15 +727,34 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
         const preset = presets.find(p => p.id === editingId);
         if (!preset) return;
         const fromRenderItem = promptRenderItems[fromRenderIndex];
-        const toRenderItem = promptRenderItems[toRenderIndex];
-        if (fromRenderItem?.type !== "item" || toRenderItem?.type !== "item") return;
+        if (fromRenderItem?.type !== "item") return;
 
         // DOM 索引来自当前筛选/折叠视图；先按 identifier 映射回完整顺序，避免拖错条目。
         const displayed = buildDisplayedPrompts(preset);
         const fromIndex = displayed.findIndex(prompt => prompt.identifier === fromRenderItem.prompt.identifier);
-        const toIndex = displayed.findIndex(prompt => prompt.identifier === toRenderItem.prompt.identifier);
-        if (fromIndex < 0 || toIndex < 0) return;
+        if (fromIndex < 0) return;
         const dragged = displayed[fromIndex];
+
+        // 目标行可能是「折叠行 / 展开头」（type 不是 item）——折叠模式下拖到它们旁边
+        // 以前会直接 return 不保存，导致视觉上挪了、一折叠又复原。这里把折叠行当作
+        // 一个块：取其锚点（折叠块的首个成员 / 头下面最近的条目）在完整顺序里的位置。
+        let toIndex = -1;
+        for (let i = toRenderIndex; i < promptRenderItems.length; i++) {
+            const item = promptRenderItems[i];
+            if (item.type === "item") {
+                toIndex = displayed.findIndex(prompt => prompt.identifier === item.prompt.identifier);
+                break;
+            }
+            if (item.type === "collapsed") {
+                const anchorId = item.prompts?.[0]?.identifier;
+                if (anchorId) {
+                    toIndex = displayed.findIndex(prompt => prompt.identifier === anchorId);
+                    break;
+                }
+            }
+            // collapse-header：它下面紧跟的才是该组条目，继续向下找第一个真实条目。
+        }
+        if (toIndex < 0 || fromIndex === toIndex) return;
 
         let newDisplayed: Prompt[];
         const isBulk = selectMode
@@ -747,14 +778,18 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
             displayed.splice(toIndex, 0, item);
             newDisplayed = displayed;
         }
-        const newOrder = newDisplayed.map(p => ({
-            identifier: p.identifier,
-            enabled: preset.prompt_order
-                ? (preset.prompt_order.find(o => o.identifier === p.identifier)?.enabled ?? p.enabled)
-                : p.enabled,
-        }));
         // 排序只更新 prompt_order；prompts 是原始数据源，不能用去重后的显示投影覆盖。
-        updatePreset(preset.id, { prompt_order: newOrder });
+        // displayed 是「去重后的显示投影」，会丢掉两类数据：落在 prompt_order 但 prompts 里
+        // 已无对应条目的落单引用、以及 prompt_order 里的重复条目。直接用投影覆盖会让它们
+        // 永久消失，所以这里做「消耗式」重建：每消费掉一个原有 order 条目才移除，没消费完的
+        // 一律按原顺序补回末尾，保证原有 order 一个不丢。
+        const remaining = [...(preset.prompt_order ?? [])];
+        const newOrder = newDisplayed.map(p => {
+            const idx = remaining.findIndex(o => o.identifier === p.identifier);
+            const enabled = idx >= 0 ? remaining.splice(idx, 1)[0].enabled : p.enabled;
+            return { identifier: p.identifier, enabled };
+        });
+        updatePreset(preset.id, { prompt_order: [...newOrder, ...remaining] });
     }, [actionableSelectedIds, editingId, presets, promptRenderItems, selectMode]);
 
     const getPromptDragIndices = useCallback((pressedIndex: number) => {
@@ -846,6 +881,80 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
         const blob = new Blob([JSON.stringify(selected, null, 2)], { type: "application/json" });
         await downloadFile(blob, `${preset.name || "preset"}-entries.json`);
     }, [actionableSelectedIds, presets, editingId]);
+
+    const bulkDuplicateSelected = useCallback(() => {
+        const preset = presets.find(p => p.id === editingId);
+        if (!preset || selectedIds.size === 0) return;
+        const displayed = buildDisplayedPrompts(preset);
+        const newPrompts: Prompt[] = [];
+        for (const prompt of displayed) {
+            newPrompts.push(prompt);
+            if (selectedIds.has(prompt.identifier)) {
+                const copy: Prompt = {
+                    ...prompt,
+                    identifier: `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                    name: `${prompt.name || "提示词"}（副本）`,
+                };
+                newPrompts.push(copy);
+            }
+        }
+        const newOrder = newPrompts.map(p => ({ identifier: p.identifier, enabled: p.enabled }));
+        updatePreset(preset.id, { prompts: newPrompts, prompt_order: newOrder });
+        setSelectedIds(new Set());
+        setSelectMode(false);
+    }, [presets, editingId, selectedIds]);
+
+    // 批量把选中条目的「起效范围 tag」统一覆盖为单个 tag（单选覆盖模式）
+    const bulkSetTag = useCallback((tags: string[]) => {
+        const preset = presets.find(p => p.id === editingId);
+        if (!preset || selectedIds.size === 0) return;
+        const newPrompts = preset.prompts.map(p =>
+            selectedIds.has(p.identifier) ? { ...p, ...setPromptTags(tags) } : p,
+        );
+        updatePreset(preset.id, { prompts: newPrompts });
+        setBulkTagOpen(false);
+    }, [presets, editingId, selectedIds]);
+
+    // 多选：把选中的条目复制到另一个预设（追加到目标预设末尾，重命名并生成新 identifier）
+    const copySelectedToPreset = useCallback((targetPreset: PresetConfig) => {
+        const source = presets.find(p => p.id === editingId);
+        if (!source || selectedIds.size === 0) return;
+        const selected = buildDisplayedPrompts(source).filter(p => selectedIds.has(p.identifier));
+        if (selected.length === 0) return;
+        // 目标预设一律按「原始数据」处理：buildDisplayedPrompts 是去重后的显示投影，
+        // 拿它当写回源会把目标里的重复条目、以及落单的 prompt_order 引用悄悄合并掉，
+        // 这就是「复制后有些条目莫名消失 / 顺序被改」的根因。
+        const targetPrompts = targetPreset.prompts ?? [];
+        const targetOrder = targetPreset.prompt_order ?? [];
+        const usedIds = new Set<string>([
+            ...targetPrompts.map(p => p.identifier),
+            ...targetOrder.map(o => o.identifier),
+        ]);
+        const copies: Prompt[] = selected.map(p => {
+            let id = `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+            while (usedIds.has(id)) id = `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+            usedIds.add(id);
+            return { ...p, identifier: id, name: `${p.name || "提示词"}（副本）` };
+        });
+        // 顺序表：原有 order 原样保留（含落单引用），中间补上「有 prompts 但没进 order」的条目，
+        // 新副本追加在最后——既不丢任何既有数据，副本也稳定落在列表末尾。
+        const orderedIds = new Set(targetOrder.map(o => o.identifier));
+        const nextOrder = [
+            ...targetOrder,
+            ...targetPrompts
+                .filter(p => !orderedIds.has(p.identifier))
+                .map(p => ({ identifier: p.identifier, enabled: p.enabled })),
+            ...copies.map(p => ({ identifier: p.identifier, enabled: p.enabled })),
+        ];
+        updatePreset(targetPreset.id, {
+            prompts: [...targetPrompts, ...copies],
+            prompt_order: nextOrder,
+        });
+        setCopyToPresetOpen(false);
+        setSelectedIds(new Set());
+        setSelectMode(false);
+        setSelectionPresetId(null);
+    }, [presets, editingId, selectedIds]);
 
     const deleteSelectedPrompts = useCallback(() => {
         const preset = presets.find(p => p.id === editingId);
@@ -1473,6 +1582,18 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                     <Download size={15} strokeWidth={1.8} />
                                                     <span>导出</span>
                                                 </button>
+                                                <button type="button" className="msfb-btn" onClick={() => bulkDuplicateSelected()} disabled={selectedIds.size === 0}>
+                                                    <Copy size={15} strokeWidth={1.8} />
+                                                    <span>复制</span>
+                                                </button>
+                                                <button type="button" className="msfb-btn" onClick={() => { setBulkTagGroupId("universal"); setBulkTagSelected([]); setBulkTagOpen(true); }} disabled={selectedIds.size === 0}>
+                                                    <Filter size={15} strokeWidth={1.8} />
+                                                    <span>设范围</span>
+                                                </button>
+                                                <button type="button" className="msfb-btn" onClick={() => setCopyToPresetOpen(true)} disabled={selectedIds.size === 0 || presets.filter(p => p.id !== editingId).length === 0}>
+                                                    <CopyPlus size={15} strokeWidth={1.8} />
+                                                    <span>复制到</span>
+                                                </button>
                                                 <button type="button" className="msfb-btn msfb-danger" onClick={() => setConfirmDeleteSelected(true)} disabled={actionableSelectedIds.size === 0}>
                                                     <Trash2 size={15} strokeWidth={1.8} />
                                                     <span>删除</span>
@@ -1491,8 +1612,10 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                         onTouchMove={onPromptTouchMove}
                                         onTouchEnd={onPromptTouchEnd}
                                         onTouchCancel={onPromptTouchEnd}
+                                        onDragOver={(e) => { if (draggedPromptIndex != null) e.preventDefault(); }}
+                                        onDrop={(e) => { e.preventDefault(); setDraggedPromptIndex(null); setDragOverIndex(null); }}
                                     >
-                                        {promptRenderItems.flatMap((renderItem, _flatIndex) => {
+                                        {promptRenderItems.flatMap((renderItem, index) => {
                                             const toggleExpand = (gKey: string) => {
                                                 setExpandedCollapseGroups(prev => {
                                                     const next = new Set(prev);
@@ -1542,7 +1665,9 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                             const matchedTagGroup = findTagGroupForTags(tagGroups, promptTags);
                                             const isCustomPromptTags = promptTags.length > 0 && !matchedTagGroup;
                                             const selectedTagGroup = matchedTagGroup ?? tagGroups[0];
-                                            const selectedTagMinor = matchedTagGroup ? getPromptTagMinor(prompt, selectedTagGroup) : selectedTagGroup.minors[0];
+                                            const selectedTagMinor = matchedTagGroup
+                                                ? getPromptTagMinor(prompt, selectedTagGroup)
+                                                : selectedTagGroup.minors[0];
 
                                             return (
                                                 <SwipeActionRow
@@ -1553,7 +1678,7 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                     leftSwipeDisabled={selectMode}
                                                     rightSwipeEnabled
                                                     onSwipeRight={() => handleSwipeRightSelect(prompt.identifier)}
-                                                    onTouchStart={isEditing ? undefined : (e) => onPromptTouchStart(_flatIndex, e)}
+                                                    onTouchStart={isEditing ? undefined : (e) => { lastTouchAtRef.current = Date.now(); onPromptTouchStart(index, e); }}
                                                     actions={selectMode ? null : (
                                                         <>
                                                             <button
@@ -1610,15 +1735,46 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                                     data-active={isEditing}
                                                     data-selected={selectMode && isPromptSelected ? "true" : undefined}
                                                     data-disabled={!effectiveEnabled}
+                                                    data-drag-over={dragOverIndex === index ? "true" : undefined}
                                                     data-app-match={(() => {
                                                         if (appFilterTags.size === 0) return undefined;
                                                         if (appFilterMode === "only-show") return undefined;
                                                         return matchesSelectedAppTags(prompt, appFilterTags) ? "1" : "0";
                                                     })()}
+                                                    draggable={!isEditing && allowHtml5Drag}
+                                                    onDragStart={(e) => {
+                                                        if (isEditing) { e.preventDefault(); return; }
+                                                        // 触摸刚发生过 → 这是浏览器接管长按发起的原生拖拽，必须让位给触摸排序
+                                                        if (Date.now() - lastTouchAtRef.current < 1500) { e.preventDefault(); return; }
+                                                        setDraggedPromptIndex(index);
+                                                        setDragOverIndex(null);
+                                                        swipe.close();
+                                                        e.dataTransfer.effectAllowed = "move";
+                                                        try { e.dataTransfer.setData("text/plain", String(index)); } catch { /* ignore */ }
+                                                    }}
+                                                    onDragOver={(e) => {
+                                                        if (draggedPromptIndex == null || draggedPromptIndex === index) return;
+                                                        e.preventDefault();
+                                                        e.dataTransfer.dropEffect = "move";
+                                                        setDragOverIndex(index);
+                                                    }}
+                                                    onDragLeave={() => setDragOverIndex((cur) => (cur === index ? null : cur))}
+                                                    onDrop={(e) => {
+                                                        e.preventDefault();
+                                                        if (draggedPromptIndex != null && draggedPromptIndex !== index) {
+                                                            handlePromptReorder(draggedPromptIndex, index);
+                                                        }
+                                                        setDraggedPromptIndex(null);
+                                                        setDragOverIndex(null);
+                                                    }}
+                                                    onDragEnd={() => { setDraggedPromptIndex(null); setDragOverIndex(null); }}
                                                     style={{
                                                         gap: isEditing ? "12px" : "0px",
                                                         userSelect: isEditing ? undefined : "none",
                                                         WebkitUserSelect: isEditing ? undefined : "none",
+                                                        ...(dragOverIndex === index
+                                                            ? { boxShadow: "inset 0 0 0 2px var(--c-icon-active)" }
+                                                            : {}),
                                                     }}
                                                 >
                                                     {/* Summary Row */}
@@ -2188,6 +2344,96 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                                     清除筛选
                                 </button>
                             )}
+                        </div>
+                    </BottomSheet>
+                );
+            })()}
+{bulkTagOpen && editingId && (() => {
+                const bulkGroup = tagGroups.find(g => g.id === bulkTagGroupId) ?? tagGroups[0];
+                const bulkBaseTag = bulkGroup.tags.length > 0 ? bulkGroup.tags[0] : "";
+                const bulkSecondaryMinors = bulkGroup.minors.filter(m => m.tags.length > 1);
+                const applyBulk = () => {
+                    const tags = bulkBaseTag ? [bulkBaseTag, ...Array.from(new Set(bulkTagSelected))] : [];
+                    bulkSetTag(tags);
+                };
+                return (
+                    <BottomSheet title={`批量设置起效范围（已选 ${selectedIds.size} 项）`} onClose={() => setBulkTagOpen(false)}>
+                        <div className="flex flex-col gap-4">
+                            <div className="menu-desc ts-12">
+                                选择一个大类，再勾选需要生效的次级范围（可多选）。应用到全部选中条目。
+                            </div>
+                            <div className="flex flex-col gap-1">
+                                <select
+                                    value={bulkTagGroupId}
+                                    onChange={(e) => { setBulkTagGroupId(e.target.value); setBulkTagSelected([]); }}
+                                    className="ui-select ts-13 px-2 py-[6px] rounded-[6px]"
+                                >
+                                    {tagGroups.map(group => (
+                                        <option key={group.id} value={group.id}>{group.label}</option>
+                                    ))}
+                                </select>
+                                {bulkGroup.minors.map(minor => {
+                                    const minorTags = minor.tags.slice(1);
+                                    const checked = minorTags.length === 0
+                                        ? bulkTagSelected.length === 0
+                                        : minorTags.every(t => bulkTagSelected.includes(t));
+                                    return (
+                                        <button
+                                            key={minor.id}
+                                            type="button"
+                                            onClick={() => {
+                                                if (minorTags.length === 0) { setBulkTagSelected([]); return; }
+                                                if (checked) setBulkTagSelected(prev => prev.filter(t => !minorTags.includes(t)));
+                                                else setBulkTagSelected(prev => Array.from(new Set([...prev, ...minorTags])));
+                                            }}
+                                            className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm rounded-[8px] ${checked ? "font-bold text-[var(--c-icon-active)] bg-[var(--c-icon-active)]/10" : "text-gray-700"}`}
+                                        >
+                                            <Check size={16} strokeWidth={2} className={checked ? "visible" : "invisible"} />
+                                            {minor.label}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                            <button
+                                type="button"
+                                onClick={applyBulk}
+                                disabled={!bulkBaseTag && bulkTagSelected.length === 0}
+                                className="ui-btn w-full"
+                            >
+                                应用范围{bulkBaseTag ? `（${bulkBaseTag}${bulkTagSelected.length > 0 ? " + " + bulkTagSelected.map(resolveContentTagLabel).join("、") : ""}）` : ""}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => bulkSetTag([])}
+                                className="ui-btn w-full"
+                            >
+                                清除范围（不限 App / 移除 tag）
+                            </button>
+                        </div>
+                    </BottomSheet>
+                );
+            })()}
+            {copyToPresetOpen && (() => {
+                const targets = presets.filter(p => p.id !== editingId);
+                return (
+                    <BottomSheet title={`复制 ${selectedIds.size} 个条目到其它预设`} onClose={() => setCopyToPresetOpen(false)}>
+                        <div className="flex flex-col gap-3">
+                            <div className="menu-desc ts-12">
+                                选择目标预设，会把当前选中的条目追加到该预设末尾（副本形式，不影响源预设）。
+                            </div>
+                            {targets.length === 0 ? (
+                                <div className="menu-desc ts-13 p-3 text-center">没有其它预设可选</div>
+                            ) : targets.map(target => (
+                                <button
+                                    key={target.id}
+                                    type="button"
+                                    onClick={() => copySelectedToPreset(target)}
+                                    className="ui-btn w-full flex items-center justify-between"
+                                >
+                                    <span className="truncate">{target.name || "未命名预设"}</span>
+                                    <span className="menu-desc ts-11 whitespace-nowrap">{target.prompts.length} 条</span>
+                                </button>
+                            ))}
                         </div>
                     </BottomSheet>
                 );
