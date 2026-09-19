@@ -778,14 +778,18 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
             displayed.splice(toIndex, 0, item);
             newDisplayed = displayed;
         }
-        const newOrder = newDisplayed.map(p => ({
-            identifier: p.identifier,
-            enabled: preset.prompt_order
-                ? (preset.prompt_order.find(o => o.identifier === p.identifier)?.enabled ?? p.enabled)
-                : p.enabled,
-        }));
         // 排序只更新 prompt_order；prompts 是原始数据源，不能用去重后的显示投影覆盖。
-        updatePreset(preset.id, { prompt_order: newOrder });
+        // displayed 是「去重后的显示投影」，会丢掉两类数据：落在 prompt_order 但 prompts 里
+        // 已无对应条目的落单引用、以及 prompt_order 里的重复条目。直接用投影覆盖会让它们
+        // 永久消失，所以这里做「消耗式」重建：每消费掉一个原有 order 条目才移除，没消费完的
+        // 一律按原顺序补回末尾，保证原有 order 一个不丢。
+        const remaining = [...(preset.prompt_order ?? [])];
+        const newOrder = newDisplayed.map(p => {
+            const idx = remaining.findIndex(o => o.identifier === p.identifier);
+            const enabled = idx >= 0 ? remaining.splice(idx, 1)[0].enabled : p.enabled;
+            return { identifier: p.identifier, enabled };
+        });
+        updatePreset(preset.id, { prompt_order: [...newOrder, ...remaining] });
     }, [actionableSelectedIds, editingId, presets, promptRenderItems, selectMode]);
 
     const getPromptDragIndices = useCallback((pressedIndex: number) => {
@@ -917,17 +921,35 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
         if (!source || selectedIds.size === 0) return;
         const selected = buildDisplayedPrompts(source).filter(p => selectedIds.has(p.identifier));
         if (selected.length === 0) return;
-        const targetPrompts = buildDisplayedPrompts(targetPreset);
-        const usedIds = new Set(targetPrompts.map(p => p.identifier));
+        // 目标预设一律按「原始数据」处理：buildDisplayedPrompts 是去重后的显示投影，
+        // 拿它当写回源会把目标里的重复条目、以及落单的 prompt_order 引用悄悄合并掉，
+        // 这就是「复制后有些条目莫名消失 / 顺序被改」的根因。
+        const targetPrompts = targetPreset.prompts ?? [];
+        const targetOrder = targetPreset.prompt_order ?? [];
+        const usedIds = new Set<string>([
+            ...targetPrompts.map(p => p.identifier),
+            ...targetOrder.map(o => o.identifier),
+        ]);
         const copies: Prompt[] = selected.map(p => {
             let id = `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
             while (usedIds.has(id)) id = `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
             usedIds.add(id);
             return { ...p, identifier: id, name: `${p.name || "提示词"}（副本）` };
         });
-        const nextPrompts = [...targetPrompts, ...copies];
-        const nextOrder = nextPrompts.map(p => ({ identifier: p.identifier, enabled: p.enabled }));
-        updatePreset(targetPreset.id, { prompts: nextPrompts, prompt_order: nextOrder });
+        // 顺序表：原有 order 原样保留（含落单引用），中间补上「有 prompts 但没进 order」的条目，
+        // 新副本追加在最后——既不丢任何既有数据，副本也稳定落在列表末尾。
+        const orderedIds = new Set(targetOrder.map(o => o.identifier));
+        const nextOrder = [
+            ...targetOrder,
+            ...targetPrompts
+                .filter(p => !orderedIds.has(p.identifier))
+                .map(p => ({ identifier: p.identifier, enabled: p.enabled })),
+            ...copies.map(p => ({ identifier: p.identifier, enabled: p.enabled })),
+        ];
+        updatePreset(targetPreset.id, {
+            prompts: [...targetPrompts, ...copies],
+            prompt_order: nextOrder,
+        });
         setCopyToPresetOpen(false);
         setSelectedIds(new Set());
         setSelectMode(false);

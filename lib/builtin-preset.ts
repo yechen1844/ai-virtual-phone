@@ -4274,50 +4274,53 @@ function migrateReadingPromptContent(identifier: string, content: string): { con
 /**
  * 对已有的内置预设副本做增量同步：补齐缺失条目与缺失的出厂内容，不覆盖已有条目的用户版本。
  * 返回 changed=false 时表示无需写回。
+ *
+ * 注意：这里绝不能把用户数据当「映射」来重建。早先的实现用 Map 按 identifier 合并、
+ * 并按出厂顺序重建 prompt_order，后果是——重复 identifier 的条目被折叠掉、
+ * 用户拖拽出来的自定义顺序被整体重置。这个函数必须在用户既有数据之上「只增不删、不重排」。
  */
 export function syncBuiltinPresetAdditive(existing: PresetConfig): { preset: PresetConfig; changed: boolean } {
     const fresh = createBuiltinPreset();
     let changed = false;
 
-    // prompts：按出厂顺序合并——已存在的标识符保留用户版本（仅做定向内容补齐），缺失的补出厂版本，
-    // 用户自建条目（出厂没有的标识符）保持在末尾。
-    const existingById = new Map(existing.prompts.map(p => [p.identifier, p]));
-    const mergedPrompts: Prompt[] = [];
+    // prompts：用户数组原样保留（含重复 identifier、含用户自建条目及其位置），
+    // 只做两件事——给出厂已知条目做定向内容补齐；把出厂有、本地没有的条目追加进数组末尾。
+    const freshById = new Map(fresh.prompts.map(p => [p.identifier, p]));
+    const mergedPrompts: Prompt[] = (existing.prompts ?? []).map(mine => {
+        const factory = freshById.get(mine.identifier);
+        if (!factory) return mine;
+        const migrated = migrateReadingPromptContent(mine.identifier, mine.content);
+        if (!migrated.changed) return mine;
+        changed = true;
+        return { ...mine, content: migrated.content };
+    });
+    const mergedIds = new Set(mergedPrompts.map(p => p.identifier));
     for (const fp of fresh.prompts) {
-        const mine = existingById.get(fp.identifier);
-        if (!mine) {
-            mergedPrompts.push(fp);
-            changed = true;
-            continue;
-        }
-        existingById.delete(fp.identifier);
-        const migrated = migrateReadingPromptContent(fp.identifier, mine.content);
-        if (migrated.changed) {
-            mergedPrompts.push({ ...mine, content: migrated.content });
-            changed = true;
-        } else {
-            mergedPrompts.push(mine);
-        }
-    }
-    for (const p of existing.prompts) {
-        if (existingById.has(p.identifier)) mergedPrompts.push(p);
+        if (mergedIds.has(fp.identifier)) continue;
+        mergedIds.add(fp.identifier);
+        mergedPrompts.push(fp);
+        changed = true;
     }
 
-    // prompt_order：同样按出厂顺序补齐缺失的标识符（新条目默认启用，否则不会进提示词）
-    const existingOrder = new Map((existing.prompt_order ?? []).map(o => [o.identifier, o]));
-    const mergedOrder: PromptOrderEntry[] = [];
-    for (const fo of fresh.prompt_order ?? []) {
-        const mine = existingOrder.get(fo.identifier);
-        if (!mine) {
-            mergedOrder.push(fo);
-            changed = true;
-            continue;
+    // prompt_order：用户顺序原样保留（含落单引用与重复项），只把缺失的出厂条目插入到
+    // 它在出厂顺序里「前一个已存在条目」的后面，尽量还原出厂的相对位置。
+    const mergedOrder: PromptOrderEntry[] = [...(existing.prompt_order ?? [])];
+    const orderIds = new Set(mergedOrder.map(o => o.identifier));
+    const factoryOrder = fresh.prompt_order ?? [];
+    for (let i = 0; i < factoryOrder.length; i++) {
+        const entry = factoryOrder[i];
+        if (orderIds.has(entry.identifier)) continue;
+        let insertAt = 0;
+        for (let j = i - 1; j >= 0; j--) {
+            const pos = mergedOrder.findIndex(o => o.identifier === factoryOrder[j].identifier);
+            if (pos >= 0) {
+                insertAt = pos + 1;
+                break;
+            }
         }
-        existingOrder.delete(fo.identifier);
-        mergedOrder.push(mine);
-    }
-    for (const o of existing.prompt_order ?? []) {
-        if (existingOrder.has(o.identifier)) mergedOrder.push(o);
+        mergedOrder.splice(insertAt, 0, entry);
+        orderIds.add(entry.identifier);
+        changed = true;
     }
 
     if (!changed) return { preset: existing, changed: false };
