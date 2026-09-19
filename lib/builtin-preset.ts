@@ -2,7 +2,7 @@
 // Factory function for the built-in default preset.
 // Contains all standard chat functionality entries that were previously hardcoded.
 
-import type { PresetConfig } from "./settings-types";
+import type { PresetConfig, Prompt, PromptOrderEntry } from "./settings-types";
 import { getCheckPhonePromptTags } from "./checkphone-config";
 
 export const BUILTIN_PRESET_ID = "builtin_default_v1";
@@ -4216,4 +4216,110 @@ export function createBuiltinPreset(): PresetConfig {
             },
         ],
     };
+}
+
+// ── 内置预设「只增不改」增量同步 ──
+// 背景：出厂内容更新过去只能靠升 BUILTIN_PRESET_VERSION 触发「整体重写」，代价是用户对内置
+// 预设的修改会丢，所以版本号常年不动 → 新增条目永远到不了老用户的设备（表现为「恢复默认预设/
+// 同步条目都没有新条目」）。
+// 这里改为增量补齐：把出厂预设里「用户本地缺失的条目」补进去（prompts 与 prompt_order），
+// 已存在的条目一律保留用户版本不覆盖；另外对历史版本缺失的出厂内容做「按行累加」的定向补齐。
+
+/** 阅读条目在历史版本里缺的出厂内容：只增不删，保留用户改动。 */
+function migrateReadingPromptContent(identifier: string, content: string): { content: string; changed: boolean } {
+    let next = content;
+    let changed = false;
+
+    // 1) 新增占位符：随笔 / 最新读书笔记
+    if (!next.includes("{{readingEssay}}") || !next.includes("{{readingNote}}")) {
+        const withPlaceholders = next.replace(
+            /^([ \t]*)\{\{readingSummary\}\}[ \t]*$/m,
+            (line, indent: string) => `${indent}{{readingSummary}}\n${indent}{{readingNote}}\n${indent}{{readingEssay}}`,
+        );
+        if (withPlaceholders !== next) {
+            next = withPlaceholders;
+            changed = true;
+        }
+    }
+
+    // 2) 批注条目：<essay> 输出要求
+    if (identifier === "reading_annotation" && !next.includes("<essay>")) {
+        const withEssay = next.replace(
+            /^([ \t]*)(.*<summary>.*)$/m,
+            (line, indent: string, summaryLine: string) =>
+                `${indent}${summaryLine}\n${indent}另外，用 <essay>两句话左右</essay> 写下你此刻读这段时的真实感受或情绪波动：用第一人称，像随手记下的一点心绪，保留当下的心情；不要复述剧情、不要分析、不要写成读后感总结。`,
+        );
+        if (withEssay !== next) {
+            next = withEssay;
+            changed = true;
+        }
+    }
+
+    // 3) 批注条目：聊天历史仅作背景的约束
+    if (identifier === "reading_annotation" && !next.includes("若上下文中带有你们最近的聊天记录")) {
+        const withRule = next.replace(
+            /^([ \t]*)(.*\[无批注\].*)$/m,
+            (line, indent: string, marker: string) =>
+                `${indent}${marker}\n${indent}- 若上下文中带有你们最近的聊天记录，它只用来帮助你理解{{user}}最近的状态与你们的关系；批注仍然只评论书中的内容，不要变成回应聊天，也不要复述私聊内容`,
+        );
+        if (withRule !== next) {
+            next = withRule;
+            changed = true;
+        }
+    }
+
+    return { content: next, changed };
+}
+
+/**
+ * 对已有的内置预设副本做增量同步：补齐缺失条目与缺失的出厂内容，不覆盖已有条目的用户版本。
+ * 返回 changed=false 时表示无需写回。
+ */
+export function syncBuiltinPresetAdditive(existing: PresetConfig): { preset: PresetConfig; changed: boolean } {
+    const fresh = createBuiltinPreset();
+    let changed = false;
+
+    // prompts：按出厂顺序合并——已存在的标识符保留用户版本（仅做定向内容补齐），缺失的补出厂版本，
+    // 用户自建条目（出厂没有的标识符）保持在末尾。
+    const existingById = new Map(existing.prompts.map(p => [p.identifier, p]));
+    const mergedPrompts: Prompt[] = [];
+    for (const fp of fresh.prompts) {
+        const mine = existingById.get(fp.identifier);
+        if (!mine) {
+            mergedPrompts.push(fp);
+            changed = true;
+            continue;
+        }
+        existingById.delete(fp.identifier);
+        const migrated = migrateReadingPromptContent(fp.identifier, mine.content);
+        if (migrated.changed) {
+            mergedPrompts.push({ ...mine, content: migrated.content });
+            changed = true;
+        } else {
+            mergedPrompts.push(mine);
+        }
+    }
+    for (const p of existing.prompts) {
+        if (existingById.has(p.identifier)) mergedPrompts.push(p);
+    }
+
+    // prompt_order：同样按出厂顺序补齐缺失的标识符（新条目默认启用，否则不会进提示词）
+    const existingOrder = new Map((existing.prompt_order ?? []).map(o => [o.identifier, o]));
+    const mergedOrder: PromptOrderEntry[] = [];
+    for (const fo of fresh.prompt_order ?? []) {
+        const mine = existingOrder.get(fo.identifier);
+        if (!mine) {
+            mergedOrder.push(fo);
+            changed = true;
+            continue;
+        }
+        existingOrder.delete(fo.identifier);
+        mergedOrder.push(mine);
+    }
+    for (const o of existing.prompt_order ?? []) {
+        if (existingOrder.has(o.identifier)) mergedOrder.push(o);
+    }
+
+    if (!changed) return { preset: existing, changed: false };
+    return { preset: { ...existing, prompts: mergedPrompts, prompt_order: mergedOrder }, changed: true };
 }
