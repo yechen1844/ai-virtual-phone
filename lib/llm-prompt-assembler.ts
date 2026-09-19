@@ -155,7 +155,7 @@ type PromptBlock = {
     marker: string;
     fromHistory?: boolean;
     imageUrl?: string;      // vision: image URL/data URL attached to this prompt block
-    extraImageUrls?: string[]; // vision: 附加图片（小红书分享多图注入，仅发送后第一轮）
+    extraImageUrls?: string[]; // vision: 附加图片（小红书分享多图注入，发送后三轮内）
     reasoning?: string;
     openRouterReasoningDetails?: unknown[];
     toolCalls?: LLMToolCallPayload[];
@@ -225,21 +225,35 @@ function getPromptVisionImageUrl(msg: ChatMessage): string | undefined {
     return undefined;
 }
 
+/** 小红书分享多图的视觉注入轮数：分享后的前 3 次模型回复（3 轮）均注入，之后恢复默认规则。 */
+const XHS_VISION_ROUNDS = 3;
+
 /**
- * 小红书分享多图注入：仅当该消息是本轮历史的最后一条用户消息时生效（即发送后的第一轮回复）。
+ * 小红书分享多图注入：按「轮」而非「条」判定。
+ * 轮 = 一次模型回复（user 可连发多条触发一次回复；char 一次回复也会按空行拆成多条气泡，
+ * 同一次回复的所有气泡共享 responseBatchId）。统计分享消息之后出现过的不同 responseBatchId
+ * （含定时/主动回复，无 batchId 的消息按独立回复计），正生成的回复为第 (已完成数+1) 轮，
+ * ≤3 轮则注入，第 4 轮起不再注入。
  * 不走 mediaUrl/原生视觉白名单，因此不受 visionImagePromptLimit（原生图片注入上限）裁剪。
  */
 function getXhsVisionImageUrls(msg: ChatMessage, history?: ChatMessage[]): string[] {
     if (msg.role !== "user" || msg.mediaType !== "xiaohongshu_note_share") return [];
     if (!history?.length) return [];
+    let found = false;
+    const replyBatches = new Set<string>();
     for (let i = history.length - 1; i >= 0; i -= 1) {
         const candidate = history[i];
-        if (candidate.role !== "user") continue;
-        if (candidate.id !== msg.id) return [];
-        return (msg.mediaData?.xiaohongshuImages ?? [])
-            .filter((url): url is string => typeof url === "string" && url.startsWith("data:image/"));
+        if (candidate.id === msg.id) {
+            found = true;
+            break;
+        }
+        if (candidate.role === "assistant") {
+            replyBatches.add(candidate.responseBatchId || candidate.id);
+        }
     }
-    return [];
+    if (!found || replyBatches.size >= XHS_VISION_ROUNDS) return [];
+    return (msg.mediaData?.xiaohongshuImages ?? [])
+        .filter((url): url is string => typeof url === "string" && url.startsWith("data:image/"));
 }
 
 function formatDirectVisionBody(msg: ChatMessage, userName: string, charName: string): string {
