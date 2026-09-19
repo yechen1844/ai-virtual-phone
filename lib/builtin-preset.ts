@@ -2,7 +2,7 @@
 // Factory function for the built-in default preset.
 // Contains all standard chat functionality entries that were previously hardcoded.
 
-import type { PresetConfig } from "./settings-types";
+import type { PresetConfig, Prompt, PromptOrderEntry } from "./settings-types";
 import { getCheckPhonePromptTags } from "./checkphone-config";
 
 export const BUILTIN_PRESET_ID = "builtin_default_v1";
@@ -4106,4 +4106,58 @@ export function createBuiltinPreset(): PresetConfig {
             },
         ],
     };
+}
+
+// ── 内置预设「只增不改」增量同步 ──
+// 背景：出厂内容更新过去只能靠升 BUILTIN_PRESET_VERSION 触发「整体重写」，代价是用户对内置
+// 预设的修改会丢，所以版本号常年不动 → 新增条目永远到不了老用户的设备。
+// 这里改为增量补齐：把出厂预设里「用户本地缺失的条目」补进去（prompts 与 prompt_order），
+// 已存在的条目一律保留用户版本不覆盖、不重排。
+
+/**
+ * 对已有的内置预设副本做增量同步：补齐缺失条目，不覆盖已有条目的用户版本。
+ * 返回 changed=false 时表示无需写回。
+ *
+ * 注意：这里绝不能把用户数据当「映射」来重建。早先的实现用 Map 按 identifier 合并、
+ * 并按出厂顺序重建 prompt_order，后果是——重复 identifier 的条目被折叠掉、
+ * 用户拖拽出来的自定义顺序被整体重置。这个函数必须在用户既有数据之上「只增不删、不重排」。
+ */
+export function syncBuiltinPresetAdditive(existing: PresetConfig): { preset: PresetConfig; changed: boolean } {
+    const fresh = createBuiltinPreset();
+    let changed = false;
+
+    // prompts：用户数组原样保留（含重复 identifier、含用户自建条目及其位置），
+    // 只把出厂有、本地没有的条目追加进数组末尾。
+    const mergedPrompts: Prompt[] = [...(existing.prompts ?? [])];
+    const mergedIds = new Set(mergedPrompts.map(p => p.identifier));
+    for (const fp of fresh.prompts) {
+        if (mergedIds.has(fp.identifier)) continue;
+        mergedIds.add(fp.identifier);
+        mergedPrompts.push(fp);
+        changed = true;
+    }
+
+    // prompt_order：用户顺序原样保留（含落单引用与重复项），只把缺失的出厂条目插入到
+    // 它在出厂顺序里「前一个已存在条目」的后面，尽量还原出厂的相对位置。
+    const mergedOrder: PromptOrderEntry[] = [...(existing.prompt_order ?? [])];
+    const orderIds = new Set(mergedOrder.map(o => o.identifier));
+    const factoryOrder = fresh.prompt_order ?? [];
+    for (let i = 0; i < factoryOrder.length; i++) {
+        const entry = factoryOrder[i];
+        if (orderIds.has(entry.identifier)) continue;
+        let insertAt = 0;
+        for (let j = i - 1; j >= 0; j--) {
+            const pos = mergedOrder.findIndex(o => o.identifier === factoryOrder[j].identifier);
+            if (pos >= 0) {
+                insertAt = pos + 1;
+                break;
+            }
+        }
+        mergedOrder.splice(insertAt, 0, entry);
+        orderIds.add(entry.identifier);
+        changed = true;
+    }
+
+    if (!changed) return { preset: existing, changed: false };
+    return { preset: { ...existing, prompts: mergedPrompts, prompt_order: mergedOrder }, changed: true };
 }

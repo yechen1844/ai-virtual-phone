@@ -16,7 +16,7 @@ import type {
     PromptOrderEntry,
 } from "./settings-types";
 import type { UserIdentity } from "@/components/settings/user-identity";
-import { createBuiltinPreset, BUILTIN_PRESET_VERSION } from "./builtin-preset";
+import { createBuiltinPreset, BUILTIN_PRESET_VERSION, syncBuiltinPresetAdditive } from "./builtin-preset";
 import {
     NOVELAI_DEFAULT_MODEL,
     NOVELAI_DEFAULT_NOISE_SCHEDULE,
@@ -201,6 +201,19 @@ export function loadPresets(): PresetConfig[] {
             shouldPersistCleanup = false;
         } else if (shouldPersistCleanup) {
             savePresets(presets);
+        }
+
+        // 版本号未变时也做「只增不改」的增量补齐：把出厂新增条目补进本地内置预设副本。
+        // 否则新增条目只能靠升 BUILTIN_PRESET_VERSION 整体重写才会下发（代价是用户修改全丢），
+        // 实际上会导致新条目永远到不了老用户设备。
+        const currentBuiltin = presets.find(p => p.builtIn);
+        if (currentBuiltin) {
+            const { preset: synced, changed } = syncBuiltinPresetAdditive(currentBuiltin);
+            if (changed) {
+                const idx = presets.indexOf(currentBuiltin);
+                presets[idx] = synced;
+                savePresets(presets);
+            }
         }
 
         return presets;
