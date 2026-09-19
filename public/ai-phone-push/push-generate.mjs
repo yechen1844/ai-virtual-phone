@@ -131,20 +131,6 @@ function stripHallucinatedTimestamps(text: string): string {
     .replace(/\(system\s*time\s*[:：][^)]*\)\s*/gi, "");
 }
 
-/** 兜底剥离模型思维链：<think>/<thinking>/<thought> 包裹的推理块。部分 provider
- *  把推理直接塞进 content，只用 thought=true 片段过滤盖不住，这里统一剥掉再入库，
- *  确保 outbox raw_text / 弹窗预览都不含思维链。 */
-function stripThinkingMarkup(text: string): string {
-  return text
-    // 成对块：<thinking>…</thinking>（模型回显了开标签）
-    .replace(/<\s*(?:think|thinking|thought)\s*>[\s\S]*?<\s*\/(?:think|thinking|thought)\s*>/gi, "")
-    // 无前缀/仅闭合标签：开标签由预设注入、模型不回显，只输出闭合标签；
-    // 推理在文本开头，剥掉开头到首个闭合标签之间（含闭合标签）的内容。
-    .replace(/^[\s\S]*?<\s*\/(?:think|thinking|thought)\s*>/gi, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
 function textFromUnknownContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
@@ -165,7 +151,7 @@ function extractResponseText(providerKind: ProviderKind, data: unknown): string 
       const item = block as { type?: string; text?: string };
       if (item.type === "text") text += item.text ?? "";
     }
-    return stripHallucinatedTimestamps(stripThinkingMarkup(text));
+    return stripHallucinatedTimestamps(text);
   }
   if (providerKind === "gemini") {
     const parts = (data as { candidates?: Array<{ content?: { parts?: unknown[] } }> }).candidates?.[0]?.content?.parts || [];
@@ -174,16 +160,15 @@ function extractResponseText(providerKind: ProviderKind, data: unknown): string 
       const item = part as { text?: string; thought?: boolean; functionCall?: unknown };
       if (!item.functionCall && !item.thought) text += item.text ?? "";
     }
-    return stripHallucinatedTimestamps(stripThinkingMarkup(text));
+    return stripHallucinatedTimestamps(text);
   }
-  const d = data as { choices?: Array<{ message?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown }; text?: string }>; output?: { text?: string }; response?: string };
-  // 有 reasoning_content/reasoning 时只认 content（忽略推理），避免思维链串进消息。
+  const d = data as { choices?: Array<{ message?: { content?: unknown }; text?: string }>; output?: { text?: string }; response?: string };
   const messageText = textFromUnknownContent(d.choices?.[0]?.message?.content).trim();
   const text = messageText
     || (typeof d.choices?.[0]?.text === "string" ? d.choices[0].text.trim() : "")
     || (typeof d.output?.text === "string" ? d.output.text.trim() : "")
     || (typeof d.response === "string" ? d.response.trim() : "");
-  return stripHallucinatedTimestamps(stripThinkingMarkup(text));
+  return stripHallucinatedTimestamps(text);
 }
 
 // ── 内嵌：lib/push-preview-split 的弹窗预览分条 ──
@@ -493,11 +478,10 @@ Deno.serve(async (req: Request) => {
     return new Response("forbidden", { status: 403 });
   }
 
-  // 定时/主动类（前后端会同时触发）：先给前端 2 分钟在客户端抢先生成并把本轮云端
-  // pending job 撤销(cancelled)，再用原原子 `where status=pending` 抢锁——若前端已撤，
-  // claim 匹配不到(pending) 自然跳过，避免前后端同时生成、又撞车又浪费资源。
-  // 前端若被杀、无人撤销，则 2 分钟后仍 pending → claim 成功，后端兜底生成。
-  // 长期计划本体不动：每次到期都重新走一遍本逻辑，下个周期照常。
+  // 定时/主动类（前后端会同时触发）：先给前端 2 分钟在客户端抢先生成并撤销本轮
+  // 云端 pending job，再用原原子 where status=pending 抢锁——前端已撤则 claim 落空跳过，
+  // 避免前后端同时生成又撞车又浪费。前端被杀则无人撤销，2 分钟后仍 pending，后端兜底。
+  // 长期计划本体不动：每次到期都重走本逻辑，下个周期照常。
   try {
     const pre = await rest(`push_jobs?id=eq.${encodeURIComponent(jobId)}&select=kind,trigger_key&limit=1`);
     if (pre.ok) {
@@ -650,6 +634,14 @@ Deno.serve(async (req: Request) => {
     }
     const data = await llmResponse.json();
     let rawText = extractResponseText(payload.request.providerKind, data).trim();
+    // 思维链剥离：以"最后一个闭合标签 </thinking>"为准，它之前整体视为思维链去掉。
+    // 即使开头没有 <thinking> 前缀也适用；思维链内部残留的"提前的错误标签"不单独当正文边界。
+    {
+      const closeIdx = rawText.lastIndexOf("</thinking>");
+      if (closeIdx !== -1) {
+        rawText = rawText.slice(closeIdx + "</thinking>".length).trim();
+      }
+    }
     if (!rawText) {
       await finish("failed", "empty response");
       return;
