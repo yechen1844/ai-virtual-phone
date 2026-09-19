@@ -8,7 +8,7 @@ export type ParseStateResult = {
 };
 
 /** Rich media tag names that should NOT be treated as state values */
-const RICH_MEDIA_NAMES = new Set([
+export const RICH_MEDIA_NAMES = new Set([
     "红包", "转账", "照片", "位置", "表情包", "引用", "语音", "音乐",
 ]);
 

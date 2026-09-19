@@ -11,7 +11,7 @@
 
 import type { ChatMessage } from "./chat-storage";
 import type { StateValue } from "./chat-storage";
-import { parseStateValues, mergeStateValues } from "./state-value-parser";
+import { parseStateValues, mergeStateValues, RICH_MEDIA_NAMES } from "./state-value-parser";
 import { stripActionShells } from "./action-parser";
 import { stripTextToolDirectives } from "./text-tool-protocol";
 import {
@@ -561,6 +561,33 @@ function extractBracketBlock(text: string, tag: string): { cleaned: string; cont
 
 // ── Segment parser ──────────────────────────────────────
 
+/** 常见时间/序号类字段名：即便命中「字段：数字」行也不当状态值（防止时间戳、日期等污染状态通道） */
+const STATUS_LINE_DENYLIST = new Set(["时间", "日期", "星期", "月份", "年份", "时刻", "楼层", "编号", "序号", "天气"]);
+
+/**
+ * 从状态栏原文补提「字段：数字」纯文本行（支持 75 或 75/100 结尾）。
+ * 背景：自定义状态栏契约整段取代原生「状态值与内心」章节后，AI 不再输出
+ * [好感度:85] 方括号标签（那部分在全文解析时已处理），改按契约输出纯文本字段。
+ * 这里把数字行提取回状态值通道，保证追发的焦虑值判定与 {{state}} 回灌继续工作。
+ * 防误报：字段名 ≤10 字、不含冒号/数字开头、数值必须落在 0-100、命中时间类黑名单则跳过。
+ */
+function parseNumericStateLines(text: string): StateValue[] {
+    if (!text) return [];
+    const map = new Map<string, number>();
+    for (const line of text.split(/\n+/)) {
+        const m = line.match(/^\s*([^\[\]:：\d\s][^:：]{0,10}?)\s*[：:]\s*(\d{1,3}(?:\.\d+)?)(?:\s*\/\s*100)?\s*$/);
+        if (!m) continue;
+        const name = m[1].trim();
+        const value = parseFloat(m[2]);
+        if (!name || /^\d+$/.test(name)) continue;
+        if (RICH_MEDIA_TAG_NAMES.has(name) || STATUS_LINE_DENYLIST.has(name)) continue;
+        if (!isFinite(value) || value < 0 || value > 100) continue;
+        map.set(name, value);
+    }
+    return Array.from(map.entries()).map(([name, value]) => ({ name, value }));
+}
+
+
 /**
  * Parse a segment for rich-media markers.
  * If found, splits into before-text + media + recurse(after-text).
@@ -635,6 +662,17 @@ export function parseAIResponse(rawText: string, previousState: StateValue[]): P
     const status = extractBracketBlock(actionCleaned, "状态栏");
     const mono = extractBracketBlock(status.cleaned, "内心");
 
+    // 2.2 自定义状态栏兜底：从状态栏原文补提「字段：数字」纯文本行（如 焦虑值：75）。
+    //     方括号标签 [字段:数字] 在第 1 步已全文解析（含状态栏壳内），这里只补纯文本格式；
+    //     已有标签值优先（不被本步覆盖），保证追发与 {{state}} 回灌在 custom 模式下不失效。
+    const statusNumeric = parseNumericStateLines(status.content);
+    const freshStateValues = statusNumeric.length
+        ? mergeStateValues(statusNumeric, parsedSV.stateValues)
+        : parsedSV.stateValues;
+    const stateValuesMerged = statusNumeric.length
+        ? mergeStateValues(previousState, freshStateValues)
+        : stateValues;
+
     // 2.1. Collapse residual blank lines left by tag extraction
     const postCleaned = mono.cleaned.replace(/\n{3,}/g, "\n\n").trim();
 
@@ -669,8 +707,8 @@ export function parseAIResponse(rawText: string, previousState: StateValue[]): P
 
     return {
         parts: cleaned,
-        stateValues,
-        freshStateValues: parsedSV.stateValues,
+        stateValues: stateValuesMerged,
+        freshStateValues,
         statusPanel: restore(status.content),
         innerMonologue: restore(mono.content),
     };

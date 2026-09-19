@@ -759,7 +759,8 @@ const STATUS_BAR_PROMPT = `线上聊天状态栏 = 让 AI 每轮在 [状态栏].
 
 ===== 写完要告诉用户的 =====
 · 已写入哪个会话，可在 聊天信息 → 自定义状态栏 里看到并继续手改。
-· **启用后原生的好感度/占有欲/焦虑值会停止更新**（状态区整块被契约取代了）。
+· **契约里必须保留一行「焦虑值：数字」（0-100）**——追发消息靠这个数值驱动，
+  没有它 char 就不会主动追发。好感度等其它数字字段同理保留可让状态连续性不中断。
 · 如果该会话之前用正则渲染过状态栏，两套会互相竞争，让用户二选一。`;
 
 
@@ -1838,7 +1839,7 @@ async function handleWriteStatusBar(args: Record<string, unknown>, ctx: MascotTo
     return {
         name: NAME,
         success: true,
-        data: `已写入「${displayName}」的线上状态栏并启用（契约 ${contract.length} 字符、渲染 ${renderHtml.length} 字符）。用户可在 聊天信息 → 自定义状态栏 里看到并修改。注意：启用后原生的好感度等状态值会停止更新。`,
+        data: `已写入「${displayName}」的线上状态栏并启用（契约 ${contract.length} 字符、渲染 ${renderHtml.length} 字符）。用户可在 聊天信息 → 自定义状态栏 里看到并修改。注意：契约里必须保留一行「焦虑值：数字」（0-100），追发消息靠它驱动；缺失的话 char 不会主动追发。`,
     };
 }
 
