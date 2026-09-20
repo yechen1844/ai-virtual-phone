@@ -852,9 +852,16 @@ export function ReadingViewer({ book, onBack }: Props) {
                 force: true,
                 currentReadingPos,
             });
-            // 随笔同批一并提炼（各自独立上限）
+            // 随笔同批一并提炼（各自独立上限）。随笔要带 char 的人设/记忆与共读语境，
+            // 所以把书籍标题与聊天历史一并传进去，避免提炼丢失情绪与陪伴感。
             const maxEssayChars = readingConfig.maxEssayChars > 0 ? readingConfig.maxEssayChars : 1500;
-            await distillEssaysIfNeeded(bid, companionId, maxEssayChars, { force: true, currentReadingPos });
+            const essaySession = getSession();
+            await distillEssaysIfNeeded(bid, companionId, maxEssayChars, {
+                force: true,
+                currentReadingPos,
+                bookTitle: book.title,
+                history: essaySession ? loadReadingHistory(essaySession.id) : undefined,
+            });
             if (bookIdRef.current !== bid) return; // 提炼途中切书，不动当前书 UI
             await refreshSummaries();
             await refreshEssays();
@@ -867,7 +874,7 @@ export function ReadingViewer({ book, onBack }: Props) {
             setSummaryActionMsg({ ok: false, text: `提炼失败：${e instanceof Error ? e.message : String(e)}（已有摘要不受影响）` });
             await refreshSummaries();
         }
-    }, [book.id, companionId, getReadingCenter, readingConfig.maxEssayChars, readingConfig.maxSummariesChars, refreshEssays, refreshSummaries]);
+    }, [book.id, book.title, companionId, getReadingCenter, getSession, readingConfig.maxEssayChars, readingConfig.maxSummariesChars, refreshEssays, refreshSummaries]);
 
     const getReadingSummaryForContext = useCallback(async (chapterIdx: number, paragraphIdx: number): Promise<string> => {
         const all = await loadSummaries(book.id);
@@ -1163,8 +1170,12 @@ export function ReadingViewer({ book, onBack }: Props) {
                 await refreshEssays();
                 const maxEssayChars = readingConfig.maxEssayChars > 0 ? readingConfig.maxEssayChars : 1500;
                 const essayCenter = getReadingCenter();
+                // 提炼随笔时带上人设/记忆与共读语境（书籍标题 + 聊天历史）
+                const essaySession = getSession();
                 await distillEssaysIfNeeded(book.id, companionId, maxEssayChars, {
                     currentReadingPos: encodeReadingPosition(essayCenter.chapterIndex, essayCenter.paragraphIndex),
+                    bookTitle: book.title,
+                    history: essaySession ? loadReadingHistory(essaySession.id) : undefined,
                 });
                 await refreshEssays();
             }

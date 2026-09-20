@@ -797,12 +797,24 @@ export function getDistillableEssayChars(allEssays: ReadingEssay[]): number {
 /**
  * 随笔超过上限时提炼为当前的 1/3，保留旧随笔不删除。
  * 覆盖范围同样截断到当前阅读位置（与摘要一致，避免预生成超前导致提炼长期无法接管）。
+ *
+ * 与摘要提炼的关键差异：随笔是 char 自己写下的心情记录，提炼时必须带着它的人设、记忆与
+ * 阅读语境一起交给模型，否则压缩出来的文本会丢掉"我当时是谁、和谁一起读、心情怎样"。
+ * 所以这里走与批注/讨论同一条预设管线（人设与记忆由 marker 条目自动注入），而不是裸调用；
+ * 摘要只记录客观情节，仍用裸调用。
  */
 export async function distillEssaysIfNeeded(
     bookId: string,
     characterId: string,
     maxChars: number,
-    options?: { force?: boolean; currentReadingPos?: number },
+    options?: {
+        force?: boolean;
+        currentReadingPos?: number;
+        /** 当前书籍标题，供提炼时还原阅读语境 */
+        bookTitle?: string;
+        /** 该角色的聊天历史（含共读讨论），让提炼理解"当时和谁在一起读" */
+        history?: ChatMessage[];
+    },
 ): Promise<ReadingEssay | null> {
     const force = options?.force === true;
     const essays = await loadEssays(bookId, characterId);
@@ -811,12 +823,20 @@ export async function distillEssaysIfNeeded(
     if (!force && totalChars <= maxChars) return null;
     if (distillable.length === 0) return null;
 
-    const bindings = loadBindingConfig();
-    const slot = resolveBinding(bindings, characterId, "reading");
-    const apiConfigId = slot.apiConfigId;
-    if (!apiConfigId) return null;
-    const apiConfig = loadApiConfigs().find(c => c.id === apiConfigId);
-    if (!apiConfig) return null;
+    const character = loadCharacters().find(c => c.id === characterId);
+    if (!character) return null;
+
+    // appTags 里带上 essay_distill：它匹配不到任何既有条目，从而避免把批注/讨论/笔记三个
+    // 条目的指令一起注入；人设与记忆来自 marker 条目（不受 tags 筛选），会照常带上。
+    const resolved = await resolveReadingInput(characterId, ["reading", "essay_distill"], {
+        bookTitle: options?.bookTitle ?? "",
+        chapterTitle: "",
+        chapterContent: "",
+        annotationHistory: "",
+        history: options?.history,
+    });
+    if (!resolved) return null;
+    const { input, apiConfig, preset } = resolved;
 
     const targetChars = Math.max(1, Math.floor((force ? Math.max(totalChars, 1) : totalChars) / 3));
     const essayText = distillable.map(e => {
@@ -824,17 +844,34 @@ export async function distillEssaysIfNeeded(
         return `【第${e.chapterIndex + 1}章】${e.content}`;
     }).join("\n");
 
-    const prompt = `以下是{{char}}在阅读一部长篇小说过程中陆续写下的读书随笔（按时间顺序，第一人称，记录了当时的情绪与感受）。请把它们提炼为一份更简短的版本，总字数约${targetChars}字，保留情绪与感受的连贯性和重要变化，删去重复。保持第一人称口吻。只输出提炼后的文本，不要输出任何其他内容：\n\n${essayText}`;
+    const instruction = [
+        "以下是你在阅读过程中陆续写下的读书随笔，按时间顺序排列，都是你的第一人称心情记录。",
+        `请把它们提炼为一份更简短的版本，总字数约${targetChars}字。`,
+        "要求：",
+        "- 用你原本的口吻来写，保留情绪与感受的连贯性和重要变化，删去重复",
+        "- 不要写成第三人称的情节梗概，也不要丢掉当时的情绪",
+        "- 只输出提炼后的文本，不要任何解释、标题或前后缀",
+        "",
+        essayText,
+    ].join("\n");
+
+    const llmMessages = [...assemblePromptPayload(input), { role: "user" as const, content: instruction }];
 
     const MAX_ATTEMPTS = 2;
     let lastError: unknown = null;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
         try {
-            const result = await simpleLLMCall(apiConfig, [
-                { role: "user", content: prompt },
-            ], { label: "阅读随笔·提炼" });
+            const responseText = await callReadingLLM(
+                apiConfig!,
+                preset,
+                llmMessages,
+                character.name,
+                input.regexes,
+                input.appTags,
+                input.userIdentity?.name,
+            );
 
-            if (!result.content || result.content.trim().length === 0) {
+            if (!responseText || !responseText.trim()) {
                 lastError = new Error("提炼返回空内容");
                 if (attempt < MAX_ATTEMPTS - 1) continue;
                 break;
@@ -852,11 +889,11 @@ export async function distillEssaysIfNeeded(
                 id: `re_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
                 bookId,
                 characterId,
-                characterName: loadCharacters().find(c => c.id === characterId)?.name ?? "",
+                characterName: character.name,
                 chapterIndex: -1,
                 startParagraph: -1,
                 endParagraph: lastEssay?.endParagraph ?? -1,
-                content: result.content.trim(),
+                content: responseText.trim(),
                 isDistilled: true,
                 distilledUpTo,
                 createdAt: new Date().toISOString(),
