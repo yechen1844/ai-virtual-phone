@@ -354,6 +354,7 @@ export function ReadingViewer({ book, onBack }: Props) {
     const [savedItemDraft, setSavedItemDraft] = useState("");
     const [savedItemBusy, setSavedItemBusy] = useState(false);
     const savedItemLongPressTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+    const savedItemPressStartRef = useRef<{ x: number; y: number } | null>(null);
     const readingMessagePressStartRef = useRef<{ x: number; y: number } | null>(null);
     const chatDragRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
     const chatMovedRef = useRef(false);
@@ -964,6 +965,9 @@ export function ReadingViewer({ book, onBack }: Props) {
             onContextMenu={(e) => e.preventDefault()}
             onPointerDown={(e) => {
                 if (e.pointerType === "mouse") e.preventDefault();
+                // 记录按压起点：触屏传感器静止时也有微抖动，pointermove 会频繁触发，
+                // 必须超过阈值才视为"滚动意图"取消长按，否则计时器几乎必被中途掐掉
+                savedItemPressStartRef.current = { x: e.clientX, y: e.clientY };
                 if (savedItemLongPressTimer.current) clearTimeout(savedItemLongPressTimer.current);
                 savedItemLongPressTimer.current = setTimeout(() => {
                     savedItemLongPressTimer.current = undefined;
@@ -974,6 +978,12 @@ export function ReadingViewer({ book, onBack }: Props) {
                 // 手指大幅移动（意图滚动列表）时放弃长按，避免滚动中途误弹菜单
                 if (!savedItemLongPressTimer.current) return;
                 if (e.pointerType === "mouse") return;
+                const start = savedItemPressStartRef.current;
+                if (start) {
+                    const dx = e.clientX - start.x;
+                    const dy = e.clientY - start.y;
+                    if (dx * dx + dy * dy < 144) return; // 12px 以内不算滚动
+                }
                 clearTimeout(savedItemLongPressTimer.current);
                 savedItemLongPressTimer.current = undefined;
             }}
