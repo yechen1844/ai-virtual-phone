@@ -28,6 +28,7 @@ import { prepareShortTermContext } from "./short-term-assembler";
 import { previewMessagesForApi, sendLLMRequest } from "./chat-engine";
 import { simpleLLMCall } from "./api-helpers";
 import { DEFAULT_READING_BILINGUAL_PROMPT, resolveBilingualPrompt } from "./bilingual-prompt-defaults";
+import { trimBilingualForFeed, type TranslationFeedMode } from "./bilingual-text";
 import { recordCharacterActivity } from "./complex-memory/guard";
 
 export type ReadingDiscussAction =
@@ -189,7 +190,11 @@ function formatBatchChapterContent(targets: AnnotationTarget[]): string {
     return targets.map((target, index) => `[${index + 1}] ${target.text}`).join("\n\n");
 }
 
-function formatBatchAnnotationHistory(annotations: ReadingAnnotation[], targets: AnnotationTarget[]): string {
+function formatBatchAnnotationHistory(
+    annotations: ReadingAnnotation[],
+    targets: AnnotationTarget[],
+    translationFeedMode?: TranslationFeedMode,
+): string {
     if (annotations.length === 0) return "（暂无批注）";
 
     const targetIndexMap = new Map<string, number>();
@@ -200,16 +205,25 @@ function formatBatchAnnotationHistory(annotations: ReadingAnnotation[], targets:
     const lines = annotations.flatMap((annotation) => {
         const relativeIndex = targetIndexMap.get(`${annotation.chapterIndex}:${annotation.paragraphIndex}`);
         if (!relativeIndex) return [];
-        return [`[批注:${relativeIndex}][角色:${annotation.characterName}] ${annotation.content}`];
+        // 只裁内容字段：整段裁会把「[批注:N][角色:x]」这类框架也交给双语解析，破坏行结构
+        const content = trimBilingualForFeed(annotation.content, translationFeedMode);
+        return [`[批注:${relativeIndex}][角色:${annotation.characterName}] ${content}`];
     });
 
     return lines.length > 0 ? lines.join("\n") : "（暂无批注）";
 }
 
-function formatAnnotationActionContext(annotations: ReadingAnnotation[]): string {
+function formatAnnotationActionContext(
+    annotations: ReadingAnnotation[],
+    translationFeedMode?: TranslationFeedMode,
+): string {
     if (annotations.length === 0) return "（当前范围暂无批注）";
     return annotations
-        .map((annotation) => `- ID=${annotation.id} | 段落=${annotation.paragraphIndex + 1} | 角色=${annotation.characterName} | 内容=${annotation.content}`)
+        .map((annotation) => {
+            // 只裁「内容」字段：这一行的 | 是字段分隔符，整行交给双语解析会把结构搅乱
+            const content = trimBilingualForFeed(annotation.content, translationFeedMode);
+            return `- ID=${annotation.id} | 段落=${annotation.paragraphIndex + 1} | 角色=${annotation.characterName} | 内容=${content}`;
+        })
         .join("\n");
 }
 
@@ -306,6 +320,8 @@ export async function generateAnnotationBatch(
     readingEssay?: string,
     /** 已注入格式的最新读书笔记文本（含标签） */
     readingNote?: string,
+    /** 会话的双语投喂模式：批注历史按此只留原文/译文（未传或 both 时原样） */
+    translationFeedMode?: TranslationFeedMode,
 ): Promise<{ annotations: ReadingAnnotation[]; summary: ReadingSummary | null; essay: ReadingEssay | null }> {
     const character = loadCharacters().find(c => c.id === characterId);
     if (!character) throw new Error("角色不存在");
@@ -315,7 +331,7 @@ export async function generateAnnotationBatch(
         bookTitle: book.title,
         chapterTitle: batchTitle,
         chapterContent: formatBatchChapterContent(targets),
-        annotationHistory: formatBatchAnnotationHistory(existingAnnotations, targets),
+        annotationHistory: formatBatchAnnotationHistory(existingAnnotations, targets, translationFeedMode),
         readingSummary,
         history,
         readingEssay,
@@ -408,6 +424,7 @@ export async function previewReadingAnnotationPrompt(
     chapter: BookChapter,
     existingAnnotations: ReadingAnnotation[],
     characterId: string,
+    translationFeedMode?: TranslationFeedMode,
 ): Promise<{ messages: LLMMessage[]; characterName: string; model: string; presetName: string }> {
     const character = loadCharacters().find(c => c.id === characterId);
     if (!character) throw new Error("角色不存在");
@@ -421,7 +438,7 @@ export async function previewReadingAnnotationPrompt(
         bookTitle: book.title,
         chapterTitle: chapter.title,
         chapterContent: formatBatchChapterContent(targets),
-        annotationHistory: formatBatchAnnotationHistory(existingAnnotations, targets),
+        annotationHistory: formatBatchAnnotationHistory(existingAnnotations, targets, translationFeedMode),
     });
     if (!resolved?.apiConfig) throw new Error("未找到 API 配置，请在设置中绑定 API");
 
@@ -448,7 +465,7 @@ export async function previewReadingDiscussPrompt(
         bookTitle: book.title,
         chapterTitle: context.chapterTitle,
         chapterContent: context.chapterContent,
-        annotationHistory: formatAnnotationActionContext(context.annotations),
+        annotationHistory: formatAnnotationActionContext(context.annotations, session.translationFeedMode),
         history,
     });
     if (!resolved?.apiConfig) throw new Error("未找到 API 配置，请在设置中绑定 API");
@@ -481,7 +498,7 @@ export async function generateReadingChat(
         bookTitle: book.title,
         chapterTitle: context.chapterTitle,
         chapterContent: context.chapterContent,
-        annotationHistory: formatAnnotationActionContext(context.annotations),
+        annotationHistory: formatAnnotationActionContext(context.annotations, session.translationFeedMode),
         readingSummary,
         readingEssay,
         readingNote,
@@ -700,11 +717,13 @@ export async function distillSummariesIfNeeded(
 // ── Reading Essay（读书随笔：与摘要同批生成，按角色绑定，承载当时情绪） ──
 
 /** 格式化随笔文本供注入预设模板。 */
-export function formatReadingEssay(essays: ReadingEssay[]): string {
+export function formatReadingEssay(essays: ReadingEssay[], translationFeedMode?: TranslationFeedMode): string {
     if (essays.length === 0) return "";
     const lines = essays.map(e => {
-        if (e.isDistilled) return `【随笔·提炼】${e.content}`;
-        return `【第${e.chapterIndex + 1}章 · 段落${e.startParagraph + 1}-${e.endParagraph + 1}】${e.content}`;
+        // 只裁正文：前缀是结构标记，不能被当成双语内容
+        const content = trimBilingualForFeed(e.content, translationFeedMode);
+        if (e.isDistilled) return `【随笔·提炼】${content}`;
+        return `【第${e.chapterIndex + 1}章 · 段落${e.startParagraph + 1}-${e.endParagraph + 1}】${content}`;
     });
     return `<reading_essay>\n以下是{{char}}之前读这本书时留下的随笔，保留着当时的情绪（供你保持情感连续）：\n${lines.join("\n")}\n</reading_essay>\n`;
 }
@@ -858,9 +877,9 @@ export async function distillEssaysIfNeeded(
 // ── Reading Note（读书笔记：每次阅读会话一篇，只注入最新一篇） ──
 
 /** 格式化读书笔记供注入预设模板（只注入传入的那一篇）。 */
-export function formatReadingNote(note: ReadingNote | null): string {
+export function formatReadingNote(note: ReadingNote | null, translationFeedMode?: TranslationFeedMode): string {
     if (!note) return "";
-    return `<reading_note>\n${note.content}\n</reading_note>\n`;
+    return `<reading_note>\n${trimBilingualForFeed(note.content, translationFeedMode)}\n</reading_note>\n`;
 }
 
 /**
@@ -905,7 +924,7 @@ export async function generateReadingNote(
         bookTitle: book.title,
         chapterTitle: context.chapterTitle,
         chapterContent: context.chapterContent,
-        annotationHistory: formatAnnotationActionContext(context.annotations),
+        annotationHistory: formatAnnotationActionContext(context.annotations, session.translationFeedMode),
         readingSummary,
         readingEssay,
         readingNote,

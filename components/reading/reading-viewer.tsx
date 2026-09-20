@@ -37,12 +37,13 @@ import { PdfPageRenderer } from "./reading-pdf-viewer";
 import { decodeTxtArrayBuffer, parsePdfPageRange, PDF_PAGES_PER_CHAPTER, parseTxtContent, parseEpubFile } from "@/lib/reading-parser";
 import type { Book, BookChapter, ReadingAnnotation, ReadingProgress, ReadingSummary, ReadingEssay, ReadingNote } from "@/lib/reading-types";
 import type { Character } from "@/lib/character-types";
-import { splitBilingualText } from "@/lib/bilingual-text";
+import { splitBilingualText, trimBilingualForFeed } from "@/lib/bilingual-text";
 
 type TxtPageItem =
     | { kind: "line"; text: string; chapterIndex: number; paragraphIndex: number; indent?: boolean; segEnd?: boolean }
     | { kind: "gap"; chapterIndex: number; paragraphIndex: number }
-    | { kind: "annotation"; annotation: ReadingAnnotation; chapterIndex: number; paragraphIndex: number };
+    | { kind: "annotation"; annotation: ReadingAnnotation; chapterIndex: number; paragraphIndex: number }
+    | { kind: "essay"; essay: ReadingEssay; chapterIndex: number; paragraphIndex: number };
 
 type ParagraphRef = {
     absoluteIndex: number;
@@ -333,6 +334,7 @@ export function ReadingViewer({ book, onBack }: Props) {
     const txtMeasureLineRef = useRef<HTMLParagraphElement>(null);
     const txtMeasureGapRef = useRef<HTMLDivElement>(null);
     const txtMeasureAnnotationRef = useRef<HTMLDivElement>(null);
+    const txtMeasureEssayRef = useRef<HTMLDivElement>(null);
     const generatedBatchesRef = useRef<Set<string>>(new Set());
     /** 同步「生成中」锁：防止 auto/prefetch 竞态导致同一帧内并发发起多个批注生成任务 */
     const annotationInFlightRef = useRef(false);
@@ -427,7 +429,9 @@ export function ReadingViewer({ book, onBack }: Props) {
                         ? <div key={i} className="reading-line-gap" />
                         : item.kind === "annotation"
                             ? renderAnnotationItem(item.annotation)
-                            : <p key={i} className={`reading-line${item.indent ? " reading-line-indent" : ""}${item.segEnd ? " reading-line-seg-end" : ""}`}>{item.text}</p>
+                            : item.kind === "essay"
+                                ? renderEssayItem(item.essay)
+                                : <p key={i} className={`reading-line${item.indent ? " reading-line-indent" : ""}${item.segEnd ? " reading-line-seg-end" : ""}`}>{item.text}</p>
                 ))}
             </div>
         );
@@ -482,6 +486,27 @@ export function ReadingViewer({ book, onBack }: Props) {
         </div>
     );
 
+    // 读书随笔：独立卡片，挂靠在其覆盖批次的末段（= 摘要覆盖范围的最后一段）。
+    // 与批注同用一套双语折叠：中文随笔原样显示，双语随笔默认只展开原文。
+    const renderEssayItem = (essay: ReadingEssay) => (
+        <div key={essay.id} className="reading-essay" data-no-nav="true">
+            <div className="reading-essay-head">
+                <span className="reading-essay-badge">读书随笔</span>
+                <span className="reading-essay-meta">
+                    {essay.isDistilled
+                        ? `覆盖到第${Math.floor((essay.distilledUpTo ?? 0) / 100000) + 1}章`
+                        : `第${essay.chapterIndex + 1}章 · 段落${essay.startParagraph + 1}-${essay.endParagraph + 1}`}
+                </span>
+            </div>
+            <ReadingAnnotationContent
+                text={essay.content}
+                bilingualEnabled={bilingualTranslationEnabled}
+                expanded={isAnnotationTranslationExpanded(essay.id)}
+                onToggle={() => handleAnnotationTranslationToggle(essay.id)}
+            />
+        </div>
+    );
+
     const renderStaticPage = (items: TxtPageItem[]) => (
         <div className="reading-page-content">
             {items.map((item, i) =>
@@ -492,7 +517,9 @@ export function ReadingViewer({ book, onBack }: Props) {
                             <span className="reading-annotation-name">{item.annotation.characterName}</span>
                             <span className="reading-annotation-text">{item.annotation.content}</span>
                         </div>
-                        : <p key={i} className={`reading-line${item.indent ? " reading-line-indent" : ""}${item.segEnd ? " reading-line-seg-end" : ""}`}>{item.text}</p>
+                        : item.kind === "essay"
+                            ? renderEssayItem(item.essay)
+                            : <p key={i} className={`reading-line${item.indent ? " reading-line-indent" : ""}${item.segEnd ? " reading-line-seg-end" : ""}`}>{item.text}</p>
             )}
         </div>
     );
@@ -750,7 +777,9 @@ export function ReadingViewer({ book, onBack }: Props) {
     // Load reading-discuss chat messages
     const refreshChatMessages = useCallback(() => {
         const session = getSession();
-        if (!session) { setChatMessages([]); return; }
+        if (!session) { setChatMessages([]); setChatFeedMode(undefined); return; }
+        // 同步会话的双语投喂模式：预览「当前注入」时要按它显示实际喂给 char 的文本
+        setChatFeedMode(session.translationFeedMode);
         const msgs = loadChatMessages(session.id)
             .filter(isReadingDiscussMessage)
             .slice(-30);
@@ -765,6 +794,8 @@ export function ReadingViewer({ book, onBack }: Props) {
     const [notes, setNotes] = useState<ReadingNote[]>([]);
     const [showSummaryDialog, setShowSummaryDialog] = useState(false);
     const [summaryDialogTab, setSummaryDialogTab] = useState<"injected" | "all" | "distilled" | "essay" | "note">("injected");
+    // 会话的双语投喂模式：「当前注入」按它显示实际喂给 char 的文本（双语只留原文等）
+    const [chatFeedMode, setChatFeedMode] = useState<ChatSession["translationFeedMode"]>(undefined);
     const [summaryActionMsg, setSummaryActionMsg] = useState<{ ok: boolean; text: string } | null>(null);
     // 防止"自动生成途中切书"时，旧书的异步 refresh/提炼结果盖到当前书上
     const bookIdRef = useRef(book.id);
@@ -847,14 +878,15 @@ export function ReadingViewer({ book, onBack }: Props) {
     }, [book.id, readingConfig.alwaysInjectLatestDistilled]);
 
     // 随笔（按角色绑定）：与摘要同构地按当前位置注入，补批注缺失的情感连续性
+    // 双语角色按会话投喂模式只注入原文（带中文保护，中文随笔不受影响）
     const getReadingEssayForContext = useCallback(async (chapterIdx: number, paragraphIdx: number): Promise<string> => {
         if (!companionId) return "";
         const all = await loadEssays(book.id, companionId);
         const toInject = getEssaysForInjection(all, chapterIdx, paragraphIdx, {
             alwaysLatestDistilled: readingConfig.alwaysInjectLatestDistilled === true,
         });
-        return formatReadingEssay(toInject);
-    }, [book.id, companionId, readingConfig.alwaysInjectLatestDistilled]);
+        return formatReadingEssay(toInject, getSession()?.translationFeedMode);
+    }, [book.id, companionId, getSession, readingConfig.alwaysInjectLatestDistilled]);
 
     // 读书笔记：只注入最新一篇（默认要求其覆盖起点已读；回读开关开启则始终注入最新一篇）
     const getReadingNoteForContext = useCallback(async (chapterIdx: number, paragraphIdx: number): Promise<string> => {
@@ -863,8 +895,8 @@ export function ReadingViewer({ book, onBack }: Props) {
         const note = getLatestNoteForInjection(all, chapterIdx, paragraphIdx, {
             alwaysLatestDistilled: readingConfig.alwaysInjectLatestDistilled === true,
         });
-        return formatReadingNote(note);
-    }, [book.id, companionId, readingConfig.alwaysInjectLatestDistilled]);
+        return formatReadingNote(note, getSession()?.translationFeedMode);
+    }, [book.id, companionId, getSession, readingConfig.alwaysInjectLatestDistilled]);
 
     // 一次性取齐三类阅读上下文（摘要/随笔/笔记），供讨论与批注共用
     const getReadingContextBundle = useCallback(async (chapterIdx: number, paragraphIdx: number) => {
@@ -1081,6 +1113,8 @@ export function ReadingViewer({ book, onBack }: Props) {
                     annotateHistory,
                     readingEssayText,
                     readingNoteText,
+                    // 批注历史里的双语内容按会话投喂模式只留原文（中文批注不受影响）
+                    getSession()?.translationFeedMode,
                 ),
                 readingConfig.annotationRetryCount > 0 ? readingConfig.annotationRetryCount : 0,
             );
@@ -2076,7 +2110,7 @@ export function ReadingViewer({ book, onBack }: Props) {
     // TXT pagination — split by actual rendered width/height so each page fits one screen.
     // 滚动模式下不参与分页，直接渲染整章内容。
     useEffect(() => {
-        if (isPdf || isScrollMode || !currentChapter || !scrollRef.current || !txtMeasureLineRef.current || !txtMeasureGapRef.current || !txtMeasureAnnotationRef.current) {
+        if (isPdf || isScrollMode || !currentChapter || !scrollRef.current || !txtMeasureLineRef.current || !txtMeasureGapRef.current || !txtMeasureAnnotationRef.current || !txtMeasureEssayRef.current) {
             setTxtPages([]);
             return;
         }
@@ -2110,6 +2144,11 @@ export function ReadingViewer({ book, onBack }: Props) {
         const annotationSignature = chapterAnnotations
             .map((annotation) => `${annotation.id}:${annotation.content.length}:${isAnnotationTranslationExpanded(annotation.id) ? 1 : 0}`)
             .join("|");
+        // 随笔也要参与分页：挂在其覆盖批次的末段
+        const chapterEssays = essays.filter((essay) => essay.chapterIndex === chapterIndex);
+        const essaySignature = chapterEssays
+            .map((essay) => `${essay.id}:${essay.content.length}:${isAnnotationTranslationExpanded(essay.id) ? 1 : 0}`)
+            .join("|");
         const paragraphCharCount = currentChapter.paragraphs.reduce((sum, paragraph) => sum + paragraph.length, 0);
         const paginationSignature = [
             currentChapter.id,
@@ -2117,6 +2156,7 @@ export function ReadingViewer({ book, onBack }: Props) {
             currentChapter.paragraphs.length,
             paragraphCharCount,
             annotationSignature,
+            essaySignature,
             bilingualTranslationEnabled ? 1 : 0,
             Math.round(maxWidth),
             Math.round(maxHeight),
@@ -2146,6 +2186,28 @@ export function ReadingViewer({ book, onBack }: Props) {
             return blockHeight + annotationMarginY;
         };
 
+        // 随笔卡片高度：结构与批注不同（多一行头部），用专属测量元素量，避免卡片被挤出页面
+        const essayMeasure = txtMeasureEssayRef.current;
+        const essayTextEl = essayMeasure.querySelector(".reading-annotation-text") as HTMLElement | null;
+        const essayMeasureStyle = window.getComputedStyle(essayMeasure);
+        const essayMarginY =
+            parseFloat(essayMeasureStyle.marginTop || "0") +
+            parseFloat(essayMeasureStyle.marginBottom || "0");
+        const measureEssayHeight = (essay: ReadingEssay) => {
+            if (!essayTextEl) return lineHeight * 3;
+            const bilingual = bilingualTranslationEnabled ? splitBilingualText(essay.content) : null;
+            if (!bilingual) {
+                essayTextEl.textContent = essay.content;
+            } else {
+                const expanded = isAnnotationTranslationExpanded(essay.id);
+                essayTextEl.textContent = expanded
+                    ? `${bilingual.original}\n收起中文\n${bilingual.translated}`
+                    : `${bilingual.original}\n中文`;
+            }
+            const blockHeight = essayMeasure.offsetHeight || lineHeight * 3;
+            return blockHeight + essayMarginY;
+        };
+
         const canvas = document.createElement("canvas");
         const ctx = canvas.getContext("2d");
         if (!ctx) {
@@ -2160,6 +2222,12 @@ export function ReadingViewer({ book, onBack }: Props) {
             const list = annotationMap.get(annotation.paragraphIndex) || [];
             list.push(annotation);
             annotationMap.set(annotation.paragraphIndex, list);
+        }
+        const essayMap = new Map<number, ReadingEssay[]>();
+        for (const essay of chapterEssays) {
+            const list = essayMap.get(essay.endParagraph) || [];
+            list.push(essay);
+            essayMap.set(essay.endParagraph, list);
         }
 
         currentChapter.paragraphs.forEach((paragraph, index) => {
@@ -2176,6 +2244,10 @@ export function ReadingViewer({ book, onBack }: Props) {
             for (const annotation of paragraphAnnotations) {
                 tokens.push({ kind: "annotation", annotation, chapterIndex, paragraphIndex: index });
             }
+            const paragraphEssays = essayMap.get(index) || [];
+            for (const essay of paragraphEssays) {
+                tokens.push({ kind: "essay", essay, chapterIndex, paragraphIndex: index });
+            }
             if (index < currentChapter.paragraphs.length - 1) tokens.push({ kind: "gap", chapterIndex, paragraphIndex: index });
         });
 
@@ -2184,7 +2256,13 @@ export function ReadingViewer({ book, onBack }: Props) {
         let usedHeight = 0;
 
         for (const token of tokens) {
-            const tokenHeight = token.kind === "gap" ? gapHeight : token.kind === "annotation" ? measureAnnotationHeight(token.annotation) : lineHeight;
+            const tokenHeight = token.kind === "gap"
+                ? gapHeight
+                : token.kind === "annotation"
+                    ? measureAnnotationHeight(token.annotation)
+                    : token.kind === "essay"
+                        ? measureEssayHeight(token.essay)
+                        : lineHeight;
             if (token.kind === "gap" && currentPage.length === 0) continue;
 
             if (currentPage.length > 0 && usedHeight + tokenHeight > maxHeight) {
@@ -2204,7 +2282,7 @@ export function ReadingViewer({ book, onBack }: Props) {
 
         lastTxtPaginationSignatureRef.current = paginationSignature;
         setTxtPages(pages);
-    }, [annotations, bilingualTranslationEnabled, chapterIndex, currentChapter, isAnnotationTranslationExpanded, isPdf, isScrollMode, txtLayoutVersion]);
+    }, [annotations, bilingualTranslationEnabled, chapterIndex, currentChapter, essays, isAnnotationTranslationExpanded, isPdf, isScrollMode, txtLayoutVersion]);
 
     const txtTotalPages = txtPagesReadyForCurrentChapter ? txtPages.length : 1;
 
@@ -2598,6 +2676,10 @@ export function ReadingViewer({ book, onBack }: Props) {
                                     const paragraphAnnotations = annotations.filter(
                                         (annotation) => annotation.chapterIndex === chapter.index && annotation.paragraphIndex === pIndex
                                     );
+                                    // 随笔落在其覆盖批次的末段，读到这里就能看到当时写下的心情
+                                    const paragraphEssays = essays.filter(
+                                        (essay) => essay.chapterIndex === chapter.index && essay.endParagraph === pIndex
+                                    );
                                     return (
                                         <div key={pIndex} className="reading-scroll-block" data-paragraph-index={pIndex}>
                                             {paragraph.split("\n").map((segment, sIndex) => (
@@ -2609,6 +2691,7 @@ export function ReadingViewer({ book, onBack }: Props) {
                                                 </p>
                                             ))}
                                             {paragraphAnnotations.map((annotation) => renderAnnotationItem(annotation))}
+                                            {paragraphEssays.map((essay) => renderEssayItem(essay))}
                                         </div>
                                     );
                                 })}
@@ -2634,6 +2717,14 @@ export function ReadingViewer({ book, onBack }: Props) {
                             <div ref={txtMeasureAnnotationRef} className="reading-annotation">
                                 <span className="reading-annotation-name">角色</span>
                                 <span className="reading-annotation-text">批注内容</span>
+                            </div>
+                            {/* 随笔卡片测量元素：分页时用它量出真实高度，避免卡片被挤出页面 */}
+                            <div ref={txtMeasureEssayRef} className="reading-essay">
+                                <div className="reading-essay-head">
+                                    <span className="reading-essay-badge">读书随笔</span>
+                                    <span className="reading-essay-meta">第1章 · 段落1-50</span>
+                                </div>
+                                <span className="reading-annotation-text">随笔内容</span>
                             </div>
                         </div>
                     </>
@@ -3272,21 +3363,29 @@ export function ReadingViewer({ book, onBack }: Props) {
                                 ));
                             }
                             let displaySummaries: ReadingSummary[] = [];
+                            // 「当前注入」除了摘要，也把随笔与最新笔记一并预览——
+                            // 它们和摘要走同一套位置判定，只有这里能看到"实际会喂给 char 什么"
+                            let injectedEssays: ReadingEssay[] = [];
+                            let injectedNote: ReadingNote | null = null;
                             if (summaryDialogTab === "injected") {
-                                displaySummaries = getSummariesForInjection(summaries, center.chapterIndex, center.paragraphIndex, {
-                                    alwaysLatestDistilled: readingConfig.alwaysInjectLatestDistilled === true,
-                                });
+                                const injectOptions = { alwaysLatestDistilled: readingConfig.alwaysInjectLatestDistilled === true };
+                                displaySummaries = getSummariesForInjection(summaries, center.chapterIndex, center.paragraphIndex, injectOptions);
+                                injectedEssays = getEssaysForInjection(essays, center.chapterIndex, center.paragraphIndex, injectOptions);
+                                injectedNote = getLatestNoteForInjection(notes, center.chapterIndex, center.paragraphIndex, injectOptions);
                             } else if (summaryDialogTab === "distilled") {
                                 displaySummaries = summaries.filter(s => s.isDistilled);
                             } else {
                                 displaySummaries = summaries;
                             }
 
-                            if (displaySummaries.length === 0) {
+                            const injectedEmpty = displaySummaries.length === 0
+                                && injectedEssays.length === 0
+                                && !injectedNote;
+                            if (injectedEmpty) {
                                 return (
                                     <div style={{ color: "var(--c-text-2)", textAlign: "center", padding: "2rem 1rem", fontSize: "0.875rem", lineHeight: 1.8 }}>
                                         {summaryDialogTab === "injected" ? (
-                                            <p>当前位置没有需要注入的摘要。</p>
+                                            <p>当前位置没有需要注入的摘要、随笔或读书笔记。</p>
                                         ) : summaryDialogTab === "distilled" ? (
                                             <p>尚未发生过提炼。摘要总字数达到上限后会自动提炼为 1/3。</p>
                                         ) : summaries.length === 0 ? (
@@ -3304,39 +3403,110 @@ export function ReadingViewer({ book, onBack }: Props) {
                                 );
                             }
 
-                            return displaySummaries.map(s => (
-                                <div
-                                    key={s.id}
-                                    style={{
-                                        padding: "0.75rem",
-                                        marginBottom: "0.5rem",
-                                        borderRadius: "0.5rem",
-                                        background: "var(--c-bg-2)",
-                                        border: s.isDistilled
-                                            ? "1px solid var(--c-accent)"
-                                            : "1px solid var(--c-border)",
-                                    }}
-                                >
-                                    <div style={{
-                                        fontSize: "0.75rem",
-                                        color: "var(--c-text-2)",
-                                        marginBottom: "0.25rem",
-                                        display: "flex",
-                                        justifyContent: "space-between",
-                                        alignItems: "center",
-                                    }}>
-                                        <span>
-                                            {s.isDistilled
-                                                ? `前情提要（提炼）· 覆盖到第${Math.floor((s.distilledUpTo ?? 0) / 100000) + 1}章`
-                                                : `第${s.chapterIndex + 1}章 · 段落${s.startParagraph + 1}-${s.endParagraph + 1}`}
-                                        </span>
-                                        <span>{s.content.length}字</span>
-                                    </div>
-                                    <div style={{ fontSize: "0.875rem", lineHeight: 1.6, color: "var(--c-text)" }}>
-                                        {s.content}
-                                    </div>
-                                </div>
-                            ));
+                            return (
+                                <>
+                                    {displaySummaries.map(s => (
+                                        <div
+                                            key={s.id}
+                                            style={{
+                                                padding: "0.75rem",
+                                                marginBottom: "0.5rem",
+                                                borderRadius: "0.5rem",
+                                                background: "var(--c-bg-2)",
+                                                border: s.isDistilled
+                                                    ? "1px solid var(--c-accent)"
+                                                    : "1px solid var(--c-border)",
+                                            }}
+                                        >
+                                            <div style={{
+                                                fontSize: "0.75rem",
+                                                color: "var(--c-text-2)",
+                                                marginBottom: "0.25rem",
+                                                display: "flex",
+                                                justifyContent: "space-between",
+                                                alignItems: "center",
+                                            }}>
+                                                <span>
+                                                    {s.isDistilled
+                                                        ? `前情提要（提炼）· 覆盖到第${Math.floor((s.distilledUpTo ?? 0) / 100000) + 1}章`
+                                                        : `第${s.chapterIndex + 1}章 · 段落${s.startParagraph + 1}-${s.endParagraph + 1}`}
+                                                </span>
+                                                <span>{s.content.length}字</span>
+                                            </div>
+                                            <div style={{ fontSize: "0.875rem", lineHeight: 1.6, color: "var(--c-text)" }}>
+                                                {s.content}
+                                            </div>
+                                        </div>
+                                    ))}
+                                    {injectedEssays.map(e => {
+                                        // 显示实际注入给 char 的文本：双语角色按投喂模式只留原文
+                                        const shown = trimBilingualForFeed(e.content, chatFeedMode);
+                                        return (
+                                            <div
+                                                key={e.id}
+                                                style={{
+                                                    padding: "0.75rem",
+                                                    marginBottom: "0.5rem",
+                                                    borderRadius: "0.5rem",
+                                                    background: "var(--c-bg-2)",
+                                                    border: e.isDistilled
+                                                        ? "1px solid var(--c-accent)"
+                                                        : "1px solid var(--c-border)",
+                                                }}
+                                            >
+                                                <div style={{
+                                                    fontSize: "0.75rem",
+                                                    color: "var(--c-text-2)",
+                                                    marginBottom: "0.25rem",
+                                                    display: "flex",
+                                                    justifyContent: "space-between",
+                                                    alignItems: "center",
+                                                }}>
+                                                    <span>
+                                                        {e.isDistilled
+                                                            ? `读书随笔（提炼）· 覆盖到第${Math.floor((e.distilledUpTo ?? 0) / 100000) + 1}章`
+                                                            : `读书随笔 · 第${e.chapterIndex + 1}章 · 段落${e.startParagraph + 1}-${e.endParagraph + 1}`}
+                                                    </span>
+                                                    <span>{shown.length}字</span>
+                                                </div>
+                                                <div style={{ fontSize: "0.875rem", lineHeight: 1.6, color: "var(--c-text)" }}>
+                                                    {shown}
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                    {injectedNote && (() => {
+                                        const shown = trimBilingualForFeed(injectedNote.content, chatFeedMode);
+                                        return (
+                                            <div
+                                                key={injectedNote.id}
+                                                style={{
+                                                    padding: "0.75rem",
+                                                    marginBottom: "0.5rem",
+                                                    borderRadius: "0.5rem",
+                                                    background: "var(--c-bg-2)",
+                                                    border: "1px solid var(--c-accent)",
+                                                }}
+                                            >
+                                                <div style={{
+                                                    fontSize: "0.75rem",
+                                                    color: "var(--c-text-2)",
+                                                    marginBottom: "0.25rem",
+                                                    display: "flex",
+                                                    justifyContent: "space-between",
+                                                    alignItems: "center",
+                                                }}>
+                                                    <span>读书笔记（最新一篇）</span>
+                                                    <span>{shown.length}字</span>
+                                                </div>
+                                                <div style={{ fontSize: "0.875rem", lineHeight: 1.6, color: "var(--c-text)", whiteSpace: "pre-wrap" }}>
+                                                    {shown}
+                                                </div>
+                                            </div>
+                                        );
+                                    })()}
+                                </>
+                            );
                         })()}
                     </div>
                 </ContentDialog>

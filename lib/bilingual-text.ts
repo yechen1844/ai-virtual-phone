@@ -106,3 +106,22 @@ export function splitBilingualText(text: string): { original: string; translated
     if (segmented) return segmented;
     return null;
 }
+
+/** 会话级双语投喂模式：决定把内容喂给模型时取哪种语言（界面展示不受影响）。 */
+export type TranslationFeedMode = "both" | "originalOnly" | "translatedOnly";
+
+/**
+ * 面向「自由文本注入」的双语裁剪（阅读批注 / 随笔 / 读书笔记等）。
+ *
+ * 与 applyTranslationFeedMode 的区别：多一道「原文必须是非中文」的保护。
+ * 这些内容是自由文本，中文句子里出现一个竖线（如「他在犹豫|还是走了」）不该被当成
+ * 双语格式而截断右半段；无法确认是「非中文原文 + 中文译文」时原样返回，
+ * 宁可多注入，绝不误伤中文角色（中文文本本来就切不出双语，返回原样）。
+ */
+export function trimBilingualForFeed(content: string, mode?: TranslationFeedMode): string {
+    if (!content || !mode || mode === "both") return content;
+    const split = splitBilingualText(content);
+    if (!split) return content;
+    if (containsChinese(split.original)) return content;
+    return mode === "originalOnly" ? split.original : split.translated;
+}
