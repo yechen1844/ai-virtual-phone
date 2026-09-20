@@ -580,7 +580,7 @@ function parseNumericStateLines(text: string): StateValue[] {
         const name = m[1].trim();
         const value = parseFloat(m[2]);
         if (!name || /^\d+$/.test(name)) continue;
-        if (RICH_MEDIA_TAG_NAMES.has(name) || STATUS_LINE_DENYLIST.has(name)) continue;
+        if (RICH_MEDIA_NAMES.has(name) || STATUS_LINE_DENYLIST.has(name)) continue;
         if (!isFinite(value) || value < 0 || value > 100) continue;
         map.set(name, value);
     }
