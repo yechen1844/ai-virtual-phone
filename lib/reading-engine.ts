@@ -844,13 +844,24 @@ export async function distillEssaysIfNeeded(
         return `【第${e.chapterIndex + 1}章】${e.content}`;
     }).join("\n");
 
+    // 提炼要求放在预设条目 reading_essay_distill 里（用户可在预设管理里改），
+    // 但绑定复制出来的旧预设时该条目不存在，模型会收不到任何要求，
+    // 所以这里检测一次：条目缺失就用 user 消息兜底。
+    const presetHasDistillEntry = (preset?.prompts ?? []).some(
+        p => p.identifier === "reading_essay_distill" && p.enabled !== false,
+    );
     const instruction = [
-        "以下是你在阅读过程中陆续写下的读书随笔，按时间顺序排列，都是你的第一人称心情记录。",
-        `请把它们提炼为一份更简短的版本，总字数约${targetChars}字。`,
-        "要求：",
-        "- 用你原本的口吻来写，保留情绪与感受的连贯性和重要变化，删去重复",
-        "- 不要写成第三人称的情节梗概，也不要丢掉当时的情绪",
-        "- 只输出提炼后的文本，不要任何解释、标题或前后缀",
+        ...(presetHasDistillEntry
+            ? [`请把下面这些读书随笔提炼为更简短的版本，总字数控制在约${targetChars}字。`]
+            : [
+                "以下是你在阅读过程中陆续写下的读书随笔，按时间顺序排列，都是你的第一人称心情记录。",
+                `请把它们提炼为一份更简短的版本，总字数约${targetChars}字。`,
+                "要求：",
+                "- 用你原本的口吻来写，保留情绪与感受的连贯性和重要变化，删去重复",
+                "- 不要写成第三人称的情节梗概，也不要丢掉当时的情绪",
+                "- 保留一起读书的感受，不要写成独自一人的记录",
+                "- 只输出提炼后的文本，不要任何解释、标题或前后缀",
+            ]),
         "",
         essayText,
     ].join("\n");

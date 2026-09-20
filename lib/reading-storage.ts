@@ -310,6 +310,17 @@ export function getTotalSummaryChars(summaries: ReadingSummary[]): number {
     return summaries.reduce((sum, s) => sum + s.content.length, 0);
 }
 
+/** 删除一条摘要（含提炼摘要）；同步清掉内存缓存，避免列表读到已删条目。 */
+export async function deleteSummary(id: string, bookId: string): Promise<void> {
+    await db.summaries.delete(id);
+    const cached = _summariesCache.get(bookId);
+    if (cached) {
+        const idx = cached.findIndex(s => s.id === id);
+        if (idx >= 0) cached.splice(idx, 1);
+        _summariesCache.set(bookId, cached);
+    }
+}
+
 // ── Reading Essays（读书随笔，按角色绑定） ──
 
 function sortEssays(essays: ReadingEssay[]): ReadingEssay[] {
@@ -345,6 +356,18 @@ export async function loadAllEssays(bookId: string): Promise<ReadingEssay[]> {
     return db.essays.where("bookId").equals(bookId).toArray();
 }
 
+/** 删除一条随笔（含提炼随笔）；同步清掉内存缓存。 */
+export async function deleteEssay(id: string, bookId: string, characterId: string): Promise<void> {
+    await db.essays.delete(id);
+    const key = `${bookId}:${characterId}`;
+    const cached = _essaysCache.get(key);
+    if (cached) {
+        const idx = cached.findIndex(e => e.id === id);
+        if (idx >= 0) cached.splice(idx, 1);
+        _essaysCache.set(key, cached);
+    }
+}
+
 // ── Reading Notes（读书笔记，每次阅读会话一篇） ──
 
 export async function loadNotes(bookId: string, characterId: string): Promise<ReadingNote[]> {
@@ -365,6 +388,18 @@ export async function saveNote(note: ReadingNote): Promise<void> {
         if (idx >= 0) cached[idx] = note;
         else cached.push(note);
         cached.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+        _notesCache.set(key, cached);
+    }
+}
+
+/** 删除一篇读书笔记；同步清掉内存缓存。 */
+export async function deleteNote(id: string, bookId: string, characterId: string): Promise<void> {
+    await db.notes.delete(id);
+    const key = `${bookId}:${characterId}`;
+    const cached = _notesCache.get(key);
+    if (cached) {
+        const idx = cached.findIndex(n => n.id === id);
+        if (idx >= 0) cached.splice(idx, 1);
         _notesCache.set(key, cached);
     }
 }

@@ -4018,6 +4018,20 @@
   margin-top: 4px;
   color: rgba(74, 61, 26, 0.65);
 }
+/* ── 摘要/随笔/笔记卡片：长按呼出「编辑 / 删除」 ──
+   触屏下必须压制浏览器自带的长按行为（文本选择、系统菜单），否则浏览器会先发出
+   contextmenu / pointercancel，把自定义的长按计时器打断，表现为「长按没反应」。
+   桌面端保留文本选择能力，只在无 hover 的触屏环境禁用。 */
+.reading-saved-item {
+  -webkit-tap-highlight-color: transparent;
+}
+@media (hover: none) {
+  .reading-saved-item {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+}
 /* ── 读书随笔：独立卡片，与批注的黄色便签区分（淡蓝信笺 + 左侧色条） ── */
 .reading-essay {
   position: relative;

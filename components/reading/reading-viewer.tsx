@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect, type CSSProperties } from "react";
 import { Bot, ChevronDown, ChevronRight, FileText, Languages, Menu, Minus, PenLine, Rocket, SendHorizontal, X, ZoomIn } from "lucide-react";
 import {
     loadChapters,
@@ -22,8 +22,11 @@ import {
     encodeReadingPosition,
     loadEssays,
     saveEssay,
+    deleteEssay,
     loadNotes,
     saveNote,
+    deleteNote,
+    deleteSummary,
 } from "@/lib/reading-storage";
 import { generateAnnotationBatch, generateReadingChat, generateReadingNote, distillSummariesIfNeeded, distillEssaysIfNeeded, formatReadingSummary, formatReadingEssay, formatReadingNote, getDistillableSummaryChars, getDistillableEssayChars, getSummariesForInjection, getEssaysForInjection, getLatestNoteForInjection, loadReadingHistory, parseReadingDiscussResponse, type ReadingDiscussAction, type ReadingDiscussContext } from "@/lib/reading-engine";
 import { loadChatMessages, pushChatMessage, deleteChatMessage, editChatMessage, loadChatContacts, createOrGetSession, isReadingDiscussMessage } from "@/lib/chat-storage";
@@ -44,6 +47,24 @@ type TxtPageItem =
     | { kind: "gap"; chapterIndex: number; paragraphIndex: number }
     | { kind: "annotation"; annotation: ReadingAnnotation; chapterIndex: number; paragraphIndex: number }
     | { kind: "essay"; essay: ReadingEssay; chapterIndex: number; paragraphIndex: number };
+
+/** 摘要对话框里可长按编辑/删除的条目类型 */
+type SavedReadingItemKind = "summary" | "essay" | "note";
+
+/** 摘要对话框列表里的统一条目模型：摘要 / 随笔 / 笔记共用一套卡片与长按菜单 */
+type SavedReadingItem = {
+    kind: SavedReadingItemKind;
+    id: string;
+    /** 存储中的原始内容（编辑时以此为初值，避免把展示用的裁剪结果写回） */
+    content: string;
+    /** 展示内容：默认等同 content，「当前注入」下为按双语投喂模式裁剪后的文本 */
+    displayContent?: string;
+    /** 左侧标签：位置 / 覆盖范围 */
+    meta: string;
+    /** 右侧信息：字数 / 时间 */
+    trailing: string;
+    isDistilled?: boolean;
+};
 
 type ParagraphRef = {
     absoluteIndex: number;
@@ -326,6 +347,13 @@ export function ReadingViewer({ book, onBack }: Props) {
     const [activeAnnotationId, setActiveAnnotationId] = useState<string | null>(null);
     const [annotationTranslationOverrides, setAnnotationTranslationOverrides] = useState<Record<string, boolean>>({});
     const longPressTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+    // 摘要/随笔/笔记列表：长按条目呼出「编辑 / 删除」，同一时刻只展开一条
+    const [activeSavedItemId, setActiveSavedItemId] = useState<string | null>(null);
+    const [savedItemConfirmDeleteId, setSavedItemConfirmDeleteId] = useState<string | null>(null);
+    const [editingSavedItem, setEditingSavedItem] = useState<{ kind: SavedReadingItemKind; id: string } | null>(null);
+    const [savedItemDraft, setSavedItemDraft] = useState("");
+    const [savedItemBusy, setSavedItemBusy] = useState(false);
+    const savedItemLongPressTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
     const readingMessagePressStartRef = useRef<{ x: number; y: number } | null>(null);
     const chatDragRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
     const chatMovedRef = useRef(false);
@@ -837,6 +865,184 @@ export function ReadingViewer({ book, onBack }: Props) {
 
     useEffect(() => { refreshEssays(); }, [refreshEssays]);
     useEffect(() => { refreshNotes(); }, [refreshNotes]);
+
+    // ── 摘要 / 随笔 / 笔记：长按呼出「编辑 / 删除」 ──
+    // 三者共用一套卡片与菜单，改动只作用在存储层，注入逻辑会按新内容自动重算。
+    const openSavedItemMenu = (id: string) => {
+        setActiveAnnotationId(null);
+        setSavedItemConfirmDeleteId(null);
+        setActiveSavedItemId(id);
+    };
+
+    const startSavedItemEdit = (item: SavedReadingItem) => {
+        setActiveSavedItemId(null);
+        setSavedItemConfirmDeleteId(null);
+        // 用原始存储内容作为初值：列表在「当前注入」下展示的是裁剪后的文本，不能拿它回写
+        setSavedItemDraft(item.content);
+        setEditingSavedItem({ kind: item.kind, id: item.id });
+    };
+
+    const handleSaveSavedItem = useCallback(async () => {
+        if (!editingSavedItem || savedItemBusy) return;
+        const content = savedItemDraft.trim();
+        if (!content) return;
+        setSavedItemBusy(true);
+        try {
+            const { kind, id } = editingSavedItem;
+            if (kind === "summary") {
+                const target = summaries.find(s => s.id === id);
+                if (target) await saveSummary({ ...target, content });
+                await refreshSummaries();
+            } else if (kind === "essay") {
+                if (!companionId) return;
+                const target = essays.find(e => e.id === id);
+                if (target) await saveEssay({ ...target, content });
+                await refreshEssays();
+            } else {
+                if (!companionId) return;
+                const target = notes.find(n => n.id === id);
+                if (target) {
+                    await saveNote({ ...target, content });
+                    // 主聊天里的便签卡与笔记记录同源同文本，一并更新，避免两处显示不一致
+                    if (target.messageId) editChatMessage(target.messageId, content);
+                }
+                await refreshNotes();
+            }
+            setEditingSavedItem(null);
+            setSavedItemDraft("");
+        } finally {
+            setSavedItemBusy(false);
+        }
+    }, [companionId, editingSavedItem, essays, notes, refreshEssays, refreshNotes, refreshSummaries, savedItemBusy, savedItemDraft, summaries]);
+
+    const handleDeleteSavedItem = useCallback(async (kind: SavedReadingItemKind, id: string) => {
+        if (savedItemBusy) return;
+        setSavedItemBusy(true);
+        try {
+            if (kind === "summary") {
+                await deleteSummary(id, book.id);
+                await refreshSummaries();
+            } else if (kind === "essay") {
+                if (!companionId) return;
+                await deleteEssay(id, book.id, companionId);
+                await refreshEssays();
+            } else {
+                if (!companionId) return;
+                // 笔记在主聊天里还有一条便签卡消息（同时供记忆管线读取），一并删除才算删干净
+                const target = notes.find(n => n.id === id);
+                if (target?.messageId) deleteChatMessage(target.messageId);
+                await deleteNote(id, book.id, companionId);
+                await refreshNotes();
+            }
+            setSavedItemConfirmDeleteId(null);
+            setActiveSavedItemId(null);
+        } finally {
+            setSavedItemBusy(false);
+        }
+    }, [book.id, companionId, notes, refreshEssays, refreshNotes, refreshSummaries, savedItemBusy]);
+
+    // 关闭摘要对话框时一并收起编辑态与菜单，避免下次打开还停在半途
+    const closeSummaryDialog = () => {
+        if (savedItemLongPressTimer.current) {
+            clearTimeout(savedItemLongPressTimer.current);
+            savedItemLongPressTimer.current = undefined;
+        }
+        setShowSummaryDialog(false);
+        setEditingSavedItem(null);
+        setSavedItemDraft("");
+        setActiveSavedItemId(null);
+        setSavedItemConfirmDeleteId(null);
+    };
+
+    // 统一卡片：长按 500ms 展开菜单；点删除先变成「确认删除」，避免误删
+    // 触屏下必须压制浏览器自带的长按行为（文本选择 / 系统菜单），否则会先发出
+    // pointercancel 或 contextmenu，把我们的计时器打断，表现为「长按没反应」。
+    const renderSavedItemCard = (item: SavedReadingItem) => (
+        <div
+            key={item.id}
+            className="reading-saved-item"
+            onContextMenu={(e) => e.preventDefault()}
+            onPointerDown={(e) => {
+                if (e.pointerType === "mouse") e.preventDefault();
+                if (savedItemLongPressTimer.current) clearTimeout(savedItemLongPressTimer.current);
+                savedItemLongPressTimer.current = setTimeout(() => {
+                    savedItemLongPressTimer.current = undefined;
+                    openSavedItemMenu(item.id);
+                }, 500);
+            }}
+            onPointerMove={(e) => {
+                // 手指大幅移动（意图滚动列表）时放弃长按，避免滚动中途误弹菜单
+                if (!savedItemLongPressTimer.current) return;
+                if (e.pointerType === "mouse") return;
+                clearTimeout(savedItemLongPressTimer.current);
+                savedItemLongPressTimer.current = undefined;
+            }}
+            onPointerUp={() => {
+                if (savedItemLongPressTimer.current) {
+                    clearTimeout(savedItemLongPressTimer.current);
+                    savedItemLongPressTimer.current = undefined;
+                }
+            }}
+            onPointerCancel={() => {
+                if (savedItemLongPressTimer.current) {
+                    clearTimeout(savedItemLongPressTimer.current);
+                    savedItemLongPressTimer.current = undefined;
+                }
+            }}
+            onClick={(e) => {
+                e.stopPropagation();
+                // 点卡片正文：菜单开着就收起；点别的条目则切换过去
+                if (activeSavedItemId === item.id) {
+                    setActiveSavedItemId(null);
+                    setSavedItemConfirmDeleteId(null);
+                    return;
+                }
+                if (activeSavedItemId) setActiveSavedItemId(null);
+            }}
+            style={{
+                position: "relative",
+                padding: "0.75rem",
+                marginBottom: "0.5rem",
+                borderRadius: "0.5rem",
+                background: "var(--c-bg-2)",
+                border: item.isDistilled ? "1px solid var(--c-accent)" : "1px solid var(--c-border)",
+            }}
+        >
+            <div style={{ fontSize: "0.75rem", color: "var(--c-text-2)", marginBottom: "0.25rem", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                <span>{item.meta}</span>
+                <span style={{ whiteSpace: "nowrap" }}>{item.trailing}</span>
+            </div>
+            <div style={{ fontSize: "0.875rem", lineHeight: 1.6, color: "var(--c-text)", whiteSpace: "pre-wrap" }}>
+                {item.displayContent ?? item.content}
+            </div>
+            {activeSavedItemId === item.id && (
+                <div
+                    className="ctx-menu"
+                    style={{ display: "flex", position: "absolute", right: 6, top: 6, gap: 4 }}
+                    onClick={(e) => e.stopPropagation()}
+                >
+                    {savedItemConfirmDeleteId === item.id ? (
+                        <>
+                            <button
+                                type="button"
+                                className="ctx-menu-btn ctx-menu-btn-danger"
+                                disabled={savedItemBusy}
+                                onClick={() => { void handleDeleteSavedItem(item.kind, item.id); }}
+                            >
+                                确认删除
+                            </button>
+                            <button type="button" className="ctx-menu-btn" onClick={() => setSavedItemConfirmDeleteId(null)}>取消</button>
+                        </>
+                    ) : (
+                        <>
+                            <button type="button" className="ctx-menu-btn" onClick={() => startSavedItemEdit(item)}>编辑</button>
+                            <button type="button" className="ctx-menu-btn ctx-menu-btn-danger" onClick={() => setSavedItemConfirmDeleteId(item.id)}>删除</button>
+                        </>
+                    )}
+                </div>
+            )}
+        </div>
+    );
 
     // 手动提炼：忽略字数上限强制提炼。提炼失败不丢失任何已生成摘要。
     const handleManualDistill = useCallback(async () => {
@@ -3273,8 +3479,8 @@ export function ReadingViewer({ book, onBack }: Props) {
                     title={`情节摘要（现${getDistillableSummaryChars(summaries)}字 / 上限${readingConfig.maxSummariesChars}字 · 已提炼${summaries.filter(s => s.isDistilled).length}次）`}
                     confirmLabel=""
                     cancelLabel=""
-                    onConfirm={() => setShowSummaryDialog(false)}
-                    onCancel={() => setShowSummaryDialog(false)}
+                    onConfirm={closeSummaryDialog}
+                    onCancel={closeSummaryDialog}
                 >
                     <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "0.75rem", flexWrap: "wrap" }}>
                         <button
@@ -3330,6 +3536,67 @@ export function ReadingViewer({ book, onBack }: Props) {
                     </div>
                     <div style={{ maxHeight: "55vh", overflowY: "auto" }}>
                         {(() => {
+                            // 编辑态：整块替换为编辑器，避免与列表的长按手势互相干扰
+                            if (editingSavedItem) {
+                                const kindLabel = editingSavedItem.kind === "summary"
+                                    ? "摘要"
+                                    : editingSavedItem.kind === "essay" ? "读书随笔" : "读书笔记";
+                                const btnBase: CSSProperties = {
+                                    padding: "0.5rem 1rem",
+                                    borderRadius: "0.5rem",
+                                    fontSize: "0.8125rem",
+                                    cursor: savedItemBusy ? "default" : "pointer",
+                                };
+                                return (
+                                    <div>
+                                        <div style={{ fontSize: "0.8125rem", color: "var(--c-text-2)", marginBottom: "0.5rem" }}>
+                                            编辑{kindLabel}（保存后会在之后的注入里生效）
+                                        </div>
+                                        <textarea
+                                            value={savedItemDraft}
+                                            onChange={(e) => setSavedItemDraft(e.target.value)}
+                                            rows={14}
+                                            style={{
+                                                width: "100%",
+                                                boxSizing: "border-box",
+                                                padding: "0.625rem",
+                                                borderRadius: "0.5rem",
+                                                border: "1px solid var(--c-border)",
+                                                background: "var(--c-bg-2)",
+                                                color: "var(--c-text)",
+                                                fontSize: "0.875rem",
+                                                lineHeight: 1.6,
+                                                resize: "vertical",
+                                                outline: "none",
+                                            }}
+                                        />
+                                        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: "0.75rem" }}>
+                                            <button
+                                                type="button"
+                                                style={{ ...btnBase, border: "1px solid var(--c-border)", background: "var(--c-bg-2)", color: "var(--c-text)" }}
+                                                onClick={() => { setEditingSavedItem(null); setSavedItemDraft(""); }}
+                                            >
+                                                取消
+                                            </button>
+                                            <button
+                                                type="button"
+                                                disabled={savedItemBusy || !savedItemDraft.trim()}
+                                                style={{
+                                                    ...btnBase,
+                                                    border: "none",
+                                                    background: "var(--c-accent)",
+                                                    color: "#fff",
+                                                    opacity: savedItemBusy || !savedItemDraft.trim() ? 0.5 : 1,
+                                                }}
+                                                onClick={() => { void handleSaveSavedItem(); }}
+                                            >
+                                                {savedItemBusy ? "保存中…" : "保存"}
+                                            </button>
+                                        </div>
+                                    </div>
+                                );
+                            }
+
                             // 「当前注入」以真实阅读中心段落定位（与共读讨论同一来源），不再固定章首
                             const center = getReadingCenter();
 
@@ -3342,15 +3609,16 @@ export function ReadingViewer({ book, onBack }: Props) {
                                         </div>
                                     );
                                 }
-                                return essays.map(e => (
-                                    <div key={e.id} style={{ padding: "0.75rem", marginBottom: "0.5rem", borderRadius: "0.5rem", background: "var(--c-bg-2)", border: e.isDistilled ? "1px solid var(--c-accent)" : "1px solid var(--c-border)" }}>
-                                        <div style={{ fontSize: "0.75rem", color: "var(--c-text-2)", marginBottom: "0.25rem", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                            <span>{e.isDistilled ? `随笔·提炼 · 覆盖到第${Math.floor((e.distilledUpTo ?? 0) / 100000) + 1}章` : `第${e.chapterIndex + 1}章 · 段落${e.startParagraph + 1}-${e.endParagraph + 1}`}</span>
-                                            <span>{e.content.length}字</span>
-                                        </div>
-                                        <div style={{ fontSize: "0.875rem", lineHeight: 1.6, color: "var(--c-text)" }}>{e.content}</div>
-                                    </div>
-                                ));
+                                return essays.map(e => renderSavedItemCard({
+                                    kind: "essay",
+                                    id: e.id,
+                                    content: e.content,
+                                    meta: e.isDistilled
+                                        ? `随笔·提炼 · 覆盖到第${Math.floor((e.distilledUpTo ?? 0) / 100000) + 1}章`
+                                        : `第${e.chapterIndex + 1}章 · 段落${e.startParagraph + 1}-${e.endParagraph + 1}`,
+                                    trailing: `${e.content.length}字`,
+                                    isDistilled: e.isDistilled,
+                                }));
                             }
 
                             // 读书笔记：全部展示（按时间倒序）
@@ -3363,15 +3631,13 @@ export function ReadingViewer({ book, onBack }: Props) {
                                         </div>
                                     );
                                 }
-                                return orderedNotes.map(n => (
-                                    <div key={n.id} style={{ padding: "0.75rem", marginBottom: "0.5rem", borderRadius: "0.5rem", background: "var(--c-bg-2)", border: "1px solid var(--c-border)" }}>
-                                        <div style={{ fontSize: "0.75rem", color: "var(--c-text-2)", marginBottom: "0.25rem", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                            <span>{`覆盖：第${n.startChapterIndex + 1}章 → 第${n.endChapterIndex + 1}章`}</span>
-                                            <span>{new Date(n.createdAt).toLocaleString()}</span>
-                                        </div>
-                                        <div style={{ fontSize: "0.875rem", lineHeight: 1.6, color: "var(--c-text)", whiteSpace: "pre-wrap" }}>{n.content}</div>
-                                    </div>
-                                ));
+                                return orderedNotes.map(n => renderSavedItemCard({
+                                    kind: "note",
+                                    id: n.id,
+                                    content: n.content,
+                                    meta: `覆盖：第${n.startChapterIndex + 1}章 → 第${n.endChapterIndex + 1}章`,
+                                    trailing: new Date(n.createdAt).toLocaleString(),
+                                }));
                             }
                             let displaySummaries: ReadingSummary[] = [];
                             // 「当前注入」除了摘要，也把随笔与最新笔记一并预览——
@@ -3416,105 +3682,41 @@ export function ReadingViewer({ book, onBack }: Props) {
 
                             return (
                                 <>
-                                    {displaySummaries.map(s => (
-                                        <div
-                                            key={s.id}
-                                            style={{
-                                                padding: "0.75rem",
-                                                marginBottom: "0.5rem",
-                                                borderRadius: "0.5rem",
-                                                background: "var(--c-bg-2)",
-                                                border: s.isDistilled
-                                                    ? "1px solid var(--c-accent)"
-                                                    : "1px solid var(--c-border)",
-                                            }}
-                                        >
-                                            <div style={{
-                                                fontSize: "0.75rem",
-                                                color: "var(--c-text-2)",
-                                                marginBottom: "0.25rem",
-                                                display: "flex",
-                                                justifyContent: "space-between",
-                                                alignItems: "center",
-                                            }}>
-                                                <span>
-                                                    {s.isDistilled
-                                                        ? `前情提要（提炼）· 覆盖到第${Math.floor((s.distilledUpTo ?? 0) / 100000) + 1}章`
-                                                        : `第${s.chapterIndex + 1}章 · 段落${s.startParagraph + 1}-${s.endParagraph + 1}`}
-                                                </span>
-                                                <span>{s.content.length}字</span>
-                                            </div>
-                                            <div style={{ fontSize: "0.875rem", lineHeight: 1.6, color: "var(--c-text)" }}>
-                                                {s.content}
-                                            </div>
-                                        </div>
-                                    ))}
+                                    {displaySummaries.map(s => renderSavedItemCard({
+                                        kind: "summary",
+                                        id: s.id,
+                                        content: s.content,
+                                        meta: s.isDistilled
+                                            ? `前情提要（提炼）· 覆盖到第${Math.floor((s.distilledUpTo ?? 0) / 100000) + 1}章`
+                                            : `第${s.chapterIndex + 1}章 · 段落${s.startParagraph + 1}-${s.endParagraph + 1}`,
+                                        trailing: `${s.content.length}字`,
+                                        isDistilled: s.isDistilled,
+                                    }))}
                                     {injectedEssays.map(e => {
                                         // 显示实际注入给 char 的文本：双语角色按投喂模式只留原文
                                         const shown = trimBilingualForFeed(e.content, chatFeedMode);
-                                        return (
-                                            <div
-                                                key={e.id}
-                                                style={{
-                                                    padding: "0.75rem",
-                                                    marginBottom: "0.5rem",
-                                                    borderRadius: "0.5rem",
-                                                    background: "var(--c-bg-2)",
-                                                    border: e.isDistilled
-                                                        ? "1px solid var(--c-accent)"
-                                                        : "1px solid var(--c-border)",
-                                                }}
-                                            >
-                                                <div style={{
-                                                    fontSize: "0.75rem",
-                                                    color: "var(--c-text-2)",
-                                                    marginBottom: "0.25rem",
-                                                    display: "flex",
-                                                    justifyContent: "space-between",
-                                                    alignItems: "center",
-                                                }}>
-                                                    <span>
-                                                        {e.isDistilled
-                                                            ? `读书随笔（提炼）· 覆盖到第${Math.floor((e.distilledUpTo ?? 0) / 100000) + 1}章`
-                                                            : `读书随笔 · 第${e.chapterIndex + 1}章 · 段落${e.startParagraph + 1}-${e.endParagraph + 1}`}
-                                                    </span>
-                                                    <span>{shown.length}字</span>
-                                                </div>
-                                                <div style={{ fontSize: "0.875rem", lineHeight: 1.6, color: "var(--c-text)" }}>
-                                                    {shown}
-                                                </div>
-                                            </div>
-                                        );
+                                        return renderSavedItemCard({
+                                            kind: "essay",
+                                            id: e.id,
+                                            content: e.content,
+                                            displayContent: shown,
+                                            meta: e.isDistilled
+                                                ? `读书随笔（提炼）· 覆盖到第${Math.floor((e.distilledUpTo ?? 0) / 100000) + 1}章`
+                                                : `读书随笔 · 第${e.chapterIndex + 1}章 · 段落${e.startParagraph + 1}-${e.endParagraph + 1}`,
+                                            trailing: `${shown.length}字`,
+                                            isDistilled: e.isDistilled,
+                                        });
                                     })}
                                     {injectedNote && (() => {
                                         const shown = trimBilingualForFeed(injectedNote.content, chatFeedMode);
-                                        return (
-                                            <div
-                                                key={injectedNote.id}
-                                                style={{
-                                                    padding: "0.75rem",
-                                                    marginBottom: "0.5rem",
-                                                    borderRadius: "0.5rem",
-                                                    background: "var(--c-bg-2)",
-                                                    border: "1px solid var(--c-accent)",
-                                                }}
-                                            >
-                                                <div style={{
-                                                    fontSize: "0.75rem",
-                                                    color: "var(--c-text-2)",
-                                                    marginBottom: "0.25rem",
-                                                    display: "flex",
-                                                    justifyContent: "space-between",
-                                                    alignItems: "center",
-                                                }}>
-                                                    <span>读书笔记（最新一篇）</span>
-                                                    <span>{shown.length}字</span>
-                                                </div>
-                                                <div style={{ fontSize: "0.875rem", lineHeight: 1.6, color: "var(--c-text)", whiteSpace: "pre-wrap" }}>
-                                                    {shown}
-                                                </div>
-                                            </div>
-                                        );
+                                        return renderSavedItemCard({
+                                            kind: "note",
+                                            id: injectedNote.id,
+                                            content: injectedNote.content,
+                                            displayContent: shown,
+                                            meta: "读书笔记（最新一篇）",
+                                            trailing: `${shown.length}字`,
+                                        });
                                     })()}
                                 </>
                             );
