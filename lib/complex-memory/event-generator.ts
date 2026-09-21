@@ -345,7 +345,7 @@ export async function generateEventWindow(
   characterId: string,
   characterName: string,
   windowIndex: number,
-  opts?: { migrated?: boolean; date?: string },
+  opts?: { migrated?: boolean; date?: string; sinceTs?: string },
 ): Promise<{
   success: boolean;
   error?: string;
@@ -356,7 +356,12 @@ export async function generateEventWindow(
   const config = loadComplexMemoryConfig();
   // 迁移按日回放：date 限定只读当天素材，杜绝跨日期窗口（7/21 内容被 8/15 污染）。
   // 正常增量生成（无 date）仍读水位线之后的全量，但窗口切分不受影响。
-  const allEntries = loadSourceTimeline(characterId, { date: opts?.date, full: true });
+  // sinceTs：起始标记——只读该 ISO 时刻【之后】的条目（用于"只补增量"，起始那天也精确到那一刻）。
+  const allEntries = loadSourceTimeline(characterId, {
+    date: opts?.date,
+    full: true,
+    afterTimestamp: opts?.sinceTs,
+  });
   if (allEntries.length < 4) {
     return { success: false, error: "事件不足 4 条", totalWindows: 0, nextIndex: windowIndex, done: true };
   }

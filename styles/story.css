@@ -680,6 +680,34 @@
           }
         }
 
+        /* === 流式生成实时预览气泡（正文边生成边追加） === */
+        .story-stream-text {
+          white-space: pre-wrap;
+          word-break: break-word;
+          overflow-wrap: anywhere;
+          text-align: justify;
+        }
+        /* 末尾光标：提示仍在生成中 */
+        .story-stream-text::after {
+          content: "";
+          display: inline-block;
+          width: 2px;
+          height: 1em;
+          margin-left: 2px;
+          vertical-align: -0.12em;
+          background: var(--c-story-send-color, #94a3b8);
+          animation: story-stream-caret 1s steps(1) infinite;
+        }
+        @keyframes story-stream-caret {
+          0%, 50% { opacity: 1; }
+          50.01%, 100% { opacity: 0; }
+        }
+        /* 侧栏开关处于开启态 */
+        .story-tool-btn[data-active="true"] {
+          background: var(--c-story-panel-active, rgba(148, 163, 184, 0.18));
+          font-weight: 600;
+        }
+
         /* === 富文本排版 (Typography Aesthetic) === */
         .story-richtext {
           font-size: calc(14px*var(--app-text-scale,1));

@@ -12,6 +12,7 @@ import { OfflinePushRevampAnnouncement } from "./offline-push-revamp-announcemen
 import { SplashAnimation } from "./splash-animation";
 import { MusicProvider } from "@/lib/music-context";
 import { hydrateKvDb, isKvHydrated } from "@/lib/kv-db";
+import { installWanjieBridge } from "@/lib/wanjie/bridge";
 import { getThemeAssetMap, readThemeProfile } from "@/lib/theme-storage";
 import { resolveActiveIconSkins, type ThemeProfile } from "@/lib/theme-types";
 import { hasPendingMcpOAuthCallback } from "@/lib/tool-executor";
@@ -250,6 +251,11 @@ export function MainApp() {
         return;
       }
       setKvHydrateFailed(false);
+
+      // 万界壳对接门：把「列出角色 / 导出聊天记录 / 导入外来消息 / 触发内化」
+      // 挂到 window.__wanjie。必须等 KV 水合完成后再挂（否则角色/会话读不到）。
+      // 详见 lib/wanjie/bridge.ts
+      installWanjieBridge();
 
       let nextPreparedTheme: PreparedDesktopTheme | null = null;
       try {

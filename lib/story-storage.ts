@@ -16,6 +16,7 @@ export type StorySession = {
   customCSS?: string;
   foldTags?: string;            // Comma-separated tag names to fold for this session.
   contextExcludedTags?: string; // Comma-separated tag names stripped before sending story history to the LLM.
+  stream?: boolean;             // 流式生成：正文边生成边显示（按会话独立开关，默认关）
   uiPrefs?: StoryUiPrefs;
   lastMessageId?: string;
   lastMessagePreview?: string;

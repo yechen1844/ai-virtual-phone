@@ -114,13 +114,16 @@ export function estimateMigration(characterId: string, days: number, range?: { s
   return Math.round(eventsTokens + dailiesTokens + periodsTokens + coreTokens);
 }
 
-/** 启动迁移：计算回溯日期（最近 N 天，正序），落断点，返回预估 token。 */
+/** 启动迁移：计算回溯日期（最近 N 天，正序），落断点，返回预估 token。
+ *  sinceTs：可选起始标记（ISO 时间）——只消化该时刻之后的条目，用于"只补增量"。
+ *  不传即沿用原有行为（按天全量回放）。 */
 export async function startMigration(
   characterId: string,
   characterName: string,
   days: number,
   force = false,
   range?: { start?: string; end?: string },
+  sinceTs?: string | null,
 ): Promise<{ success: boolean; error?: string; estimate?: number }> {
   const existing = getMigrationState(characterId);
   if (existing && !force) {
@@ -129,7 +132,7 @@ export async function startMigration(
     }
   }
 
-  const dates = computeDates(characterId, days, range);
+  const dates = computeDates(characterId, days, range, sinceTs);
   const timeline = loadSourceTimeline(characterId);
   if (dates.length === 0 && timeline.length < 4) {
     return { success: false, error: "该角色没有可回溯的聊天/时间线历史" };
@@ -153,6 +156,7 @@ export async function startMigration(
     nextDailyIndex: 0,
     dayIndex: 0,
     coreDailyCounter: 0,
+    sinceTs: sinceTs ?? null,
     startedAt: now,
     updatedAt: now,
     tokenEstimate: estimate,
@@ -334,6 +338,7 @@ async function stepEventWindow(
   const res = await generateEventWindow(characterId, characterName, state.windowIndex, {
     migrated: true,
     date,
+    sinceTs: state.sinceTs ?? undefined,
   });
   if (!res.success) {
     if (res.error === "事件不足 4 条") {
@@ -527,11 +532,12 @@ async function createLegacyPeriod(characterId: string): Promise<void> {
   await savePeriod(period);
 }
 
-function computeDates(characterId: string, days: number, range?: { start?: string; end?: string }): string[] {
+function computeDates(characterId: string, days: number, range?: { start?: string; end?: string }, sinceTs?: string | null): string[] {
   const today = dateString(0);
   // 与事件生成口径一致：统一走来源过滤后的时间线，避免把"被关来源主导/素材过少"的低活动日纳入 dates，
   // 这类日期事件被跳过、日记又因素材过少必然失败，最终静默缺失。
-  const timeline = loadSourceTimeline(characterId, { full: true });
+  // sinceTs 传入时只统计该时刻【之后】的条目 → 起始那一天也只算增量部分。
+  const timeline = loadSourceTimeline(characterId, { full: true, afterTimestamp: sinceTs ?? undefined });
   const byDate = new Map<string, number>();
   for (const e of timeline) {
     const d = dateFromTimestamp(e.timestamp);

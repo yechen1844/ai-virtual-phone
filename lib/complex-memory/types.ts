@@ -162,6 +162,10 @@ export type MigrationState = {
   nextDailyIndex: number;       // dates 中已覆盖完成并移交 pendingDates 的指针
   dayIndex?: number;            // 按日期逐日回放时，当前处理到的 dates 下标（最早起）
   coreDailyCounter: number;     // 迁移内核心定期重构日记计数
+  /** 起始标记（ISO 时间）：本次迁移只消化该时刻【之后】的时间线条目。
+   *  为空 / 未设 = 沿用原有行为（按天全量回放）。
+   *  用途：从别的小手机同步过来的经历，只需要总结"上次之后"的增量，避免重复入账。 */
+  sinceTs?: string | null;
   startedAt: string | null;
   updatedAt: string | null;
   error?: string;

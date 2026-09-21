@@ -124,6 +124,7 @@ export type ChatMessage = {
         | "system_instruction"
         | "group_admin_notice"
         | "media_file"
+        | "wanjie_card" // 万界：从别的小手机同步过来的"活动卡片"（不是谁说的话，是发生过的事）
         | `plugin:${string}`; // 聊天插件自定义消息类型（由注册该 kind 的插件渲染气泡）
     origin?: "chat" | "reading_discuss" | "movie_discuss" | "reading_note" | "custom_app" | "custom_app_background";
     mediaUrl?: string;

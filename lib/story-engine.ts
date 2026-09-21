@@ -10,7 +10,7 @@ import {
 } from "./settings-storage";
 import type { ApiConfig, PresetConfig, RegexConfig, WorldBookConfig } from "./settings-types";
 import { assemblePromptPayload, type LLMMessage } from "./llm-prompt-assembler";
-import { previewMessagesForApi, sendLLMRequest, ChatEngineError } from "./chat-engine";
+import { previewMessagesForApi, sendLLMRequest, sendLLMStreamRequest, ChatEngineError } from "./chat-engine";
 import { loadMemoryConfig } from "./memory-storage";
 import { retrieveCoreMemoriesForPrompt, retrieveMemoriesForPrompt } from "./memory-service";
 import { formatCoreMemories, formatLongTermMemories } from "./memory-injector";
@@ -137,7 +137,13 @@ export function getStoryRenderSignature(characterId: string): { regexSignature: 
 export async function generateStoryCompletion(
   characterId: string,
   history: StoryMessage[],
-  options?: { sessionFoldTags?: string; sessionContextExcludedTags?: string; signal?: AbortSignal },
+  options?: {
+    sessionFoldTags?: string;
+    sessionContextExcludedTags?: string;
+    signal?: AbortSignal;
+    /** 传入即走流式生成：正文增量边生成边回调，供 UI 做实时预览。不传则整段返回。 */
+    onStreamDelta?: (delta: string) => void;
+  },
 ): Promise<StoryGenerationResult> {
   const character = loadCharacters().find((item) => item.id === characterId);
   if (!character) {
@@ -152,9 +158,23 @@ export async function generateStoryCompletion(
   const userIdentity = resolveUserIdentity(characterId, "story");
   const macroEngine = new MacroEngine(character.name, userIdentity?.name ?? "用户");
 
-  const rawOutput = await sendLLMRequest(apiConfig, preset, llmMessages, regexes, {
-    characterName: character.name,
-  }, { skipOutputRegex: true, includeReasoning: true, appId: "story", appTags: ["story"], signal: options?.signal });
+  // 流式与整体两条路径共用同一份提示词与同一套选项：除了增量回调，落库文本完全一致。
+  let rawOutput: string;
+  if (options?.onStreamDelta) {
+    const onStreamDelta = options.onStreamDelta;
+    const streamed = await sendLLMStreamRequest(apiConfig, preset, llmMessages, regexes, {
+      characterName: character.name,
+    }, {
+      skipOutputRegex: true, includeReasoning: true, appId: "story", appTags: ["story"], signal: options.signal,
+    }, {
+      onDelta: (delta) => onStreamDelta(delta),
+    });
+    rawOutput = streamed.content;
+  } else {
+    rawOutput = await sendLLMRequest(apiConfig, preset, llmMessages, regexes, {
+      characterName: character.name,
+    }, { skipOutputRegex: true, includeReasoning: true, appId: "story", appTags: ["story"], signal: options?.signal });
+  }
 
   const parsed = parseStoryResponse(rawOutput, regexes, {
     summaryTag,
