@@ -805,6 +805,8 @@ export async function sendLLMStreamRequest(
         followUpCount?: number;
         debugSessionId?: string;
         signal?: AbortSignal;
+        /** 流式超时（毫秒）。缺省 500 秒；传 <=0 表示不限时（长文生成等场景由调用方自行停止）。 */
+        streamTimeoutMs?: number;
     },
     callbacks?: ChatCompletionStreamCallbacks,
 ): Promise<ChatCompletionStreamResult> {
@@ -823,7 +825,9 @@ export async function sendLLMStreamRequest(
     const request = buildProviderRequest(config, effectivePreset, requestMessages, { stream: true });
     publishDebugPromptSnapshot({ request, config, preset: effectivePreset, meta, options, requestKind: "completion" });
     const llmAbort = new AbortController();
-    const llmTimeout = setTimeout(() => llmAbort.abort(), 500_000);
+    // 流式超时保护：默认 500 秒；传 <=0 表示不限时（剧情长文等，交给调用方的停止按钮）。
+    const streamTimeoutMs = options?.streamTimeoutMs ?? 500_000;
+    const llmTimeout = streamTimeoutMs > 0 ? setTimeout(() => llmAbort.abort(), streamTimeoutMs) : null;
     const detachExternalAbort = attachExternalAbort(llmAbort, options?.signal);
 
     try {
@@ -877,13 +881,13 @@ export async function sendLLMStreamRequest(
     } catch (error: unknown) {
         if (error instanceof DOMException && (error as DOMException).name === "AbortError") {
             if (options?.signal?.aborted) throw error;
-            throw new ChatEngineError("AI 流式回复超时（500秒），请重试。");
+            throw new ChatEngineError(`AI 流式回复超时（${Math.round(streamTimeoutMs / 1000)}秒），请重试。`);
         }
         if (error instanceof ChatEngineError) throw error;
         const detail = error instanceof Error ? error.message : String(error);
         throw new ChatEngineError(`Stream Network Error connecting to AI Provider: ${detail}`);
     } finally {
-        clearTimeout(llmTimeout);
+        if (llmTimeout) clearTimeout(llmTimeout);
         detachExternalAbort();
     }
 }

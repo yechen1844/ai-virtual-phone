@@ -170,6 +170,8 @@ export async function generateStoryCompletion(
       // 极端情况下回退到左括号处导致一个字都不吐（表现为出一句后卡死）。剧情不需要幻觉时间戳
       // 剥离（整段路径本来也不做），故关闭它：增量来一个字出一个字。
       skipTimestampStrip: true,
+      // 剧情常见超长正文，生成时间可远超默认 500 秒：不限时，由用户的停止按钮 / 切会话中止。
+      streamTimeoutMs: 0,
     }, {
       onDelta: (delta) => onStreamDelta(delta),
     });
@@ -196,6 +198,35 @@ export async function generateStoryCompletion(
     promptMessages: llmMessages,
     model: apiConfig.defaultModel,
     presetName: preset?.name || "默认预设",
+  };
+}
+
+/**
+ * 把一段剧情原文按当前会话的正则/折叠标签配置解析成可落库的渲染结果。
+ * 供「流式中断 / 超时」时保留已生成内容使用——与正常落库走同一套解析，显示保持一致。
+ * 解析失败由调用方兜底（至少保留原文纯文本）。
+ */
+export function renderStoryPartial(
+  characterId: string,
+  rawText: string,
+  options?: { sessionFoldTags?: string },
+): { renderedText: string; storySummary: string; regexSignature: string; parserVersion: number } {
+  const { regexes, regexSignature, summaryTag } = resolveStoryConfigs(characterId);
+  const effectiveFoldTags = options?.sessionFoldTags?.trim() || DEFAULT_STORY_FOLD_TAGS;
+  const character = loadCharacters().find((item) => item.id === characterId);
+  const userIdentity = resolveUserIdentity(characterId, "story");
+  const macroEngine = new MacroEngine(character?.name ?? "", userIdentity?.name ?? "用户");
+  const parsed = parseStoryResponse(rawText, regexes, {
+    summaryTag,
+    foldTags: effectiveFoldTags,
+    macroEngine,
+    activeTags: ["story"],
+  });
+  return {
+    renderedText: parsed.renderedText,
+    storySummary: parsed.summaryText,
+    regexSignature,
+    parserVersion: STORY_PARSER_VERSION,
   };
 }
 

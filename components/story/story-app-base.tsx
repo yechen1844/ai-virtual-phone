@@ -45,6 +45,7 @@ import {
   generateStoryCompletion,
   getStoryRenderSignature,
   rebuildStorySessionRenderCache,
+  renderStoryPartial,
 } from "@/lib/story-engine";
 import {
   createOrGetStorySession,
@@ -668,6 +669,34 @@ export function StoryApp({ onClose }: StoryAppProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, activeCharacterId, currentSession?.id, currentSession?.foldTags, messages, isGenerating]);
 
+  /** 落库「已生成但被中断」的正文（主动停止 / 超时 / 网络异常）。
+   *  解析与正常落库同一套（renderStoryPartial），解析失败也至少保留原文，绝不吞掉已生成内容。 */
+  function persistInterruptedStoryText(sessionId: string, characterId: string, rawText: string, foldTags?: string) {
+    const trimmed = rawText.trim();
+    if (!trimmed) return;
+    let renderedText = trimmed;
+    let parsed: { storySummary: string; regexSignature: string; parserVersion: number } | null = null;
+    try {
+      const result = renderStoryPartial(characterId, trimmed, { sessionFoldTags: foldTags });
+      if (result.renderedText) renderedText = result.renderedText;
+      parsed = {
+        storySummary: result.storySummary,
+        regexSignature: result.regexSignature,
+        parserVersion: result.parserVersion,
+      };
+    } catch { /* 解析失败：仍以原文落库，至少纯文本可见 */ }
+    pushStoryMessage({
+      sessionId,
+      role: "assistant",
+      rawContent: trimmed,
+      renderedContent: renderedText,
+      storySummary: parsed?.storySummary,
+      regexSignature: parsed?.regexSignature,
+      parserVersion: parsed?.parserVersion,
+    });
+    setStorageVersion(value => value + 1);
+  }
+
   function applySessionUpdates(updates: Partial<StorySession>) {
     if (!currentSession) return;
     const next = updateStorySession(currentSession.id, updates);
@@ -733,7 +762,12 @@ export function StoryApp({ onClose }: StoryAppProps) {
         }
       }
     } catch (error) {
-      if (!isCurrentGeneration() || isAbortLikeError(error)) return;
+      // 已被新的生成取代：这一轮的残留交给新一轮，直接丢弃
+      if (!isCurrentGeneration()) return;
+      // 超时 / 网络异常：先把已收到的正文落库（主动停止由 handleStopGeneration 负责落库），
+      // 避免"报了错就连带把已生成内容一起吞掉"
+      persistInterruptedStoryText(sessionId, characterId, streamAccumRef.current, currentSession?.foldTags);
+      if (isAbortLikeError(error)) return;
       const errText = error instanceof Error ? error.message : "剧情生成失败，请稍后再试。";
       const systemMessage = pushStoryMessage({
         sessionId,
@@ -755,10 +789,15 @@ export function StoryApp({ onClose }: StoryAppProps) {
 
   function handleStopGeneration() {
     if (!activeSessionId) return;
-    const cancelled = cancelStoryGenerationRun(activeSessionId);
+    const sessionId = activeSessionId;
+    // 中止前先取走已累积的正文：停止 ≠ 丢弃，已生成的部分要落库保留
+    const partial = streamAccumRef.current;
+    const cancelled = cancelStoryGenerationRun(sessionId);
     if (!cancelled && !isGenerating) return;
     clearStreamPreview();
-    markGenerating(activeSessionId, false);
+    markGenerating(sessionId, false);
+    persistInterruptedStoryText(sessionId, activeCharacterId, partial, currentSession?.foldTags);
+    if (activeSessionIdRef.current === sessionId) setMessages(loadStoryMessages(sessionId));
   }
 
   function handleTouchStart(clientX: number) {
@@ -928,7 +967,11 @@ export function StoryApp({ onClose }: StoryAppProps) {
       if (activeSessionIdRef.current === sessionId) setMessages(loadStoryMessages(sessionId));
       setStorageVersion(v => v + 1);
     } catch (error) {
-      if (!isCurrentGeneration() || isAbortLikeError(error)) return;
+      // 已被新的生成取代：丢弃本轮残留
+      if (!isCurrentGeneration()) return;
+      // 超时 / 网络异常：已收到的正文先落库，不吞内容
+      persistInterruptedStoryText(sessionId, characterId, streamAccumRef.current, currentSession?.foldTags);
+      if (isAbortLikeError(error)) return;
       const errText = error instanceof Error ? error.message : "重试失败，请稍后再试。";
       const systemMessage = pushStoryMessage({ sessionId, role: "system", rawContent: errText, renderedContent: errText });
       if (activeSessionIdRef.current === sessionId) setMessages(loadStoryMessages(sessionId));
