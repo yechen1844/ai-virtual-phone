@@ -166,6 +166,10 @@ export async function generateStoryCompletion(
       characterName: character.name,
     }, {
       skipOutputRegex: true, includeReasoning: true, appId: "story", appTags: ["story"], signal: options.signal,
+      // 剧情正文含大量括注（「（笑）」「（轻声）」），时间戳剥离器会为等括号闭合而扣住流尾巴、
+      // 极端情况下回退到左括号处导致一个字都不吐（表现为出一句后卡死）。剧情不需要幻觉时间戳
+      // 剥离（整段路径本来也不做），故关闭它：增量来一个字出一个字。
+      skipTimestampStrip: true,
     }, {
       onDelta: (delta) => onStreamDelta(delta),
     });
