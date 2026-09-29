@@ -60,6 +60,9 @@ export type ReadingSummary = {
     startParagraph: number;
     /** 本批结束段落序号 */
     endParagraph: number;
+    /** 结束段所在的章节序号。批次按全书绝对索引切分，可能跨章——此时结束段不在
+     *  chapterIndex 那一章，位置判定与渲染挂靠必须用这个值。旧数据缺省时回退到 chapterIndex。 */
+    endChapterIndex?: number;
     /** ~150 字情节摘要 */
     content: string;
     /** 是否为提炼后的摘要 */
@@ -81,6 +84,9 @@ export type ReadingEssay = {
     chapterIndex: number;
     startParagraph: number;
     endParagraph: number;
+    /** 结束段所在的章节序号（批次可能跨章）。渲染挂靠与位置判定用这个值；
+     *  旧数据缺省时回退到 chapterIndex。 */
+    endChapterIndex?: number;
     /** 两句左右的第一人称随笔（存储时带「角色名的随笔：」前缀） */
     content: string;
     /** 是否为提炼后的随笔 */

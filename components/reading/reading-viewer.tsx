@@ -28,7 +28,7 @@ import {
     deleteNote,
     deleteSummary,
 } from "@/lib/reading-storage";
-import { generateAnnotationBatch, generateReadingChat, generateReadingNote, distillSummariesIfNeeded, distillEssaysIfNeeded, formatReadingSummary, formatReadingEssay, formatReadingNote, getDistillableSummaryChars, getDistillableEssayChars, getSummariesForInjection, getEssaysForInjection, getLatestNoteForInjection, loadReadingHistory, parseReadingDiscussResponse, type ReadingDiscussAction, type ReadingDiscussContext } from "@/lib/reading-engine";
+import { generateAnnotationBatch, generateReadingChat, generateReadingNote, distillSummariesIfNeeded, distillEssaysIfNeeded, formatReadingSummary, formatReadingEssay, formatReadingNote, getDistillableSummaryChars, getDistillableEssayChars, getSummariesForInjection, getEssaysForInjection, getLatestNoteForInjection, loadReadingHistory, parseReadingDiscussResponse, endChapterOf, formatBatchPosition, type ReadingDiscussAction, type ReadingDiscussContext } from "@/lib/reading-engine";
 import { loadChatMessages, pushChatMessage, deleteChatMessage, editChatMessage, loadChatContacts, createOrGetSession, isReadingDiscussMessage } from "@/lib/chat-storage";
 import type { ChatMessage, ChatSession } from "@/lib/chat-storage";
 import { loadCharacters } from "@/lib/character-storage";
@@ -524,7 +524,7 @@ export function ReadingViewer({ book, onBack }: Props) {
                 <span className="reading-essay-meta">
                     {essay.isDistilled
                         ? `覆盖到第${Math.floor((essay.distilledUpTo ?? 0) / 100000) + 1}章`
-                        : `第${essay.chapterIndex + 1}章 · 段落${essay.startParagraph + 1}-${essay.endParagraph + 1}`}
+                        : formatBatchPosition(essay.chapterIndex, essay.startParagraph, endChapterOf(essay), essay.endParagraph)}
                 </span>
             </div>
             <ReadingAnnotationContent
@@ -1356,11 +1356,14 @@ export function ReadingViewer({ book, onBack }: Props) {
             }
 
             // 保存一并生成的摘要（按段落范围去重：该批次范围已存在摘要则不重复生成）
+            // 用全局位置编码做「区间重叠」判断：批次按全书绝对索引切分可能跨章，
+            // 只比较「首段所在章」会漏判（跨章批次与上一批范围其实重叠，却因章号不同被当成新批次）
+            const batchStartPos = encodeReadingPosition(firstItem.chapterIndex, firstItem.paragraphIndex);
+            const batchEndPos = encodeReadingPosition(lastItem.chapterIndex, lastItem.paragraphIndex);
             const isSummaryAlreadyCovered = summaries.some(s =>
                 !s.isDistilled
-                && s.chapterIndex === firstItem.chapterIndex
-                && s.startParagraph <= lastItem.paragraphIndex
-                && s.endParagraph >= firstItem.paragraphIndex,
+                && encodeReadingPosition(s.chapterIndex, s.startParagraph) <= batchEndPos
+                && encodeReadingPosition(endChapterOf(s), s.endParagraph) >= batchStartPos,
             );
             if (batchResult.summary && !isSummaryAlreadyCovered) {
                 await saveSummary(batchResult.summary);
@@ -1377,9 +1380,8 @@ export function ReadingViewer({ book, onBack }: Props) {
             // 保存一并生成的随笔（同样按段落范围去重）。随笔绑定角色，承载当时情绪。
             const isEssayAlreadyCovered = essays.some(e =>
                 !e.isDistilled
-                && e.chapterIndex === firstItem.chapterIndex
-                && e.startParagraph <= lastItem.paragraphIndex
-                && e.endParagraph >= firstItem.paragraphIndex,
+                && encodeReadingPosition(e.chapterIndex, e.startParagraph) <= batchEndPos
+                && encodeReadingPosition(endChapterOf(e), e.endParagraph) >= batchStartPos,
             );
             if (batchResult.essay && !isEssayAlreadyCovered) {
                 await saveEssay(batchResult.essay);
@@ -2371,8 +2373,8 @@ export function ReadingViewer({ book, onBack }: Props) {
         const annotationSignature = chapterAnnotations
             .map((annotation) => `${annotation.id}:${annotation.content.length}:${isAnnotationTranslationExpanded(annotation.id) ? 1 : 0}`)
             .join("|");
-        // 随笔也要参与分页：挂在其覆盖批次的末段
-        const chapterEssays = essays.filter((essay) => essay.chapterIndex === chapterIndex);
+        // 随笔也要参与分页：挂在其覆盖批次的末段（末段可能属下一章，用 endChapterIndex）
+        const chapterEssays = essays.filter((essay) => endChapterOf(essay) === chapterIndex);
         const essaySignature = chapterEssays
             .map((essay) => `${essay.id}:${essay.content.length}:${isAnnotationTranslationExpanded(essay.id) ? 1 : 0}`)
             .join("|");
@@ -2903,9 +2905,11 @@ export function ReadingViewer({ book, onBack }: Props) {
                                     const paragraphAnnotations = annotations.filter(
                                         (annotation) => annotation.chapterIndex === chapter.index && annotation.paragraphIndex === pIndex
                                     );
-                                    // 随笔落在其覆盖批次的末段，读到这里就能看到当时写下的心情
+                                    // 随笔落在其覆盖批次的末段，读到这里就能看到当时写下的心情。
+                                    // 批次按全书绝对索引切分可能跨章，末段所属章节要用 endChapterIndex，
+                                    // 否则会挂到首章的同号段落上（位置串台）
                                     const paragraphEssays = essays.filter(
-                                        (essay) => essay.chapterIndex === chapter.index && essay.endParagraph === pIndex
+                                        (essay) => endChapterOf(essay) === chapter.index && essay.endParagraph === pIndex
                                     );
                                     return (
                                         <div key={pIndex} className="reading-scroll-block" data-paragraph-index={pIndex}>
@@ -3625,7 +3629,7 @@ export function ReadingViewer({ book, onBack }: Props) {
                                     content: e.content,
                                     meta: e.isDistilled
                                         ? `随笔·提炼 · 覆盖到第${Math.floor((e.distilledUpTo ?? 0) / 100000) + 1}章`
-                                        : `第${e.chapterIndex + 1}章 · 段落${e.startParagraph + 1}-${e.endParagraph + 1}`,
+                                        : formatBatchPosition(e.chapterIndex, e.startParagraph, endChapterOf(e), e.endParagraph),
                                     trailing: `${e.content.length}字`,
                                     isDistilled: e.isDistilled,
                                 }));
@@ -3698,7 +3702,7 @@ export function ReadingViewer({ book, onBack }: Props) {
                                         content: s.content,
                                         meta: s.isDistilled
                                             ? `前情提要（提炼）· 覆盖到第${Math.floor((s.distilledUpTo ?? 0) / 100000) + 1}章`
-                                            : `第${s.chapterIndex + 1}章 · 段落${s.startParagraph + 1}-${s.endParagraph + 1}`,
+                                            : formatBatchPosition(s.chapterIndex, s.startParagraph, endChapterOf(s), s.endParagraph),
                                         trailing: `${s.content.length}字`,
                                         isDistilled: s.isDistilled,
                                     }))}
@@ -3712,7 +3716,7 @@ export function ReadingViewer({ book, onBack }: Props) {
                                             displayContent: shown,
                                             meta: e.isDistilled
                                                 ? `读书随笔（提炼）· 覆盖到第${Math.floor((e.distilledUpTo ?? 0) / 100000) + 1}章`
-                                                : `读书随笔 · 第${e.chapterIndex + 1}章 · 段落${e.startParagraph + 1}-${e.endParagraph + 1}`,
+                                                : `读书随笔 · ${formatBatchPosition(e.chapterIndex, e.startParagraph, endChapterOf(e), e.endParagraph)}`,
                                             trailing: `${shown.length}字`,
                                             isDistilled: e.isDistilled,
                                         });

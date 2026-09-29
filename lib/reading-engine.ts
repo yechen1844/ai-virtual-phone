@@ -177,6 +177,23 @@ export function loadReadingHistory(sessionId: string): ChatMessage[] {
     return loadChatMessages(sessionId).filter(msg => !isReadingNoteMessage(msg));
 }
 
+/**
+ * 取条目「结束位置」的章号。
+ * 批次按全书绝对索引切分，可能跨章：此时结束段不在 chapterIndex 那一章，
+ * 必须用 endChapterIndex；旧数据没有该字段，回退到 chapterIndex（保持原行为）。
+ */
+export function endChapterOf(item: { chapterIndex: number; endChapterIndex?: number }): number {
+    return item.endChapterIndex ?? item.chapterIndex;
+}
+
+/** 批次位置标签：同章显示「第N章 · 段落x-y」，跨章显示「第N章 段落x → 第M章 段落y」。 */
+export function formatBatchPosition(startChapter: number, startPara: number, endChapter: number, endPara: number): string {
+    if (startChapter === endChapter) {
+        return `第${startChapter + 1}章 · 段落${startPara + 1}-${endPara + 1}`;
+    }
+    return `第${startChapter + 1}章 段落${startPara + 1} → 第${endChapter + 1}章 段落${endPara + 1}`;
+}
+
 function formatChapterContent(paragraphs: string[]): string {
     return paragraphs.map((p, i) => `[${i + 1}] ${p}`).join("\n\n");
 }
@@ -389,6 +406,9 @@ export async function generateAnnotationBatch(
             chapterIndex: firstTarget.chapterIndex,
             startParagraph: firstTarget.paragraphIndex,
             endParagraph: lastTarget.paragraphIndex,
+            // 批次按全书绝对索引切分，可能跨章；结束段所属章节单独记录，
+            // 否则「首章号 + 末段段号」会拼出一个不存在的位置（渲染/注入错位）
+            endChapterIndex: lastTarget.chapterIndex,
             content: summaryMatch[1].trim(),
             isDistilled: false,
             createdAt: new Date().toISOString(),
@@ -409,6 +429,8 @@ export async function generateAnnotationBatch(
             chapterIndex: firstTarget.chapterIndex,
             startParagraph: firstTarget.paragraphIndex,
             endParagraph: lastTarget.paragraphIndex,
+            // 同上：结束段所属章节单独记录，随笔要按它挂靠到正文
+            endChapterIndex: lastTarget.chapterIndex,
             // 前缀角色名：便于 char 之后以第一人称认出"这是我自己写的随笔"
             content: `${character.name}的随笔：${essayMatch[1].trim()}`,
             isDistilled: false,
@@ -533,7 +555,7 @@ export function formatReadingSummary(summariesToInject: ReadingSummary[]): strin
     if (summariesToInject.length === 0) return "";
     const lines = summariesToInject.map(s => {
         if (s.isDistilled) return `【前情提要（提炼）】${s.content}`;
-        return `【第${s.chapterIndex + 1}章 · 段落${s.startParagraph + 1}-${s.endParagraph + 1}】${s.content}`;
+        return `【${formatBatchPosition(s.chapterIndex, s.startParagraph, endChapterOf(s), s.endParagraph)}】${s.content}`;
     });
     return `<reading_summary>\n以下是之前阅读内容的情节摘要，帮助你回忆已读过的内容：\n${lines.join("\n")}\n</reading_summary>\n`;
 }
@@ -577,7 +599,7 @@ export function getSummariesForInjection(
             }
         } else {
             // 普通摘要：检查是否不晚于当前位置（摘要末段=当前段也算已读，摘要描述的是已读内容）
-            const summaryPos = encodeReadingPosition(s.chapterIndex, s.endParagraph);
+            const summaryPos = encodeReadingPosition(endChapterOf(s), s.endParagraph);
             if (summaryPos > currentPos) continue;
             // 已被当前注入的提炼摘要覆盖时不再注入，避免同一情节双份出现
             const coveredByDistilled = activeDistilled !== null
@@ -615,7 +637,7 @@ export function getDistillableSummaries(allSummaries: ReadingSummary[]): Reading
     const latestDistilled = distilled.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
     const uncoveredNormal = allSummaries.filter(s =>
         !s.isDistilled
-        && encodeReadingPosition(s.chapterIndex, s.endParagraph) > coverage,
+        && encodeReadingPosition(endChapterOf(s), s.endParagraph) > coverage,
     );
     const out: ReadingSummary[] = [];
     if (latestDistilled) out.push(latestDistilled);
@@ -658,7 +680,7 @@ export async function distillSummariesIfNeeded(
     const targetChars = Math.max(1, Math.floor((force ? Math.max(totalChars, 1) : totalChars) / 3));
     const summaryText = distillable.map(s => {
         if (s.isDistilled) return s.content;
-        return `【第${s.chapterIndex + 1}章】${s.content}`;
+        return `【${formatBatchPosition(s.chapterIndex, s.startParagraph, endChapterOf(s), s.endParagraph)}】${s.content}`;
     }).join("\n");
 
     const prompt = `以下是一部长篇小说的阅读摘要记录，按时间顺序排列。请将这些摘要提炼为一份更简洁的版本，总字数约${targetChars}字，保留最重要的情节转折和人物发展，删去次要细节。只输出提炼后的摘要文本，不要输出任何其他内容：\n\n${summaryText}`;
@@ -683,7 +705,7 @@ export async function distillSummariesIfNeeded(
             // 因此把覆盖范围截断到当前阅读位置：覆盖范围内全是已读情节，注入不剧透。
             const lastSummary = distillable[distillable.length - 1];
             const lastSummaryPos = lastSummary
-                ? encodeReadingPosition(lastSummary.chapterIndex, lastSummary.endParagraph)
+                ? encodeReadingPosition(endChapterOf(lastSummary), lastSummary.endParagraph)
                 : 0;
             const distilledUpTo = typeof options?.currentReadingPos === "number"
                 ? Math.min(lastSummaryPos, options.currentReadingPos)
@@ -723,7 +745,7 @@ export function formatReadingEssay(essays: ReadingEssay[], translationFeedMode?:
         // 只裁正文：前缀是结构标记，不能被当成双语内容
         const content = trimBilingualForFeed(e.content, translationFeedMode);
         if (e.isDistilled) return `【随笔·提炼】${content}`;
-        return `【第${e.chapterIndex + 1}章 · 段落${e.startParagraph + 1}-${e.endParagraph + 1}】${content}`;
+        return `【${formatBatchPosition(e.chapterIndex, e.startParagraph, endChapterOf(e), e.endParagraph)}】${content}`;
     });
     return `<reading_essay>\n以下是{{char}}之前读这本书时留下的随笔，保留着当时的情绪（供你保持情感连续）：\n${lines.join("\n")}\n</reading_essay>\n`;
 }
@@ -756,7 +778,7 @@ export function getEssaysForInjection(
         if (e.isDistilled) {
             if (activeDistilled && e.id === activeDistilled.id) result.push(e);
         } else {
-            const essayPos = encodeReadingPosition(e.chapterIndex, e.endParagraph);
+            const essayPos = encodeReadingPosition(endChapterOf(e), e.endParagraph);
             if (essayPos > currentPos) continue;
             const covered = activeDistilled !== null && (activeDistilled.distilledUpTo ?? 0) >= essayPos;
             if (!covered) result.push(e);
@@ -781,7 +803,7 @@ export function getDistillableEssays(allEssays: ReadingEssay[]): ReadingEssay[] 
     const latestDistilled = distilled.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
     const uncoveredNormal = allEssays.filter(e =>
         !e.isDistilled
-        && encodeReadingPosition(e.chapterIndex, e.endParagraph) > coverage,
+        && encodeReadingPosition(endChapterOf(e), e.endParagraph) > coverage,
     );
     const out: ReadingEssay[] = [];
     if (latestDistilled) out.push(latestDistilled);
@@ -841,7 +863,7 @@ export async function distillEssaysIfNeeded(
     const targetChars = Math.max(1, Math.floor((force ? Math.max(totalChars, 1) : totalChars) / 3));
     const essayText = distillable.map(e => {
         if (e.isDistilled) return e.content;
-        return `【第${e.chapterIndex + 1}章】${e.content}`;
+        return `【${formatBatchPosition(e.chapterIndex, e.startParagraph, endChapterOf(e), e.endParagraph)}】${e.content}`;
     }).join("\n");
 
     // 提炼要求放在预设条目 reading_essay_distill 里（用户可在预设管理里改），
@@ -890,7 +912,7 @@ export async function distillEssaysIfNeeded(
 
             const lastEssay = distillable[distillable.length - 1];
             const lastEssayPos = lastEssay
-                ? encodeReadingPosition(lastEssay.chapterIndex, lastEssay.endParagraph)
+                ? encodeReadingPosition(endChapterOf(lastEssay), lastEssay.endParagraph)
                 : 0;
             const distilledUpTo = typeof options?.currentReadingPos === "number"
                 ? Math.min(lastEssayPos, options.currentReadingPos)
