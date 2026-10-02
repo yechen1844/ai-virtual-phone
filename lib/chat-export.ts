@@ -320,10 +320,12 @@ export function chatExportToMarkdown(bundle: ChatExportBundle): string {
     return lines.join("\n");
 }
 
-/** 导出文件名：float-聊天记录-YYYYMMDD-HHmm.json / .md */
+/** 导出文件名：float-chat-export-YYYYMMDD-HHmm.json / .md
+ *  纯 ASCII：安卓下载通道（APK 壳 downloadBlob / DownloadManager）遇到中文文件名
+ *  会清洗掉非法字符，扩展名识别失败时兜底成 .bin。 */
 export function chatExportFilename(extension: "json" | "md"): string {
     const now = new Date();
     const pad = (n: number) => String(n).padStart(2, "0");
     const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
-    return `float-聊天记录-${stamp}.${extension}`;
+    return `float-chat-export-${stamp}.${extension}`;
 }
