@@ -24,6 +24,7 @@ import {
   UserRound,
   UsersRound,
   Wrench,
+  X,
   type LucideIcon,
 } from "lucide-react";
 import { DATA_MODULES, getLightModuleIds } from "@/lib/data-management/modules";
@@ -62,7 +63,16 @@ import {
   type MediaMaintenanceState,
 } from "@/lib/media-maintenance";
 import { clearStorageCategory, scanStorageSpace, type StorageCategoryId, type StorageCategoryStat } from "@/lib/storage-space";
-import { isAndroidBrowser, isIOSBrowser } from "@/lib/download-utils";
+import { downloadFile, isAndroidBrowser, isIOSBrowser } from "@/lib/download-utils";
+import {
+  buildChatExport,
+  chatExportFilename,
+  chatExportToJson,
+  chatExportToMarkdown,
+  listChatExportSessions,
+  type ChatExportSessionOption,
+} from "@/lib/chat-export";
+import { resolveUserIdentity } from "@/lib/settings-storage";
 import type { BackupManifest, DataModuleId, DataSnapshot, ImportResult, ModuleStats } from "@/lib/data-management/types";
 
 type PendingImport = {
@@ -315,6 +325,12 @@ export function DataManagement({ onNotice }: DataManagementProps) {
   const [spaceClearPending, setSpaceClearPending] = useState<StorageCategoryStat | null>(null);
   const [spaceClearRange, setSpaceClearRange] = useState<number>(30);
 
+  // 聊天记录导出（按角色/会话勾选）
+  const [chatExportOpen, setChatExportOpen] = useState(false);
+  const [chatExportOptions, setChatExportOptions] = useState<ChatExportSessionOption[]>([]);
+  const [chatExportSelected, setChatExportSelected] = useState<ReadonlySet<string>>(() => new Set());
+  const [chatExportWorking, setChatExportWorking] = useState(false);
+
   useEffect(() => {
     setCloudConfig(loadCloudBackupConfig());
     setCloudState(loadCloudBackupState());
@@ -472,6 +488,48 @@ export function DataManagement({ onNotice }: DataManagementProps) {
     await downloadBackupBlob(blob, manifest, { disableNativeShare: true });
     return `已导出 ${manifest.modules.length} 个模块，${formatBytes(manifest.totalBytes)}${note}。${warnNote}`;
   });
+
+  // ── 聊天记录导出（按角色/会话勾选，JSON + Markdown，媒体只取文字） ──
+  const openChatExport = () => {
+    // 空会话没有导出价值，直接不出现在列表里
+    const options = listChatExportSessions().filter(item => item.messageCount > 0);
+    setChatExportOptions(options);
+    // 默认全选：默认就是「全部导出」，要挑选时再取消
+    setChatExportSelected(new Set(options.map(item => item.sessionId)));
+    setChatExportOpen(true);
+  };
+
+  const toggleChatExportSession = (sessionId: string) => {
+    setChatExportSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
+      return next;
+    });
+  };
+
+  const downloadChatExport = async (format: "json" | "md") => {
+    if (chatExportSelected.size === 0) {
+      onNotice?.("请先勾选要导出的会话。");
+      return;
+    }
+    if (chatExportWorking) return;
+    setChatExportWorking(true);
+    try {
+      const bundle = buildChatExport([...chatExportSelected], resolveUserIdentity()?.name?.trim() || "我");
+      const text = format === "json" ? chatExportToJson(bundle) : chatExportToMarkdown(bundle);
+      const blob = new Blob([text], {
+        type: format === "json" ? "application/json;charset=utf-8" : "text/markdown;charset=utf-8",
+      });
+      await downloadFile(blob, chatExportFilename(format));
+      onNotice?.(`已导出 ${bundle.sessionCount} 个会话、${bundle.messageCount} 条消息（${format === "json" ? "JSON" : "Markdown"}）。`);
+      setChatExportOpen(false);
+    } catch (error) {
+      onNotice?.(error instanceof Error ? error.message : "导出失败，请稍后再试。");
+    } finally {
+      setChatExportWorking(false);
+    }
+  };
 
   const savePendingExport = async () => {
     if (!pendingExport || exportSaving) return;
@@ -798,6 +856,27 @@ export function DataManagement({ onNotice }: DataManagementProps) {
             className="hidden"
             onChange={(event) => void handleFileSelected(event.target.files?.[0])}
           />
+        </div>
+      </div>
+
+      <div className="data-section">
+        <DataSectionTitle>Chat Records</DataSectionTitle>
+        <div className="menu-group">
+          <div className="menu-item data-readonly-item">
+            <DataSettingsIcon icon={MessageCircle} color={BINDING_ACCENTS.memory} />
+            <div className="menu-label-group">
+              <span className="menu-label">聊天记录导出</span>
+              <span className="menu-desc">
+                按角色/会话勾选导出，可选 JSON（结构化、便于日后导入迁移）或 Markdown（可读文档）。
+                语音导出其文字、表情包导出名称；不含图片、音频等文件。
+              </span>
+            </div>
+            <div className="menu-right data-inline-actions">
+              <button type="button" className="ui-btn ui-btn-outline py-1 px-3 ts-12" onClick={openChatExport} disabled={Boolean(busy)}>
+                <Download size={14} /> 选择并导出
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1195,6 +1274,102 @@ export function DataManagement({ onNotice }: DataManagementProps) {
           </div>
         </div>
       )}
+
+      {/* 聊天记录导出：按角色/会话勾选，JSON 与 Markdown 任选 */}
+      {chatExportOpen && (() => {
+        const selectedItems = chatExportOptions.filter(item => chatExportSelected.has(item.sessionId));
+        const selectedMessages = selectedItems.reduce((sum, item) => sum + item.messageCount, 0);
+        // 同一角色可能既有单聊也有群聊：单聊按角色合并，群聊各自一组
+        const groups: { key: string; name: string; items: ChatExportSessionOption[] }[] = [];
+        for (const item of chatExportOptions) {
+          const key = item.isGroup ? `group:${item.sessionId}` : `char:${item.characterId}`;
+          const existing = groups.find(group => group.key === key);
+          if (existing) existing.items.push(item);
+          else groups.push({ key, name: item.characterName, items: [item] });
+        }
+        return (
+          <div className="modal-overlay" data-ui="modal" role="dialog" aria-modal="true" aria-label="导出聊天记录" onClick={() => setChatExportOpen(false)}>
+            <div
+              className="modal-dialog"
+              data-ui="modal-dialog"
+              onClick={(event) => event.stopPropagation()}
+              style={{ maxWidth: 520, width: "92vw", maxHeight: "82vh", display: "flex", flexDirection: "column" }}
+            >
+              <div className="modal-header" data-ui="modal-header">
+                <div className="ui-icon-circle"><MessageCircle size={20} /></div>
+                <h3 className="modal-title">导出聊天记录</h3>
+                <button type="button" className="ui-bare-btn text-[var(--c-icon)]" onClick={() => setChatExportOpen(false)} aria-label="关闭">
+                  <X size={18} strokeWidth={2} />
+                </button>
+              </div>
+              <div className="modal-body" data-ui="modal-body" style={{ overflow: "auto", textAlign: "left", width: "100%" }}>
+                <p className="menu-desc">
+                  勾选要导出的会话；语音导出其文字、表情包导出名称，不含图片、音频等文件。
+                </p>
+                <div className="data-menu-actions" style={{ marginBottom: 8 }}>
+                  <button
+                    type="button"
+                    className="ui-btn ui-btn-outline py-1 px-3 ts-12"
+                    onClick={() => setChatExportSelected(new Set(chatExportOptions.map(item => item.sessionId)))}
+                  >
+                    全选
+                  </button>
+                  <button
+                    type="button"
+                    className="ui-btn ui-btn-outline py-1 px-3 ts-12"
+                    onClick={() => setChatExportSelected(new Set())}
+                  >
+                    清空
+                  </button>
+                </div>
+                {chatExportOptions.length === 0 ? (
+                  <p className="menu-desc">暂无可导出的会话。</p>
+                ) : groups.map(group => (
+                  <div key={group.key} style={{ marginBottom: 10 }}>
+                    <div className="menu-label" style={{ marginBottom: 4 }}>{group.name}</div>
+                    {group.items.map(item => (
+                      <label key={item.sessionId} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={chatExportSelected.has(item.sessionId)}
+                          onChange={() => toggleChatExportSession(item.sessionId)}
+                        />
+                        <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {item.isGroup ? `（群聊）${item.title}` : item.title}
+                        </span>
+                        <span className="menu-desc">{item.messageCount} 条</span>
+                      </label>
+                    ))}
+                  </div>
+                ))}
+              </div>
+              <div className="modal-footer" data-ui="modal-footer" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <div className="menu-desc" style={{ width: "100%" }}>
+                  已选 {selectedItems.length} 个会话 · {selectedMessages} 条消息
+                </div>
+                <button
+                  type="button"
+                  className="ui-btn ui-btn-primary"
+                  style={{ width: "100%" }}
+                  onClick={() => void downloadChatExport("json")}
+                  disabled={chatExportWorking || chatExportSelected.size === 0}
+                >
+                  {chatExportWorking ? <><Loader2 size={16} className="animate-spin" /> 导出中…</> : <><Download size={16} /> 导出 JSON</>}
+                </button>
+                <button
+                  type="button"
+                  className="ui-btn ui-btn-outline"
+                  style={{ width: "100%" }}
+                  onClick={() => void downloadChatExport("md")}
+                  disabled={chatExportWorking || chatExportSelected.size === 0}
+                >
+                  <Download size={16} /> 导出 Markdown
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
