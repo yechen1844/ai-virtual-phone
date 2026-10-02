@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { ChevronLeft, RefreshCw, Trash2, Wand2, X, History } from "lucide-react";
+import { ChevronLeft, Compass, RefreshCw, Trash2, X, History } from "lucide-react";
 import type { Character } from "@/lib/character-types";
 import { loadCharacters } from "@/lib/character-storage";
 import type { DwellingLayout, DwellingRoom, DwellingFurniture, DwellingFurnitureItem } from "@/lib/dwelling-storage";
@@ -48,7 +48,7 @@ type CharState = {
     imageErrors: Record<string, string>;
     /** 正在生图的 roomId 集合 */
     generatingImageRooms: Set<string>;
-    /** 一键探索全部物品：是否正在批量探索 / 进度 / 当前物品 / 取消标记 */
+    /** 一键探索：是否进行中 / 总数 / 已处理 / 当前物品名 / 用户已点停止 */
     batchExploring: boolean;
     batchTotal: number;
     batchDone: number;
@@ -119,11 +119,18 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
     const [showRefreshConfirm, setShowRefreshConfirm] = useState(false);
     const [historyOpen, setHistoryOpen] = useState(false);
     const [historyEntries, setHistoryEntries] = useState<DwellingHistoryEntry[]>([]);
+    /** 一键探索确认：count 为本次会探索（= 调用模型）的物品数，0 表示都探索过了 */
+    const [exploreAllConfirm, setExploreAllConfirm] = useState<{ charId: string; count: number } | null>(null);
     const [itemDetail, setItemDetail] = useState<ItemDetail | null>(null);
     const [imageEnabled, setImageEnabled] = useState(true);
     const [imageConfigured, setImageConfigured] = useState(false);
     const activeCharIdRef = useRef<string | null>(null);
     const activeRoomIdxRef = useRef(0);
+    // 一键探索可能跑好几分钟，结束时要读最新的可见状态和回调，不能用发起时的闭包
+    const visibleRef = useRef(visible);
+    visibleRef.current = visible;
+    const onIdleRef = useRef(onIdle);
+    onIdleRef.current = onIdle;
 
     useEffect(() => {
         setImageEnabled(loadDwellingImageEnabled());
@@ -377,27 +384,39 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
         rerender();
     }
 
-    // ── 一键探索全部物品（批量，不记忆选择/进度） ──
-    async function handleExploreAll(charId: string) {
-        const cs = getCharState(charId);
-        if (cs.isGenerating || cs.batchExploring) return;
-        const layout = cs.layout;
-        if (!layout) return;
-
+    // ── 一键探索全部物品 ──
+    // 只处理还没探索过、也不在单独探索中的物品；和单件探索共用 loadingItemKeys，互相不会重复生成。
+    function collectUnexploredItems(cs: CharState) {
         const entries: { room: DwellingRoom; furniture: DwellingFurniture; item: DwellingFurnitureItem }[] = [];
-        for (const room of layout.rooms) {
-            for (const f of room.furniture) {
-                for (const item of f.items) {
-                    entries.push({ room, furniture: f, item });
+        for (const room of cs.layout?.rooms ?? []) {
+            for (const furniture of room.furniture) {
+                for (const item of furniture.items) {
+                    const key = itemKey(room.id, item.id);
+                    if (cs.itemHtmlCache[key] || cs.loadingItemKeys.has(key)) continue;
+                    entries.push({ room, furniture, item });
                 }
             }
         }
+        return entries;
+    }
+
+    function requestExploreAll(charId: string) {
+        const cs = getCharState(charId);
+        if (cs.isGenerating || cs.batchExploring || !cs.layout) return;
+        setExploreAllConfirm({ charId, count: collectUnexploredItems(cs).length });
+    }
+
+    async function handleExploreAll(charId: string) {
+        const cs = getCharState(charId);
+        const layout = cs.layout;
+        if (cs.isGenerating || cs.batchExploring || !layout) return;
+        const entries = collectUnexploredItems(cs);
         if (entries.length === 0) return;
 
         cs.batchExploring = true;
         cs.batchTotal = entries.length;
         cs.batchDone = 0;
-        cs.batchCurrent = entries[0].item.name;
+        cs.batchCurrent = null;
         cs.batchCancelled = false;
         cs.lastItemError = null;
         rerender();
@@ -405,23 +424,30 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
         let exploredCount = 0;
         try {
             for (const { room, furniture, item } of entries) {
-                if (cs.batchCancelled) break;
-                // 布局在批量期间被重建/删除：取消，避免污染新布局
-                if (cs.layout !== layout) break;
+                if (cs.batchCancelled || cs.layout !== layout) break;
                 const key = itemKey(room.id, item.id);
-                if (cs.itemHtmlCache[key]) { cs.batchDone += 1; cs.batchCurrent = item.name; rerender(); continue; }
-
+                // 批量途中用户自己点开过的物品：已有结果或正在生成，直接跳过
+                if (cs.itemHtmlCache[key] || cs.loadingItemKeys.has(key)) {
+                    cs.batchDone += 1;
+                    rerender();
+                    continue;
+                }
                 cs.batchCurrent = item.name;
+                cs.loadingItemKeys.add(key);
                 rerender();
                 const { html, error } = await generateItemHtml(charId, room.name, furniture.label, item.name, item.preview);
-                if (html) {
+                cs.loadingItemKeys.delete(key);
+                if (html && cs.layout === layout) {
                     cs.itemHtmlCache[key] = html;
                     void saveItemHtml(charId, room.id, item.id, html);
                     exploredCount += 1;
-                } else if (error) {
-                    cs.lastItemError = error;
                 }
                 cs.batchDone += 1;
+                if (!html) {
+                    // 失败多半是接口或额度问题，继续只会接着失败、白白消耗，直接停下
+                    cs.lastItemError = error || "探索失败";
+                    break;
+                }
                 rerender();
             }
         } finally {
@@ -429,6 +455,8 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
             cs.batchExploring = false;
             cs.batchCurrent = null;
             cs.batchCancelled = false;
+            rerender();
+            // 本地面板：记录本次批量探索结果
             if (exploredCount > 0) {
                 recordDwellingHistoryEvent(charId, {
                     kind: "explore_batch",
@@ -436,11 +464,12 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
                     detail: wasCancelled && exploredCount < entries.length ? "已手动停止" : undefined,
                 });
             }
-            rerender();
+            const busy = [...charStates.values()].some(state => state.isGenerating || state.batchExploring || state.loadingItemKeys.size > 0);
+            if (!visibleRef.current && !busy) onIdleRef.current?.();
         }
     }
 
-    function handleCancelExploreAll(charId: string) {
+    function handleStopExploreAll(charId: string) {
         getCharState(charId).batchCancelled = true;
         rerender();
     }
@@ -538,13 +567,13 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
                         </button>
                     ))}
                     <div className="dw-tabs-actions">
-                        <button className="dw-tab-action" onClick={() => handleExploreAll(activeCharId!)} disabled={cs.isGenerating || cs.batchExploring} title="一键探索全部物品">
-                            <Wand2 size={13} />
+                        <button className="dw-tab-action" onClick={() => requestExploreAll(activeCharId!)} disabled={cs.isGenerating || cs.batchExploring} title="一键探索全部物品" aria-label="一键探索全部物品">
+                            <Compass size={13} />
                         </button>
-                        <button className="dw-tab-action" onClick={() => setShowRefreshConfirm(true)} disabled={cs.isGenerating} title="重新生成">
+                        <button className="dw-tab-action" onClick={() => setShowRefreshConfirm(true)} disabled={cs.isGenerating || cs.batchExploring} title="重新生成">
                             <RefreshCw size={13} />
                         </button>
-                        <button className="dw-tab-action dw-tab-action-danger" onClick={() => setShowDeleteConfirm(true)} disabled={cs.isGenerating} title="删除布局">
+                        <button className="dw-tab-action dw-tab-action-danger" onClick={() => setShowDeleteConfirm(true)} disabled={cs.isGenerating || cs.batchExploring} title="删除布局">
                             <Trash2 size={13} />
                         </button>
                     </div>
@@ -555,9 +584,9 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
                 <div className="dw-batch-bar" role="status" aria-live="polite">
                     <span className="dwelling-spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />
                     <span className="dw-batch-text">
-                        正在探索 {cs.batchCurrent ?? "…"} · {cs.batchDone}/{cs.batchTotal}
+                        {cs.batchCancelled ? "正在停止…" : `正在探索 ${cs.batchCurrent ?? "…"}`} · {cs.batchDone}/{cs.batchTotal}
                     </span>
-                    <button className="dw-batch-cancel" onClick={() => handleCancelExploreAll(activeCharId!)}>停止</button>
+                    <button className="dw-batch-cancel" onClick={() => handleStopExploreAll(activeCharId!)} disabled={cs.batchCancelled}>停止</button>
                 </div>
             )}
 
@@ -650,6 +679,36 @@ export function DwellingApp({ onClose, visible, onIdle }: DwellingAppProps) {
                             </button>
                             <button className="dw-confirm-btn dw-confirm-btn-cancel" style={{ marginTop: 4 }} onClick={() => setShowRefreshConfirm(false)}>取消</button>
                         </div>
+                    </div>
+                </div>
+            )}
+
+            {/* 一键探索确认：先说清楚会调用几次模型 */}
+            {exploreAllConfirm && (
+                <div className="dw-confirm-overlay">
+                    <div className="dw-confirm-shade" onClick={() => setExploreAllConfirm(null)} />
+                    <div className="dw-confirm-card">
+                        <div className="dw-confirm-title">一键探索</div>
+                        {exploreAllConfirm.count > 0 ? (
+                            <>
+                                <div className="dw-confirm-msg">
+                                    还有 {exploreAllConfirm.count} 件物品没有探索过<br />
+                                    全部探索会调用 {exploreAllConfirm.count} 次模型<br />
+                                    过程中可以随时停止
+                                </div>
+                                <div className="dw-confirm-actions">
+                                    <button className="dw-confirm-btn dw-confirm-btn-cancel" onClick={() => setExploreAllConfirm(null)}>再想想</button>
+                                    <button className="dw-confirm-btn" onClick={() => { const { charId } = exploreAllConfirm; setExploreAllConfirm(null); void handleExploreAll(charId); }}>开始探索</button>
+                                </div>
+                            </>
+                        ) : (
+                            <>
+                                <div className="dw-confirm-msg">这里的物品都已经探索过了</div>
+                                <div className="dw-confirm-actions">
+                                    <button className="dw-confirm-btn" onClick={() => setExploreAllConfirm(null)}>知道了</button>
+                                </div>
+                            </>
+                        )}
                     </div>
                 </div>
             )}
