@@ -50,9 +50,33 @@ export function setCanalServerUrl(url: string): void {
     } catch {}
 }
 
+async function fetchWithRetry(url: string, init: RequestInit, retries = 2, timeoutMs = 15000): Promise<Response> {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const res = await fetch(url, { ...init, signal: controller.signal });
+            clearTimeout(timer);
+            if (!res.ok && attempt < retries && (res.status >= 500 || res.status === 429)) {
+                await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+                continue;
+            }
+            return res;
+        } catch (err: any) {
+            clearTimeout(timer);
+            if (attempt < retries) {
+                await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+                continue;
+            }
+            throw new Error(err.name === 'AbortError' ? '请求云端水库超时 (15s)' : `网络连接失败: ${err.message || err}`);
+        }
+    }
+    throw new Error('网络请求异常');
+}
+
 export async function fetchCanalStatus(serverUrl?: string): Promise<CanalStatus> {
     const base = serverUrl || getCanalServerUrl();
-    const res = await fetch(`${base}/api/sync/status`);
+    const res = await fetchWithRetry(`${base}/api/sync/status`, { method: "GET" });
     if (!res.ok) throw new Error(`云端状态查询失败 (HTTP ${res.status})`);
     return res.json();
 }
@@ -63,7 +87,11 @@ export async function fetchCanalStatus(serverUrl?: string): Promise<CanalStatus>
 export async function uploadFloatMessages(
     characterId: string,
     characterName: string,
-    options?: { full?: boolean; serverUrl?: string }
+    options?: {
+        full?: boolean;
+        serverUrl?: string;
+        onProgress?: (progress: { current: number; total: number; batchIndex: number; totalBatches: number }) => void;
+    }
 ): Promise<{ success: boolean; uploadedCount: number; totalFound: number }> {
     const base = options?.serverUrl || getCanalServerUrl();
 
@@ -110,10 +138,19 @@ export async function uploadFloatMessages(
 
     // 分批上传，每批 100 条
     const BATCH_SIZE = 100;
+    const totalBatches = Math.ceil(canalMessages.length / BATCH_SIZE);
     let insertedTotal = 0;
     for (let i = 0; i < canalMessages.length; i += BATCH_SIZE) {
+        const batchIndex = Math.floor(i / BATCH_SIZE) + 1;
         const batch = canalMessages.slice(i, i + BATCH_SIZE);
-        const res = await fetch(`${base}/api/sync/upload`, {
+        options?.onProgress?.({
+            current: i + batch.length,
+            total: canalMessages.length,
+            batchIndex,
+            totalBatches,
+        });
+
+        const res = await fetchWithRetry(`${base}/api/sync/upload`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -161,7 +198,7 @@ export async function pullCloudMessages(
     url.searchParams.set("since", String(since));
     url.searchParams.set("limit", String(limit));
 
-    const res = await fetch(url.toString());
+    const res = await fetchWithRetry(url.toString(), { method: "GET" });
     if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(`拉取失败 (HTTP ${res.status}): ${err.message || "未知错误"}`);
