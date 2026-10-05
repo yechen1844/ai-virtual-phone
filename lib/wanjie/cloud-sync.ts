@@ -101,6 +101,9 @@ export async function uploadFloatMessages(
             meta: {
                 kind: item.kind,
                 sourceApp: item.sourceApp,
+                mediaType: item.mediaType,
+                mediaData: item.mediaData,
+                mediaUrl: item.mediaUrl,
             },
         };
     });

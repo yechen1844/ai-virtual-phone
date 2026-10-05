@@ -46,6 +46,9 @@ export interface ShortTermExport {
     id: string;
     /** 来源 App（card 才有意义，便于对方页面显示与排查） */
     sourceApp?: string;
+    mediaType?: string;
+    mediaData?: unknown;
+    mediaUrl?: string;
 }
 
 import type { ChatMessage } from "../chat-storage";
@@ -117,18 +120,41 @@ export async function exportShortTerm(
         for (const m of msgs) {
             if (m.isRetracted) continue;
             if (m.role !== "user" && m.role !== "assistant") continue;
-            // 只搬纯文本：带 mediaType 的是媒体 / 卡片，其正文往往是 URL 或结构化数据，
-            // 原样搬过去只会给对方记忆添噪声（那类活动的"人话版本"在下面的时间线里已经有一条）。
-            if (m.mediaType) continue;
-            const content = (m.content ?? "").trim();
+            let content = (m.content ?? "").trim();
+            let kind: "text" | "card" = "text";
+
+            if (m.mediaType === "sticker") {
+                const label = (m.mediaData as any)?.label || "表情";
+                if (!content || content.startsWith("http") || content.startsWith("data:")) {
+                    content = `[表情包:${label}]`;
+                }
+            } else if (m.mediaType === "transfer") {
+                kind = "card";
+                const amount = (m.mediaData as any)?.amount ?? "";
+                const remark = (m.mediaData as any)?.remark ? ` 备注: ${(m.mediaData as any).remark}` : "";
+                const status = (m.mediaData as any)?.status === "received" ? "已收款" : "待收款";
+                content = content || `[转账] ￥${amount}${remark} (${status})`;
+            } else if (m.mediaType === "poke") {
+                kind = "card";
+                content = content || `[拍了拍对方]`;
+            } else if (m.mediaType) {
+                kind = "card";
+                if (!content || content.startsWith("http") || content.startsWith("data:")) {
+                    content = `[${m.mediaType}卡片]`;
+                }
+            }
+
             if (!content) continue;
             collected.push({
-                kind: "text",
+                kind,
                 role: m.role,
                 content,
                 createdAt: toIso(m.createdAt),
                 id: `chat:${m.id}`,
                 sourceApp: "chat",
+                mediaType: m.mediaType,
+                mediaData: m.mediaData,
+                mediaUrl: m.mediaUrl || (m.mediaData as any)?.stickerUrl,
             });
         }
     }
