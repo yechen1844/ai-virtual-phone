@@ -176,39 +176,91 @@ export async function uploadFloatMessages(
 }
 
 /**
+ * 重置角色的拉取时间游标（默认重置为 2026-10-03 00:00:00）
+ */
+export function resetPullCursor(characterId: string, timestamp?: number): void {
+    const ts = timestamp ?? new Date("2026-10-03T00:00:00.000Z").getTime();
+    try {
+        localStorage.setItem(STORAGE_KEY_LAST_PULL_TS + characterId, String(ts));
+    } catch {}
+}
+
+/**
  * 从云端拉取其它端（如 SullyOS）的消息供预览
+ * 支持全量分页拉取（杜绝 1000 条截断），自动过滤 2026-10-03 搬家分界线前的历史
  */
 export async function pullCloudMessages(
     characterId: string,
-    options?: { since?: number; limit?: number; serverUrl?: string; targetSource?: string }
+    options?: {
+        since?: number;
+        limit?: number;
+        serverUrl?: string;
+        targetSource?: string;
+        onProgress?: (count: number) => void;
+    }
 ): Promise<{ messages: CanalMessage[]; latestTimestamp: number; count: number }> {
     const base = options?.serverUrl || getCanalServerUrl();
-    const since = options?.since ?? (() => {
+    const OCT3_2026_TS = new Date("2026-10-03T00:00:00.000Z").getTime();
+
+    let currentSince = options?.since ?? (() => {
         try {
-            return Number(localStorage.getItem(STORAGE_KEY_LAST_PULL_TS + characterId) || 0);
+            const saved = Number(localStorage.getItem(STORAGE_KEY_LAST_PULL_TS + characterId) || 0);
+            return saved > 0 ? saved : OCT3_2026_TS;
         } catch {
-            return 0;
+            return OCT3_2026_TS;
         }
     })();
 
-    const limit = options?.limit || 1000;
-    const url = new URL(`${base}/api/sync/pull`);
-    url.searchParams.set("source", "float"); // 拉取非 float 来源
-    if (options?.targetSource) url.searchParams.set("target_source", options.targetSource);
-    url.searchParams.set("since", String(since));
-    url.searchParams.set("limit", String(limit));
-
-    const res = await fetchWithRetry(url.toString(), { method: "GET" });
-    if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(`拉取失败 (HTTP ${res.status}): ${err.message || "未知错误"}`);
+    // 严格限制：不能早于 2026-10-03 搬家分界线
+    if (currentSince < OCT3_2026_TS) {
+        currentSince = OCT3_2026_TS;
     }
 
-    const data = await res.json();
+    const batchLimit = 5000;
+    const allMessages: CanalMessage[] = [];
+    const maxFetchCount = options?.limit || 20000;
+    let latestTs = currentSince;
+
+    while (allMessages.length < maxFetchCount) {
+        const url = new URL(`${base}/api/sync/pull`);
+        url.searchParams.set("source", "float"); // 拉取非 float 来源
+        if (options?.targetSource) url.searchParams.set("target_source", options.targetSource);
+        url.searchParams.set("since", String(currentSince));
+        url.searchParams.set("limit", String(batchLimit));
+
+        const res = await fetchWithRetry(url.toString(), { method: "GET" });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(`拉取失败 (HTTP ${res.status}): ${err.message || "未知错误"}`);
+        }
+
+        const data = await res.json();
+        const batch: CanalMessage[] = data.messages || [];
+        if (batch.length === 0) break;
+
+        // 严格安全守卫：剔除任何早于 2026-10-03 的脏数据
+        const validBatch = batch.filter((m) => m.timestamp >= OCT3_2026_TS);
+        allMessages.push(...validBatch);
+
+        const newLatest = data.latest_timestamp || batch[batch.length - 1].timestamp || currentSince;
+        if (newLatest <= currentSince) {
+            // 避免死循环
+            break;
+        }
+        latestTs = newLatest;
+        currentSince = latestTs;
+
+        if (options?.onProgress) {
+            options.onProgress(allMessages.length);
+        }
+
+        if (batch.length < batchLimit) break;
+    }
+
     return {
-        messages: data.messages || [],
-        latestTimestamp: data.latest_timestamp || since,
-        count: data.count || 0,
+        messages: allMessages,
+        latestTimestamp: latestTs,
+        count: allMessages.length,
     };
 }
 
@@ -264,9 +316,11 @@ export async function importPulledMessagesToFloat(
     characterId: string,
     messages: CanalMessage[]
 ): Promise<{ imported: number; total: number }> {
-    if (messages.length === 0) return { imported: 0, total: 0 };
+    const OCT3_2026_TS = new Date("2026-10-03T00:00:00.000Z").getTime();
+    const safeMessages = messages.filter((m) => m.timestamp >= OCT3_2026_TS);
+    if (safeMessages.length === 0) return { imported: 0, total: 0 };
 
-    const foreignItems: ForeignMessageInput[] = messages.map((m) => {
+    const foreignItems: ForeignMessageInput[] = safeMessages.map((m) => {
         let metaObj: Record<string, unknown> = {};
         if (m.meta) {
             try {

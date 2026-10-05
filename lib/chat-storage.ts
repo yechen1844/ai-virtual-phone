@@ -650,6 +650,47 @@ export function importChatMessages(
     return { imported: built.length, skipped: msgs.length - built.length };
 }
 
+/**
+ * 清除指定会话中来自万界导入的外来消息（如 SullyOS 导入）
+ * @param characterId 目标角色 ID
+ * @param options.source 来源过滤，默认 'sullyos'
+ * @param options.beforeDate 可选截止时间，只清除此时间之前的消息（如 '2026-10-03T00:00:00Z'）
+ */
+export function purgeForeignChatMessages(
+    characterId: string,
+    options?: { source?: string; beforeDate?: string }
+): { deletedCount: number } {
+    const source = options?.source || "sullyos";
+    const prefix = `wanjie:${source}:`;
+    const cutoffTs = options?.beforeDate ? new Date(options.beforeDate).getTime() : Infinity;
+
+    const sessions = loadChatSessions().filter((s) => !s.isGroup && s.contactId === characterId);
+    let totalDeleted = 0;
+
+    for (const session of sessions) {
+        const msgs = _loadAllMessages().filter((m) => m.sessionId === session.id);
+        const toDelete = msgs.filter((m) => {
+            if (!m.id.startsWith(prefix)) return false;
+            if (Number.isFinite(cutoffTs) && cutoffTs < Infinity) {
+                const ts = new Date(m.createdAt).getTime();
+                return ts < cutoffTs;
+            }
+            return true;
+        });
+
+        if (toDelete.length > 0) {
+            const deleteIds = toDelete.map((m) => m.id);
+            const deleteIdSet = new Set(deleteIds);
+            _messagesCache = _messagesCache.filter((m) => !deleteIdSet.has(m.id));
+            dbDeleteMessagesByIds(deleteIds);
+            reindexSessionMessageOrdersByTime(session.id);
+            totalDeleted += toDelete.length;
+        }
+    }
+
+    return { deletedCount: totalDeleted };
+}
+
 export function getLastVisibleSessionMessage(sessionId: string): ChatMessage | null {
     const messages = getSortedSessionMessages(sessionId);
     for (let i = messages.length - 1; i >= 0; i -= 1) {

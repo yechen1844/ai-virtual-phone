@@ -42,6 +42,7 @@ import {
   uploadFloatMessages,
   pullCloudMessages,
   importPulledMessagesToFloat,
+  resetPullCursor,
   DEFAULT_CANAL_SERVER_URL,
   type CanalMessage,
 } from "@/lib/wanjie/cloud-sync";
@@ -2122,8 +2123,50 @@ function MigrationTab({ characterId, characterName, notify }: {
     skippedDuplicates?: number;
   } | null>(null);
   const [canalImporting, setCanalImporting] = useState(false);
-  const [pullSinceDate, setPullSinceDate] = useState("2024-10-03");
+  const [pullSinceDate, setPullSinceDate] = useState("2026-10-03");
   const [filterPullPreOct3, setFilterPullPreOct3] = useState(true);
+
+  const handlePurgePreOct3 = async () => {
+    if (!window.confirm("确定要清理 2026-10-03 搬家分界线之前误导入的 SullyOS 历史记录吗？\n（完全不会影响 Float 本地自带记录，只会清除 10月3日之前误导入的外来记录）")) {
+      return;
+    }
+    try {
+      const { purgeForeignChatMessages, hydrateChatStorage } = await import("@/lib/chat-storage");
+      await hydrateChatStorage();
+      const res = purgeForeignChatMessages(characterId, {
+        source: "sullyos",
+        beforeDate: "2026-10-03T00:00:00.000Z",
+      });
+      resetPullCursor(characterId);
+      await loadCounts();
+      notify({
+        kind: "ok",
+        text: `已成功清理 ${res.deletedCount} 条 10月3日之前误导入的 SullyOS 记录！10月3日搬家分界线已恢复，同步游标已重置。`,
+      });
+    } catch (e: any) {
+      notify({ kind: "err", text: `清理失败：${e?.message || e}` });
+    }
+  };
+
+  const handleResetAllSullyosImports = async () => {
+    if (!window.confirm("确定要清空所有已导入的 SullyOS 外来记录并重新从云端全量拉取吗？\n（Float 本地原本的聊天记录不受任何影响）")) {
+      return;
+    }
+    try {
+      const { purgeForeignChatMessages, hydrateChatStorage } = await import("@/lib/chat-storage");
+      await hydrateChatStorage();
+      const res = purgeForeignChatMessages(characterId, { source: "sullyos" });
+      resetPullCursor(characterId);
+      await loadCounts();
+      notify({
+        kind: "ok",
+        text: `已清理 ${res.deletedCount} 条已导入 SullyOS 记录，同步游标已重置。正在重新从云端全量拉取…`,
+      });
+      await handlePullFromCanal();
+    } catch (e: any) {
+      notify({ kind: "err", text: `重置失败：${e?.message || e}` });
+    }
+  };
 
   const handleCheckCanal = async () => {
     setCanalLoading(true);
@@ -2168,7 +2211,10 @@ function MigrationTab({ characterId, characterName, notify }: {
   const handlePullFromCanal = async () => {
     setCanalPulling(true);
     try {
-      const sinceTs = filterPullPreOct3 && pullSinceDate ? new Date(`${pullSinceDate}T00:00:00`).getTime() : 0;
+      const OCT3_2026_TS = new Date("2026-10-03T00:00:00.000Z").getTime();
+      const sinceTs = filterPullPreOct3 && pullSinceDate
+        ? Math.max(new Date(`${pullSinceDate}T00:00:00`).getTime(), OCT3_2026_TS)
+        : OCT3_2026_TS;
       const res = await pullCloudMessages(characterId, { serverUrl: canalServerUrl, since: sinceTs });
       if (res.count === 0) {
         notify({ kind: "ok", text: "云端暂无可同步的 SullyOS 新记录" });
@@ -2491,6 +2537,27 @@ function MigrationTab({ characterId, characterName, notify }: {
           >
             <Download size={14} />
             {canalPulling ? "查询中…" : "⬇️ 从云端同步记录"}
+          </button>
+        </div>
+
+        <div style={{ marginTop: "0.6rem", display: "flex", gap: "0.5rem", justifyContent: "flex-end", flexWrap: "wrap" }}>
+          <button
+            type="button"
+            onClick={() => void handlePurgePreOct3()}
+            className="ui-btn ui-btn-outline ts-12"
+            style={{ fontSize: "0.7rem", padding: "0.25rem 0.5rem", color: "#b91c1c", borderColor: "#fca5a5" }}
+            title="如果你误拉取了 10月3日 之前的 SullyOS 历史，点击可一键清理并恢复 10月3日搬家分界线"
+          >
+            🧹 清理 10月3日前误导入记录 (恢复分界线)
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleResetAllSullyosImports()}
+            className="ui-btn ui-btn-outline ts-12"
+            style={{ fontSize: "0.7rem", padding: "0.25rem 0.5rem", color: "#475569" }}
+            title="清空所有已导入的 SullyOS 外来记录，并重新全量拉取 10月3日之后的所有记录"
+          >
+            🔄 全量重新拉取 SullyOS (重置游标)
           </button>
         </div>
       </div>

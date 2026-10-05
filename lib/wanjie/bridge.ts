@@ -297,6 +297,18 @@ export function migrationState(characterId: string): {
     };
 }
 
+/**
+ * 清除外来导入的消息（如清除 10月3日前误导入的 SullyOS 历史记录）
+ */
+export async function purgeForeignMessages(
+    characterId: string,
+    source = "sullyos",
+    options?: { beforeDate?: string }
+): Promise<{ deletedCount: number }> {
+    const { purgeForeignChatMessages } = await import("../chat-storage");
+    return purgeForeignChatMessages(characterId, { source, beforeDate: options?.beforeDate });
+}
+
 /** 把上面这些挂到 `window.__wanjie`，供万界壳调用（在 main-app 水合完成后调用一次） */
 export function installWanjieBridge(): void {
     (window as unknown as Record<string, unknown>).__wanjie = {
@@ -304,6 +316,7 @@ export function installWanjieBridge(): void {
         listCharacters,
         exportShortTerm,
         importForeignMessages,
+        purgeForeignMessages,
         internalize,
         migrationState,
     };
