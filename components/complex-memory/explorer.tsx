@@ -2214,7 +2214,7 @@ function MigrationTab({ characterId, characterName, notify }: {
       const OCT3_2026_TS = new Date("2026-10-03T00:00:00.000Z").getTime();
       const sinceTs = filterPullPreOct3 && pullSinceDate
         ? Math.max(new Date(`${pullSinceDate}T00:00:00`).getTime(), OCT3_2026_TS)
-        : OCT3_2026_TS;
+        : undefined;
       const res = await pullCloudMessages(characterId, { serverUrl: canalServerUrl, since: sinceTs });
       if (res.count === 0) {
         notify({ kind: "ok", text: "云端暂无可同步的 SullyOS 新记录" });
