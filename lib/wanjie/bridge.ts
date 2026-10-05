@@ -48,12 +48,17 @@ export interface ShortTermExport {
     sourceApp?: string;
 }
 
+import type { ChatMessage } from "../chat-storage";
+
 export interface ForeignMessageInput {
     id: string;
     kind?: "text" | "card";
     role: "user" | "assistant";
     content: string;
     createdAt: string;
+    mediaType?: ChatMessage["mediaType"];
+    mediaData?: ChatMessage["mediaData"];
+    mediaUrl?: string;
 }
 
 function toIso(value: unknown): string {
@@ -198,10 +203,9 @@ export async function importForeignMessages(
             content: it.content,
             createdAt: it.createdAt,
             // 活动卡片标成 `wanjie_card`：它不是"谁说的话"，而是"发生过的事"。
-            // 这不会影响记忆取数 —— 时间线只在**正文为空**时才用 mediaType 生成中括号标签，
-            // 我们有正文，所以取到的就是这句人话；渲染层没有它的专门分支，
-            // 会落到默认分支按文字渲染（不会白屏、不会显示"[插件未启用]"）。
-            ...(it.kind === "card" ? { mediaType: "wanjie_card" as const } : {}),
+            // 原生支持的类型（如 sticker / transfer / poke）直接透传其 mediaType 与 mediaData。
+            mediaType: it.mediaType ?? (it.kind === "card" ? ("wanjie_card" as const) : undefined),
+            ...(it.mediaData ? { mediaData: it.mediaData } : {}),
         })),
     };
     return importChatHistory(characterId, payload);

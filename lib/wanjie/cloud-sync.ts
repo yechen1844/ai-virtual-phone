@@ -172,6 +172,51 @@ export async function pullCloudMessages(
     };
 }
 
+import type { ChatMessage } from "../chat-storage";
+
+/**
+ * 转换来自 SullyOS 等异构系统的双语标记为 Float 原生「原文 | 译文」格式
+ */
+export function convertForeignBilingualToFloat(content: string): string {
+    if (!content) return content;
+    // 形式 1: 原文\n%%BILINGUAL%%\n译文 (可能有多行)
+    if (/%%BILINGUAL%%/i.test(content)) {
+        const [origPart, transPart] = content.split(/%%BILINGUAL%%/i);
+        const orig = (origPart || "").trim();
+        const trans = (transPart || "").trim();
+        if (orig && trans) {
+            if (!orig.includes("\n") && !trans.includes("\n")) {
+                return `${orig} | ${trans}`;
+            }
+            const origLines = orig.split("\n").map(l => l.trim()).filter(Boolean);
+            const transLines = trans.split("\n").map(l => l.trim()).filter(Boolean);
+            if (origLines.length === transLines.length && origLines.length > 1) {
+                return origLines.map((ol, i) => `${ol} | ${transLines[i]}`).join("\n");
+            }
+            return `${orig.replace(/\n+/g, " ")} | ${trans.replace(/\n+/g, " ")}`;
+        }
+    }
+    // 形式 2: <翻译><原文>A</原文><译文>B</译文></翻译>
+    const tagMatch = content.match(/<原文>([\s\S]*?)<\/原文>[\s\S]*?<译文>([\s\S]*?)<\/译文>/i);
+    if (tagMatch) {
+        const orig = tagMatch[1].trim();
+        const trans = tagMatch[2].trim();
+        if (orig && trans) {
+            return `${orig} | ${trans}`;
+        }
+    }
+    // 形式 3: 结尾另起一行的【中】译文块
+    const zhBlockMatch = content.match(/^([\s\S]*?)(?:\n[ \t]*【中】([\s\S]*))$/);
+    if (zhBlockMatch) {
+        const orig = zhBlockMatch[1].trim();
+        const trans = (zhBlockMatch[2] || "").trim();
+        if (orig && trans) {
+            return `${orig} | ${trans}`;
+        }
+    }
+    return content;
+}
+
 /**
  * 用户手动确认后：把拉取到的消息导入进 Float 聊天会话
  */
@@ -185,15 +230,62 @@ export async function importPulledMessagesToFloat(
         let metaObj: Record<string, unknown> = {};
         if (m.meta) {
             try {
-                metaObj = typeof m.meta === "string" ? JSON.parse(m.meta) : m.meta;
+                metaObj = typeof m.meta === "string" ? JSON.parse(m.meta) : (m.meta as Record<string, unknown>);
             } catch {}
         }
+
+        const type = (metaObj.type as string) || "";
+        let content = convertForeignBilingualToFloat(m.content);
+        let mediaType: ChatMessage["mediaType"] | undefined;
+        let mediaData: ChatMessage["mediaData"] | undefined;
+        let mediaUrl: string | undefined;
+        let kind: "text" | "card" = "text";
+
+        // 1. 表情包 (SullyOS: type === 'emoji')
+        if (type === "emoji" || type === "sticker") {
+            const stickerUrl = (metaObj.url as string) || m.content;
+            const emojiName = (metaObj.emojiName as string) || "表情包";
+            mediaType = "sticker";
+            mediaUrl = stickerUrl;
+            mediaData = {
+                stickerUrl,
+                label: emojiName,
+            };
+            content = `[表情包:${emojiName}]`;
+        }
+        // 2. 转账卡 (SullyOS: type === 'transfer')
+        else if (type === "transfer") {
+            const amount = Number(metaObj.amount) || 0;
+            const label = (metaObj.receipt as string) || "转账";
+            const status = (metaObj.status as any) || "received";
+            mediaType = "transfer";
+            mediaData = {
+                amount,
+                label,
+                status,
+            };
+            content = `[转账:${amount}:${label}]`;
+        }
+        // 3. 拍一拍 / 戳一戳 (SullyOS: type === 'interaction')
+        else if (type === "interaction") {
+            mediaType = "poke";
+            content = content || "[系统: 拍了拍]";
+        }
+        // 4. 其他各类卡片 (score_card, music_card, reading_card, movie_card, xhs_card, theater_card 等)
+        else if (metaObj.isCard || type.endsWith("_card") || metaObj.scoreCard) {
+            kind = "card";
+            mediaType = "wanjie_card";
+        }
+
         return {
             id: m.id,
             role: m.role === "assistant" ? "assistant" : "user",
-            content: m.content,
+            content,
             createdAt: new Date(m.timestamp).toISOString(),
-            kind: metaObj.kind === "card" ? "card" : "text",
+            kind,
+            mediaType,
+            mediaData,
+            mediaUrl,
         };
     });
 
