@@ -483,13 +483,18 @@ function getMessageTimeValue(msg: Pick<ChatMessage, "createdAt">): number {
 }
 
 export function compareChatMessages(a: ChatMessage, b: ChatMessage): number {
+    const timeDiff = getMessageTimeValue(a) - getMessageTimeValue(b);
+    // 跨越 1 分钟以上的时间差以真实时间线为绝对基准，严防脏 order 或多端导入历史导致新消息排到历史之后
+    if (Math.abs(timeDiff) > 60_000) {
+        return timeDiff;
+    }
+
     const aOrder = getStableMessageOrder(a);
     const bOrder = getStableMessageOrder(b);
     if (aOrder !== null && bOrder !== null && aOrder !== bOrder) {
         return aOrder - bOrder;
     }
 
-    const timeDiff = getMessageTimeValue(a) - getMessageTimeValue(b);
     if (timeDiff !== 0) return timeDiff;
 
     if (aOrder !== null && bOrder === null) return -1;
@@ -498,10 +503,71 @@ export function compareChatMessages(a: ChatMessage, b: ChatMessage): number {
     return String(a.id ?? "").localeCompare(String(b.id ?? ""));
 }
 
-function getSortedSessionMessages(sessionId: string): ChatMessage[] {
-    return _loadAllMessages()
-        .filter(m => m.sessionId === sessionId)
-        .sort(compareChatMessages);
+export function invalidateSessionMessageCache(sessionId?: string): void {
+    if (sessionId) {
+        _sessionMessagesCache.delete(sessionId);
+    } else {
+        _sessionMessagesCache.clear();
+    }
+}
+
+/**
+ * 消息物理顺序不变量：按「时间 → id」升序（与 order 字段无关）。
+ *
+ * loadRecentSessionTail 依赖「物理尾部 = 该会话最新消息」做 O(limit) 快速取数。
+ * 两个会破坏该顺序的来源：
+ *   1) 重启后从 IndexedDB 恢复：Dexie toArray 按主键（消息 id）返回，导入消息 id 形如
+ *      `wanjie:sullyos:xxx`，字典序排在 `msg_*` 之后 → 物理尾部全是导入的旧消息；
+ *   2) 导入/回传把时间较早的消息追加到内存缓存末尾。
+ * 顺序一旦反转，「取最近 N 条」就会取到导入的旧消息，表现为「重启后注入的历史回退到
+ * 同步位置、之后的对话注入不进上下文」，而聊天页按 order 排序显示仍正常。
+ */
+function compareMessagesChronologically(a: ChatMessage, b: ChatMessage): number {
+    const timeDiff = getMessageTimeValue(a) - getMessageTimeValue(b);
+    if (timeDiff !== 0) return timeDiff;
+    return String(a.id ?? "").localeCompare(String(b.id ?? ""));
+}
+
+/** 把内存缓存整体重排为时间序，恢复「物理尾部 = 最新」不变量（导入/水合等低频路径调用）。 */
+function sortMessagesCacheChronologically(): void {
+    _messagesCache = [..._messagesCache].sort(compareMessagesChronologically);
+}
+
+/** 追加一条消息并维持时间序不变量；时间早于尾部（回传/补录旧消息）时二分插入正确位置。 */
+function insertMessageMaintainingOrder(msg: ChatMessage): void {
+    const last = _messagesCache[_messagesCache.length - 1];
+    if (!last || compareMessagesChronologically(last, msg) <= 0) {
+        _messagesCache.push(msg);
+    } else {
+        let lo = 0;
+        let hi = _messagesCache.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (compareMessagesChronologically(_messagesCache[mid], msg) <= 0) lo = mid + 1;
+            else hi = mid;
+        }
+        _messagesCache.splice(lo, 0, msg);
+    }
+
+    // 会话级有序缓存同步：新消息（本会话最新）直接追加；回填的早期消息位置不定，丢缓存待重建。
+    // 不同步的话缓存会在启动后一直停留在水合时的快照，全量读取（复杂记忆时间线等）看不到新消息。
+    const cached = _sessionMessagesCache.get(msg.sessionId);
+    if (cached) {
+        const cachedLast = cached[cached.length - 1];
+        if (!cachedLast || compareMessagesChronologically(cachedLast, msg) <= 0) cached.push(msg);
+        else _sessionMessagesCache.delete(msg.sessionId);
+    }
+}
+
+export function getSortedSessionMessages(sessionId: string): ChatMessage[] {
+    let list = _sessionMessagesCache.get(sessionId);
+    if (!list) {
+        list = _loadAllMessages()
+            .filter(m => m.sessionId === sessionId)
+            .sort(compareChatMessages);
+        _sessionMessagesCache.set(sessionId, list);
+    }
+    return list;
 }
 
 function getNextMessageOrder(sessionId: string): number {
@@ -525,6 +591,7 @@ function reindexSessionMessageOrders(sessionId: string): void {
 
     if (changed.size === 0) return;
     _messagesCache = _messagesCache.map(msg => changed.get(msg.id) || msg);
+    _sessionMessagesCache.set(sessionId, ordered.map(msg => changed.get(msg.id) || msg));
     dbPutMessages([...changed.values()]);
 }
 
@@ -538,15 +605,18 @@ export function reindexSessionMessageOrdersByTime(sessionId: string): void {
         });
     const changed = new Map<string, ChatMessage>();
 
-    ordered.forEach((msg, index) => {
-        if (msg.order === index) return;
-        changed.set(msg.id, { ...msg, order: index });
+    const updatedList = ordered.map((msg, index) => {
+        if (msg.order === index) return msg;
+        const updated = { ...msg, order: index };
+        changed.set(msg.id, updated);
+        return updated;
     });
 
     if (changed.size > 0) {
         _messagesCache = _messagesCache.map(msg => changed.get(msg.id) || msg);
         dbPutMessages([...changed.values()]);
     }
+    _sessionMessagesCache.set(sessionId, updatedList);
 
     const lastMsg = getLastVisibleSessionMessage(sessionId);
     const sessions = loadChatSessions();
@@ -645,6 +715,9 @@ export function importChatMessages(
 
     _messagesCache = [..._messagesCache, ...built];
     dbPutMessages(built);
+    // 导入的是历史消息，直接追加会把旧消息压在物理尾部、破坏「尾部=最新」不变量，
+    // 导致重启后「取最近 N 条」取到导入块（注入的历史回退到同步位置）。
+    sortMessagesCacheChronologically();
     reindexSessionMessageOrdersByTime(sessionId);
 
     return { imported: built.length, skipped: msgs.length - built.length };
@@ -715,6 +788,7 @@ const DEFAULT_CHAT_APP_SETTINGS: ChatAppSettings = {
 let _contactsCache: ChatContact[] = [];
 let _sessionsCache: ChatSession[] = [];
 let _messagesCache: ChatMessage[] = [];
+let _sessionMessagesCache = new Map<string, ChatMessage[]>();
 let _hydrated = false;
 let _hydratePromise: Promise<void> | null = null;
 
@@ -943,6 +1017,16 @@ function normalizeLegacyTextToolHistory(messages: ChatMessage[]): {
     items: ChatMessage[];
     changedMessages: ChatMessage[];
 } {
+    // 快速跳过：若库中无任何待转换的遗留文本工具消息，无需对全量消息进行昂贵的重排与双重扫描
+    const needsNormalization = messages.some(m =>
+        (m.role === "user" && m.mediaType === "tool_result" && !m.nativeToolResult) ||
+        (m.role === "assistant" && m.mediaType === "tool_result" && !m.nativeToolResult) ||
+        (m.role === "assistant" && m.mediaType === "tool_notice" && m.rawResponseText)
+    );
+    if (!needsNormalization) {
+        return { items: messages, changedMessages: [] };
+    }
+
     const byId = new Map(messages.map(message => [message.id, message]));
     const changed = new Map<string, ChatMessage>();
     const added: ChatMessage[] = [];
@@ -1117,9 +1201,27 @@ export function hydrateChatStorage(): Promise<void> {
     _hydratePromise = initChatDb().then(data => {
         const normalizedToolHistory = normalizeLegacyTextToolHistory(data.messages);
         _messagesCache = normalizedToolHistory.items;
+        // IndexedDB 按主键（消息 id）返回，物理顺序不等于时间序（导入消息 id 形如 wanjie:*，
+        // 字典序排在 msg_* 之后）。统一重排，保证「取最近 N 条」取到的是真正最新的消息。
+        sortMessagesCacheChronologically();
         if (normalizedToolHistory.changedMessages.length > 0) {
             dbPutMessages(normalizedToolHistory.changedMessages);
         }
+
+        // 构建分会话有序缓存
+        _sessionMessagesCache.clear();
+        for (const m of _messagesCache) {
+            let list = _sessionMessagesCache.get(m.sessionId);
+            if (!list) {
+                list = [];
+                _sessionMessagesCache.set(m.sessionId, list);
+            }
+            list.push(m);
+        }
+        for (const [sid, list] of _sessionMessagesCache.entries()) {
+            list.sort(compareChatMessages);
+        }
+
         let normalizedContacts = normalizeChatContacts(data.contacts);
         const normalizedSessions = normalizeChatSessions(data.sessions);
         const redirectedMessages = redirectMessagesToPreferredSessions(normalizedSessions.redirects);
@@ -1147,11 +1249,14 @@ function _loadAllMessages(): ChatMessage[] {
 
 // ── CRUD for Contacts ─────────────────────────
 export function loadChatContacts(): ChatContact[] {
+    if (_hydrated) {
+        return _contactsCache;
+    }
     let normalized = normalizeChatContacts(_contactsCache);
     normalized = restoreContactsForPrivateSessions(normalized.items, _sessionsCache);
     if (normalized.changed) {
         _contactsCache = normalized.items;
-        if (_hydrated && typeof window !== "undefined") dbReplaceContacts(normalized.items);
+        if (typeof window !== "undefined") dbReplaceContacts(normalized.items);
     }
     return _contactsCache;
 }
@@ -1191,12 +1296,15 @@ export function removeChatContact(characterId: string) {
 
 // ── CRUD for Sessions ─────────────────────────
 export function loadChatSessions(): ChatSession[] {
+    if (_hydrated) {
+        return _sessionsCache;
+    }
     const normalized = normalizeChatSessions(_sessionsCache);
     const redirectedMessages = redirectMessagesToPreferredSessions(normalized.redirects);
     const refreshed = refreshSessionPreviewMetadata(normalized.items);
     if (normalized.changed || redirectedMessages > 0 || refreshed.changed) {
         _sessionsCache = refreshed.items;
-        if (_hydrated && typeof window !== "undefined") dbReplaceSessions(refreshed.items);
+        if (typeof window !== "undefined") dbReplaceSessions(refreshed.items);
     }
     return _sessionsCache;
 }
@@ -1345,7 +1453,7 @@ export function pushChatMessage(msg: Omit<ChatMessage, "id" | "createdAt" | "sta
         newMsg = pluginResult.message;
     }
 
-    _messagesCache.push(newMsg);
+    insertMessageMaintainingOrder(newMsg);
     dbPutMessage(newMsg);
 
     // Auto update session last message only for records that can produce a list preview.
@@ -1390,7 +1498,7 @@ export function upsertImportedChatMessage(msg: ChatMessage): { message: ChatMess
         order: typeof msg.order === "number" ? msg.order : getNextMessageOrder(msg.sessionId),
     };
 
-    _messagesCache.push(newMsg);
+    insertMessageMaintainingOrder(newMsg);
     dbPutMessage(newMsg);
 
     const preview = getChatMessagePreview(newMsg);
@@ -1749,6 +1857,8 @@ export function editChatMessage(messageId: string, newContent: string) {
         dbPutMessage(_messagesCache[msgIdx]);
 
         const sessionId = _messagesCache[msgIdx].sessionId;
+        // 编辑换了对象引用，缓存里还是旧对象 → 失效，避免预览/全量读取拿到旧内容
+        invalidateSessionMessageCache(sessionId);
         const lastMsg = getLastVisibleSessionMessage(sessionId);
 
         const sessions = loadChatSessions();
@@ -1796,6 +1906,11 @@ export function clearChatSessionMessages(sessionId: string) {
 }
 
 function dispatchDeletedMessages(messages: ChatMessage[]): void {
+    // 删除后必须让按会话的有序缓存失效：缓存是对象引用快照，里面仍留着已删除的消息，
+    // 会让会话预览/全量读取取到"幽灵消息"。放在提前返回之前，空数组也无需处理。
+    for (const sessionId of new Set(messages.map(message => message.sessionId))) {
+        invalidateSessionMessageCache(sessionId);
+    }
     if (typeof window === "undefined" || messages.length === 0) return;
     window.dispatchEvent(new CustomEvent(CHAT_MESSAGES_DELETED_EVENT, { detail: { messages } }));
     for (const message of messages) {
@@ -2258,6 +2373,8 @@ export function replaceResponseBatchWithParts(
     _messagesCache.splice(insertIdx, 0, ...newMessages);
     dbPutMessages(newMessages);
     reindexSessionMessageOrders(sessionId);
+    // 重批编辑可能把消息插到历史中间：重排物理顺序，维持「尾部=最新」不变量
+    sortMessagesCacheChronologically();
 
     const lastMsg = getLastVisibleSessionMessage(sessionId);
     const sessions = loadChatSessions();
@@ -2357,6 +2474,8 @@ export function replaceGroupResponseRound(
     _messagesCache.splice(insertIdx, 0, ...newMessages);
     dbPutMessages(newMessages);
     reindexSessionMessageOrders(sessionId);
+    // 同上：插到历史中间时重排，维持「尾部=最新」不变量
+    sortMessagesCacheChronologically();
 
     const lastMsg = getLastVisibleSessionMessage(sessionId);
     const sessions = loadChatSessions();
