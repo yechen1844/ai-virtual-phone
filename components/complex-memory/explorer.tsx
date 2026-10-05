@@ -2241,7 +2241,8 @@ function MigrationTab({ characterId, characterName, notify }: {
           const ts = m.timestamp;
           const sec = Math.floor(ts / 1000);
           const fp = `${m.role}::${clean}::${sec}`;
-          if (existingIds.has(m.id) || existingFp.has(fp)) {
+          const targetId = `wanjie:sullyos:${m.id}`;
+          if (existingIds.has(m.id) || existingIds.has(targetId) || existingFp.has(fp)) {
             skipped += 1;
             continue;
           }
