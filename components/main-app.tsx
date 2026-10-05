@@ -13,6 +13,7 @@ import { SplashAnimation } from "./splash-animation";
 import { MusicProvider } from "@/lib/music-context";
 import { hydrateKvDb, isKvHydrated } from "@/lib/kv-db";
 import { installWanjieBridge } from "@/lib/wanjie/bridge";
+import { installWanjieChatExporter } from "@/lib/wanjie/export-chat";
 import { getThemeAssetMap, readThemeProfile } from "@/lib/theme-storage";
 import { resolveActiveIconSkins, type ThemeProfile } from "@/lib/theme-types";
 import { hasPendingMcpOAuthCallback } from "@/lib/tool-executor";
@@ -256,6 +257,10 @@ export function MainApp() {
       // 挂到 window.__wanjie。必须等 KV 水合完成后再挂（否则角色/会话读不到）。
       // 详见 lib/wanjie/bridge.ts
       installWanjieBridge();
+
+      // 万界 · 聊天记录导出接口：把 __wanjieExportChat 挂到 window，
+      // 用于把本机某角色的聊天记录原样导出成 JSON 交给外部整理。详见 lib/wanjie/export-chat.ts
+      installWanjieChatExporter();
 
       let nextPreparedTheme: PreparedDesktopTheme | null = null;
       try {

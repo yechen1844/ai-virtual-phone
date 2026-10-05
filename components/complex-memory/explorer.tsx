@@ -31,7 +31,20 @@ import {
   Upload,
   Zap,
   Link,
+  Globe,
+  Eye,
+  X,
 } from "lucide-react";
+import {
+  fetchCanalStatus,
+  getCanalServerUrl,
+  setCanalServerUrl,
+  uploadFloatMessages,
+  pullCloudMessages,
+  importPulledMessagesToFloat,
+  DEFAULT_CANAL_SERVER_URL,
+  type CanalMessage,
+} from "@/lib/wanjie/cloud-sync";
 import { Input, Select, Textarea, Toggle } from "@/components/ui/form";
 import { loadCharacters } from "@/lib/character-storage";
 import { loadNativeTimeline, type NativeTimelineEntry } from "@/lib/short-term-assembler";
@@ -2095,6 +2108,90 @@ function MigrationTab({ characterId, characterName, notify }: {
   const [regenBusy, setRegenBusy] = useState(false);
   const autoRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // ── 万界云水库同步状态 ──
+  const [canalServerUrl, setCanalServerUrlState] = useState(() => getCanalServerUrl());
+  const [editingCanalUrl, setEditingCanalUrl] = useState(false);
+  const [tempCanalUrl, setTempCanalUrl] = useState(canalServerUrl);
+  const [canalLoading, setCanalLoading] = useState(false);
+  const [canalUploading, setCanalUploading] = useState(false);
+  const [canalPulling, setCanalPulling] = useState(false);
+  const [canalPreview, setCanalPreview] = useState<{ messages: CanalMessage[]; count: number } | null>(null);
+  const [canalImporting, setCanalImporting] = useState(false);
+
+  const handleCheckCanal = async () => {
+    setCanalLoading(true);
+    try {
+      const st = await fetchCanalStatus(canalServerUrl);
+      const floatCount = st.stats.by_source.find((s) => s.source === "float")?.count || 0;
+      const sullyCount = st.stats.by_source.find((s) => s.source === "sullyos")?.count || 0;
+      notify({
+        kind: "ok",
+        text: `云端水库已连通：总计 ${st.stats.total_messages} 条（Float: ${floatCount}，SullyOS: ${sullyCount}）`,
+      });
+    } catch (e: any) {
+      notify({ kind: "err", text: `连不上云端水库：${e?.message || e}` });
+    } finally {
+      setCanalLoading(false);
+    }
+  };
+
+  const handleSaveCanalUrl = () => {
+    setCanalServerUrl(tempCanalUrl);
+    setCanalServerUrlState(getCanalServerUrl());
+    setEditingCanalUrl(false);
+    notify({ kind: "ok", text: "云端水库地址已更新" });
+  };
+
+  const handleUploadToCanal = async () => {
+    setCanalUploading(true);
+    try {
+      const res = await uploadFloatMessages(characterId, characterName, { serverUrl: canalServerUrl });
+      if (res.uploadedCount === 0) {
+        notify({ kind: "ok", text: `本机经历已全部同步过（共扫描 ${res.totalFound} 条，无新记录需上传）` });
+      } else {
+        notify({ kind: "ok", text: `已成功上传 ${res.uploadedCount} 条经历到云端水库！` });
+      }
+    } catch (e: any) {
+      notify({ kind: "err", text: `上传失败：${e?.message || e}` });
+    } finally {
+      setCanalUploading(false);
+    }
+  };
+
+  const handlePullFromCanal = async () => {
+    setCanalPulling(true);
+    try {
+      const res = await pullCloudMessages(characterId, { serverUrl: canalServerUrl });
+      if (res.count === 0) {
+        notify({ kind: "ok", text: "云端暂无可同步的 SullyOS 新记录" });
+      } else {
+        setCanalPreview({ messages: res.messages, count: res.count });
+      }
+    } catch (e: any) {
+      notify({ kind: "err", text: `拉取失败：${e?.message || e}` });
+    } finally {
+      setCanalPulling(false);
+    }
+  };
+
+  const handleConfirmImport = async () => {
+    if (!canalPreview || canalPreview.messages.length === 0) return;
+    setCanalImporting(true);
+    try {
+      const res = await importPulledMessagesToFloat(characterId, canalPreview.messages);
+      setCanalPreview(null);
+      await loadCounts();
+      notify({
+        kind: "ok",
+        text: `已成功导入 ${res.imported} 条 SullyOS 记录！请在下方选择回溯范围，手动点击「开始一键迁移」消化记忆。`,
+      });
+    } catch (e: any) {
+      notify({ kind: "err", text: `导入失败：${e?.message || e}` });
+    } finally {
+      setCanalImporting(false);
+    }
+  };
+
   const loadCounts = useCallback(async () => {
     setCounts(await countByCharacter(characterId));
     setPeriods(await loadPeriods(characterId));
@@ -2227,6 +2324,100 @@ function MigrationTab({ characterId, characterName, notify }: {
             {done ? "已完成" : paused ? "已暂停" : running ? "进行中" : "未开始"}
           </span>
         )}
+      </div>
+
+      {/* 万界云水库 · 跨端同步 */}
+      <div className="cm-card" style={{ marginBottom: "1rem", border: "1px solid rgba(14, 165, 233, 0.3)", background: "rgba(14, 165, 233, 0.03)" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.5rem" }}>
+          <span style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontWeight: 700, fontSize: "0.875rem", color: "var(--primary, #0284c7)" }}>
+            <Globe size={16} />
+            万界云水库 · 跨端同步
+          </span>
+          <button
+            type="button"
+            className="ui-btn ui-btn-outline ts-12"
+            style={{ padding: "0.2rem 0.5rem", fontSize: "0.75rem" }}
+            onClick={() => { setTempCanalUrl(canalServerUrl); setEditingCanalUrl((v) => !v); }}
+          >
+            {editingCanalUrl ? "取消" : "配置地址"}
+          </button>
+        </div>
+
+        <p className="cm-muted" style={{ fontSize: "0.75rem", marginBottom: "0.75rem", lineHeight: 1.5 }}>
+          无需反复拷贝文件：Float 与 SullyOS 记录可通过云端水库无缝互通。同步后先弹出对话列表让你「过一眼」核对，只有在你点击确认后才会安全导入聊天，然后再由你手动点击一键迁移，绝不产生误触。
+        </p>
+
+        {editingCanalUrl && (
+          <div style={{ padding: "0.5rem", borderRadius: "0.5rem", background: "rgba(0,0,0,0.03)", marginBottom: "0.75rem" }}>
+            <div style={{ fontSize: "0.75rem", fontWeight: 600, marginBottom: "0.25rem" }}>云水库 Worker / Deno 地址</div>
+            <input
+              type="text"
+              value={tempCanalUrl}
+              onChange={(e) => setTempCanalUrl(e.target.value)}
+              placeholder="https://wanjie-canal.luyi90720.workers.dev"
+              style={{ width: "100%", padding: "0.35rem 0.5rem", fontSize: "0.75rem", fontFamily: "monospace", borderRadius: "0.375rem", border: "1px solid #ccc", marginBottom: "0.5rem" }}
+            />
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem" }}>
+              <button
+                type="button"
+                className="ui-btn ui-btn-outline ts-12"
+                onClick={() => setTempCanalUrl(DEFAULT_CANAL_SERVER_URL)}
+                style={{ padding: "0.2rem 0.5rem", fontSize: "0.75rem" }}
+              >
+                恢复默认
+              </button>
+              <button
+                type="button"
+                className="ui-btn ui-btn-primary ts-12"
+                onClick={handleSaveCanalUrl}
+                style={{ padding: "0.2rem 0.6rem", fontSize: "0.75rem" }}
+              >
+                保存
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0.35rem 0.6rem", borderRadius: "0.375rem", background: "rgba(255,255,255,0.7)", border: "1px solid rgba(0,0,0,0.06)", fontSize: "0.75rem", marginBottom: "0.75rem" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", minWidth: 0 }}>
+            <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#10b981", flexShrink: 0 }} />
+            <span style={{ fontFamily: "monospace", fontSize: "0.75rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {canalServerUrl}
+            </span>
+          </div>
+          <button
+            type="button"
+            className="ui-btn ui-btn-outline ts-12"
+            disabled={canalLoading}
+            onClick={() => void handleCheckCanal()}
+            style={{ padding: "0.15rem 0.4rem", fontSize: "0.7rem", flexShrink: 0, marginLeft: "0.5rem" }}
+          >
+            {canalLoading ? "检查中…" : "检查水位"}
+          </button>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
+          <button
+            type="button"
+            disabled={canalUploading || canalLoading}
+            onClick={() => void handleUploadToCanal()}
+            className="ui-btn ui-btn-outline ts-12"
+            style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "0.35rem", padding: "0.5rem", fontWeight: 600 }}
+          >
+            <Upload size={14} />
+            {canalUploading ? "上传中…" : "⬆️ 上传 Float 记录"}
+          </button>
+          <button
+            type="button"
+            disabled={canalPulling || canalLoading}
+            onClick={() => void handlePullFromCanal()}
+            className="ui-btn ui-btn-primary ts-12"
+            style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "0.35rem", padding: "0.5rem", fontWeight: 600 }}
+          >
+            <Download size={14} />
+            {canalPulling ? "查询中…" : "⬇️ 从云端同步记录"}
+          </button>
+        </div>
       </div>
 
       {!state || state.status === "idle" ? (
@@ -2370,6 +2561,81 @@ function MigrationTab({ characterId, characterName, notify }: {
             <button type="button" className="ui-btn ui-btn-danger ts-12" onClick={handleReset}>
               <Trash2 size={14} /> 重置
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* 记录核对 Modal ("过一眼"核对预览) */}
+      {canalPreview && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem", backdropFilter: "blur(4px)" }}>
+          <div style={{ background: "white", borderRadius: "1rem", width: "100%", maxWidth: "520px", maxHeight: "85vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 20px 25px -5px rgba(0,0,0,0.2)" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "1rem 1.25rem", borderBottom: "1px solid #f1f5f9" }}>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: "0.95rem", color: "#1e293b", display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                  <Eye size={16} color="#0284c7" />
+                  万界云水库 · 记录核对
+                </div>
+                <div style={{ fontSize: "0.75rem", color: "#64748b", marginTop: "0.2rem" }}>
+                  拉取到 {canalPreview.count} 条来自 SullyOS 的新记录，请过目核对
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCanalPreview(null)}
+                style={{ background: "#f1f5f9", border: "none", borderRadius: "50%", width: "28px", height: "28px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+              >
+                <X size={14} />
+              </button>
+            </div>
+
+            <div style={{ flex: 1, overflowY: "auto", padding: "1rem", display: "flex", flexDirection: "column", gap: "0.6rem", background: "#f8fafc" }}>
+              {canalPreview.messages.map((m, idx) => (
+                <div
+                  key={m.id || idx}
+                  style={{
+                    padding: "0.6rem 0.75rem",
+                    borderRadius: "0.75rem",
+                    border: "1px solid #e2e8f0",
+                    background: m.role === "user" ? "#f0f9ff" : "white",
+                    marginLeft: m.role === "user" ? "1.5rem" : "0",
+                    marginRight: m.role === "user" ? "0" : "1.5rem",
+                    fontSize: "0.75rem",
+                    lineHeight: 1.4,
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.65rem", color: "#94a3b8", marginBottom: "0.25rem", fontFamily: "monospace" }}>
+                    <span style={{ fontWeight: 700, color: m.role === "user" ? "#0369a1" : "#475569" }}>
+                      {m.role === "user" ? "用户 (我)" : (m.char_name || characterName)}
+                    </span>
+                    <span>{new Date(m.timestamp).toLocaleString()}</span>
+                  </div>
+                  <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{m.content}</div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0.85rem 1.25rem", borderTop: "1px solid #f1f5f9", background: "white" }}>
+              <span style={{ fontSize: "0.75rem", color: "#64748b" }}>
+                导入后可在下方选择天数，手动开始一键迁移
+              </span>
+              <div style={{ display: "flex", gap: "0.5rem" }}>
+                <button
+                  type="button"
+                  className="ui-btn ui-btn-outline ts-12"
+                  onClick={() => setCanalPreview(null)}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  disabled={canalImporting}
+                  className="ui-btn ui-btn-primary ts-12"
+                  onClick={() => void handleConfirmImport()}
+                >
+                  {canalImporting ? "导入中…" : "确认导入到聊天记录"}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

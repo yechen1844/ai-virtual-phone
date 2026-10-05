@@ -21,6 +21,11 @@ function resolveDistDir() {
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // 万界集成：作为子应用挂到同一个源下面（例如 /wanjie/float）。
+  // 由环境变量驱动，默认空字符串 = 行为与以前完全一致（单独运行时不受影响）。
+  // 为什么必须这样：万界壳要用 iframe 直调本应用的 window.__wanjie，
+  // 只有同源才拿得到；而挂到子路径必须让 Next 自己生成带前缀的资源地址。
+  basePath: process.env.WANJIE_BASE_PATH || '',
   typedRoutes: true,
   outputFileTracingRoot: projectRoot,
   distDir: resolveDistDir(),
