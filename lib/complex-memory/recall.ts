@@ -114,7 +114,7 @@ export async function buildMemoryContextBundle(
   characterId: string,
   characterName: string,
   currentContext: string,
-  options?: { shortTermText?: string; skipRerank?: boolean; maxRecallEntries?: number },
+  options?: { shortTermText?: string; skipRerank?: boolean; maxRecallEntries?: number; userQuery?: string },
 ): Promise<MemoryContextBundle> {
   const config = loadComplexMemoryConfig();
 
@@ -147,7 +147,13 @@ export async function buildMemoryContextBundle(
   const fixedShortTerm = options?.shortTermText ?? "";
 
   // ② 向量召回（无 embedding API 时关键词退化）——只用未覆盖且未删除的事件
-  let recalledItems = await vectorRecall(characterId, currentContext, config, { events: recallableEvents, dailies, periods });
+  let recalledItems = await vectorRecall(
+    characterId,
+    currentContext,
+    config,
+    { events: recallableEvents, dailies, periods },
+    { userQuery: options?.userQuery }
+  );
 
   // 剔除与固定注入区重复的实体（最新事件/昨日日记/特殊日期日记/活跃周期已硬性注入）
   const fixedIds = new Set<string>([
@@ -213,6 +219,7 @@ async function vectorRecall(
   currentContext: string,
   config: ComplexMemoryConfig,
   entities: { events: ComplexEvent[]; dailies: ComplexDaily[]; periods: ComplexPeriod[] },
+  options?: { userQuery?: string },
 ): Promise<MemoryRecallItem[]> {
   const embApi = config.vectorRecallEnabled ? resolveAuxiliaryApiConfig("embeddingApiConfigId") : null;
   const now = Date.now();
@@ -242,17 +249,28 @@ async function vectorRecall(
     });
   }
 
-  if (candidates.length === 0 || !currentContext.trim()) return [];
+  if (candidates.length === 0 || (!currentContext.trim() && !options?.userQuery?.trim())) return [];
+
+  // 1. 提炼核心聚焦 Query（消除拼接10句闲聊导致语义向量被稀释的缺陷）
+  let queryText = (options?.userQuery || "").trim();
+  if (!queryText) {
+    const lines = currentContext.trim().split("\n").filter(Boolean);
+    queryText = lines.slice(-2).join(" ");
+  }
+
+  // 2. 智能探测：当用户主动提问往事（“还记得/以前/曾经/上次/那天/小时候”等），豁免时间窗衰减
+  const HISTORICAL_INQUIRY_REGEX = /(记得|还记得|以前|过去|曾经|上次|那天|旧事|当年|小时候|刚认识|第一次|那次|之前|早前|回想|那回|提过|说过)/;
+  const isHistoricalInquiry = HISTORICAL_INQUIRY_REGEX.test(queryText) || HISTORICAL_INQUIRY_REGEX.test(currentContext);
 
   // M5 情绪参与召回：探测当前上下文情绪，评分按 score × (1 + λ × 情绪相似度) 加权（周期无情绪向量，跳过）
-  const ctxEmotion = detectEmotion(currentContext);
+  const ctxEmotion = detectEmotion(queryText || currentContext);
   const applyWeights = (scored: Array<{ item: MemoryRecallItem; score: number }>): MemoryRecallItem[] => {
     const effById = new Map(candidates.map((c) => [c.item.id, c.effVoltage]));
     const weighted = scored.map((s) => {
       let score = s.score;
-      // 每日记忆时间窗：仅日记按时间降权（事件不受此窗，久远但关键的事件必须能召回）
+      // 每日记忆时间窗：当用户在主动回忆往事时，豁免时间衰减（全额权重 1.0），避免几个月前的关键日记被 0.2~0.3 的地板值压死
       if (s.item.kind === "daily") {
-        score *= dailyTimeWindowWeight(s.item.timestamp, config);
+        score *= isHistoricalInquiry ? 1.0 : dailyTimeWindowWeight(s.item.timestamp, config);
       }
       // 电压加成（加成式）：常被回忆的记忆（高电压）优先浮现，
       // 低电压老记忆不受惩罚（× 1.0 ~ × 1.5w），老事件仍可靠语义相似度召回
@@ -271,18 +289,28 @@ async function vectorRecall(
     return weighted.slice(0, config.recallTopK).map((s) => ({ ...s.item, score: s.score }));
   };
 
+  // 3. 增强型双路混合检索 (Hybrid Search: 密集语义向量 + 精准实体关键词加权)
   if (embApi && resolveEmbeddingModel(embApi)) {
-    const queryEmbedding = await generateEmbedding(currentContext, embApi);
+    const queryEmbedding = await generateEmbedding(queryText, embApi);
     if (queryEmbedding) {
       const withEmb = candidates.filter((c) => c.embedding && c.embedding.length > 0);
       if (withEmb.length > 0) {
-        const scored = withEmb.map((c) => ({ item: c.item, score: cosineSimilarity(queryEmbedding, c.embedding!) }));
+        const scored = withEmb.map((c) => {
+          const vSim = cosineSimilarity(queryEmbedding, c.embedding!);
+          // 同时计算关键词/实体匹配度（针对日记正文以及可能包含的金句）
+          const kwSim = keywordOverlapRatio(queryText, c.item.content);
+          // 混合融合：向量保证泛化理解（70%），关键词保证实体专有名词不丢失（30%）；高关键词匹配额外赋予命中奖励
+          const entityBonus = kwSim >= 0.4 ? 0.25 : kwSim >= 0.2 ? 0.12 : 0;
+          const hybridScore = vSim * 0.7 + kwSim * 0.3 + entityBonus;
+          return { item: c.item, score: Math.max(vSim, hybridScore) };
+        });
         return applyWeights(scored);
       }
     }
   }
 
-  const scored = candidates.map((c) => ({ item: c.item, score: keywordOverlapRatio(currentContext, c.item.content) }));
+  // 降级路：纯关键词打分
+  const scored = candidates.map((c) => ({ item: c.item, score: keywordOverlapRatio(queryText, c.item.content) }));
   return applyWeights(scored);
 }
 

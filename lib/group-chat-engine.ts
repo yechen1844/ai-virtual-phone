@@ -355,9 +355,21 @@ async function buildGroupChatPromptMessages(
         let coreMemories = "", longTermMemories = "";
         try {
             if (isComplexMemoryEnabled(charId)) {
+                // 提取群聊最近一轮对话（前序发言 + 本轮用户发言）
+                const userTail: string[] = [];
+                let hIdx = history.length - 1;
+                while (hIdx >= 0 && history[hIdx].role === "user") {
+                    const text = (history[hIdx].content || "").trim();
+                    if (text) userTail.unshift(text);
+                    hIdx--;
+                }
+                const precedingOther = hIdx >= 0 ? (history[hIdx].content || "").trim().slice(-200) : "";
+                const turnQuery = precedingOther ? `${precedingOther}\n用户: ${userTail.join(" ")}` : userTail.join(" ");
+
                 const bundle = await buildMemoryContextBundle(charId, character.name, wbActivationContext, {
                     skipRerank: options?.skipMemoryRerank,
                     maxRecallEntries: options?.maxRecallEntries,
+                    userQuery: turnQuery || undefined,
                 }).catch(() => null);
                 if (bundle) {
                     coreMemories = bundle.coreMemory;

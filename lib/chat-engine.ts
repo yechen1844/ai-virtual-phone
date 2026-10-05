@@ -1974,12 +1974,35 @@ export async function buildChatPromptMessages(
     let coreMemories = "";
     if (isComplexMemoryEnabled(character.id)) {
         const isChatSession = resolvedAppId === "chat";
+        // 提取当前一整轮对话语境（Assistant 上句发起的话题 + User 本轮发送的所有连续气泡）
+        const userTailMsgs: string[] = [];
+        let curIdx = historyForPrompt.length - 1;
+        while (curIdx >= 0 && historyForPrompt[curIdx].role === "user") {
+            const text = (historyForPrompt[curIdx].content || "").trim();
+            if (text) userTailMsgs.unshift(text);
+            curIdx--;
+        }
+        let precedingAssistantMsg = "";
+        while (curIdx >= 0 && historyForPrompt[curIdx].role === "assistant") {
+            const text = (historyForPrompt[curIdx].content || "").trim();
+            if (text) {
+                precedingAssistantMsg = text;
+                break;
+            }
+            curIdx--;
+        }
+        const userTurnContent = userTailMsgs.join("\n");
+        const turnQuery = precedingAssistantMsg
+            ? `${character.name}: ${precedingAssistantMsg.slice(-250)}\n用户: ${userTurnContent}`
+            : userTurnContent;
+
         const bundle = await buildMemoryContextBundle(character.id, character.name, wbActivationContext, {
             shortTermText: recentBlocks.map(b => b.content).filter(Boolean).join("\n"),
             // 只在「单聊会话」触发重排（群聊走 group-chat-engine 单独处理）；预览或非会话 app（自定义/阅读等）
             // 一律跳过重排，且非会话场景只放行最多 6 条向量召回结果，节省副 API 消耗
             skipRerank: options?.skipMemoryRerank || !isChatSession,
             maxRecallEntries: isChatSession ? undefined : 6,
+            userQuery: turnQuery,
         }).catch(() => null);
         if (bundle) {
             coreMemories = bundle.coreMemory;

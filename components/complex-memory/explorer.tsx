@@ -2115,8 +2115,15 @@ function MigrationTab({ characterId, characterName, notify }: {
   const [canalLoading, setCanalLoading] = useState(false);
   const [canalUploading, setCanalUploading] = useState(false);
   const [canalPulling, setCanalPulling] = useState(false);
-  const [canalPreview, setCanalPreview] = useState<{ messages: CanalMessage[]; count: number } | null>(null);
+  const [canalPreview, setCanalPreview] = useState<{
+    messages: CanalMessage[];
+    count: number;
+    totalPulled?: number;
+    skippedDuplicates?: number;
+  } | null>(null);
   const [canalImporting, setCanalImporting] = useState(false);
+  const [pullSinceDate, setPullSinceDate] = useState("2024-10-03");
+  const [filterPullPreOct3, setFilterPullPreOct3] = useState(true);
 
   const handleCheckCanal = async () => {
     setCanalLoading(true);
@@ -2161,11 +2168,60 @@ function MigrationTab({ characterId, characterName, notify }: {
   const handlePullFromCanal = async () => {
     setCanalPulling(true);
     try {
-      const res = await pullCloudMessages(characterId, { serverUrl: canalServerUrl });
+      const sinceTs = filterPullPreOct3 && pullSinceDate ? new Date(`${pullSinceDate}T00:00:00`).getTime() : 0;
+      const res = await pullCloudMessages(characterId, { serverUrl: canalServerUrl, since: sinceTs });
       if (res.count === 0) {
         notify({ kind: "ok", text: "云端暂无可同步的 SullyOS 新记录" });
       } else {
-        setCanalPreview({ messages: res.messages, count: res.count });
+        // 本地指纹预检：严格排除已有记录，杜绝重叠复制
+        const { loadChatSessions, loadChatMessages, hydrateChatStorage } = await import("@/lib/chat-storage");
+        await hydrateChatStorage();
+        const sessions = loadChatSessions().filter((s) => !s.isGroup && s.contactId === characterId);
+        const existingInSession = sessions.flatMap((s) => loadChatMessages(s.id));
+        const existingIds = new Set(existingInSession.map((m) => m.id));
+        const existingFp = new Set(
+          existingInSession.map((m) => `${m.role}::${(m.content || "").trim()}::${Math.floor(new Date(m.createdAt).getTime() / 1000)}`)
+        );
+        const existingTimeContent = existingInSession.map((m) => ({
+          role: m.role,
+          content: (m.content || "").trim(),
+          ts: new Date(m.createdAt).getTime(),
+        }));
+
+        const fresh: CanalMessage[] = [];
+        let skipped = 0;
+        for (const m of res.messages) {
+          const clean = (m.content || "").trim();
+          const ts = m.timestamp;
+          const sec = Math.floor(ts / 1000);
+          const fp = `${m.role}::${clean}::${sec}`;
+          if (existingIds.has(m.id) || existingFp.has(fp)) {
+            skipped += 1;
+            continue;
+          }
+          const isNear = existingTimeContent.some(
+            (ex) => ex.role === m.role && ex.content === clean && Math.abs(ex.ts - ts) <= 3000
+          );
+          if (isNear) {
+            skipped += 1;
+            continue;
+          }
+          fresh.push(m);
+        }
+
+        if (fresh.length === 0) {
+          notify({
+            kind: "ok",
+            text: `云端拉取到 ${res.count} 条记录，经本地比对全部与 Float 已有记录重复，已自动排除，无需重复导入`,
+          });
+        } else {
+          setCanalPreview({
+            messages: fresh,
+            count: fresh.length,
+            totalPulled: res.count,
+            skippedDuplicates: skipped,
+          });
+        }
       }
     } catch (e: any) {
       notify({ kind: "err", text: `拉取失败：${e?.message || e}` });
@@ -2396,6 +2452,25 @@ function MigrationTab({ characterId, characterName, notify }: {
           </button>
         </div>
 
+        <div style={{ padding: "0.5rem 0.75rem", borderRadius: "0.5rem", background: "rgba(255,255,255,0.7)", border: "1px solid rgba(0,0,0,0.06)", fontSize: "0.75rem", marginBottom: "0.75rem", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", cursor: "pointer", userSelect: "none" }}>
+            <input
+              type="checkbox"
+              checked={filterPullPreOct3}
+              onChange={(e) => setFilterPullPreOct3(e.target.checked)}
+            />
+            <span>仅同步此日期之后的新记录（防老记录重合）：</span>
+          </label>
+          {filterPullPreOct3 && (
+            <input
+              type="date"
+              value={pullSinceDate}
+              onChange={(e) => setPullSinceDate(e.target.value)}
+              style={{ padding: "0.15rem 0.4rem", fontSize: "0.75rem", fontFamily: "monospace", borderRadius: "0.25rem", border: "1px solid #ccc" }}
+            />
+          )}
+        </div>
+
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" }}>
           <button
             type="button"
@@ -2576,7 +2651,12 @@ function MigrationTab({ characterId, characterName, notify }: {
                   万界云水库 · 记录核对
                 </div>
                 <div style={{ fontSize: "0.75rem", color: "#64748b", marginTop: "0.2rem" }}>
-                  拉取到 {canalPreview.count} 条来自 SullyOS 的新记录，请过目核对
+                  云端拉取 {canalPreview.totalPulled ?? canalPreview.count} 条记录
+                  {canalPreview.skippedDuplicates !== undefined && canalPreview.skippedDuplicates > 0 ? (
+                    <span style={{ color: "#0284c7", marginLeft: "0.3rem", fontWeight: 600 }}>
+                      （已剔除 {canalPreview.skippedDuplicates} 条重复/旧记录，本次待新增 {canalPreview.messages.length} 条）
+                    </span>
+                  ) : ""}
                 </div>
               </div>
               <button

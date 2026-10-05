@@ -578,8 +578,56 @@ export function importChatMessages(
     }>,
 ): { imported: number; skipped: number } {
     const all = _loadAllMessages();
-    const existingIds = new Set(all.filter(m => m.sessionId === sessionId).map(m => m.id));
-    const fresh = msgs.filter(m => m.id && !existingIds.has(m.id) && m.content && m.createdAt);
+    const existingInSession = all.filter(m => m.sessionId === sessionId);
+    const existingIds = new Set(existingInSession.map(m => m.id));
+
+    // 双重防重：内容 + 角色 + 时间戳（秒级指纹 + ±3 秒窗口模糊去重）
+    const existingFingerprints = new Set<string>();
+    const existingTimeContentList: Array<{ role: string; content: string; ts: number }> = [];
+    for (const m of existingInSession) {
+        const ts = new Date(m.createdAt).getTime();
+        const cleanContent = (m.content || "").trim();
+        if (Number.isFinite(ts) && cleanContent) {
+            const sec = Math.floor(ts / 1000);
+            existingFingerprints.add(`${m.role}::${cleanContent}::${sec}`);
+            existingTimeContentList.push({ role: m.role, content: cleanContent, ts });
+        }
+    }
+
+    const fresh: Array<{
+        id: string;
+        role: ChatMessageRole;
+        content: string;
+        createdAt: string;
+        mediaType?: ChatMessage["mediaType"];
+        mediaData?: ChatMessage["mediaData"];
+    }> = [];
+
+    for (const m of msgs) {
+        if (!m.id || !m.content || !m.createdAt) continue;
+        if (existingIds.has(m.id)) continue;
+
+        const clean = (m.content || "").trim();
+        if (!clean) continue;
+        const ts = new Date(m.createdAt).getTime();
+        if (!Number.isFinite(ts)) continue;
+
+        const sec = Math.floor(ts / 1000);
+        const fp = `${m.role}::${clean}::${sec}`;
+        if (existingFingerprints.has(fp)) continue;
+
+        const isNearDuplicate = existingTimeContentList.some(
+            ex => ex.role === m.role && ex.content === clean && Math.abs(ex.ts - ts) <= 3000
+        );
+        if (isNearDuplicate) continue;
+
+        // 记入已有集合，防止同一批次内自带重复记录
+        existingIds.add(m.id);
+        existingFingerprints.add(fp);
+        existingTimeContentList.push({ role: m.role, content: clean, ts });
+        fresh.push(m);
+    }
+
     if (fresh.length === 0) return { imported: 0, skipped: msgs.length };
 
     const startOrder = getNextMessageOrder(sessionId);
