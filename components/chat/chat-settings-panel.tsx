@@ -38,13 +38,14 @@ import { triggerDeleteFriendReaction } from "@/lib/friend-request-engine";
 import { loadCharacters } from "@/lib/character-storage";
 import { isAgentComputerConfigured } from "@/lib/agent-computer";
 import { CharacterComputerPage } from "./character-computer-page";
+import { ScheduleNotePanel } from "./schedule-note-panel";
 import { resolveUserIdentity, loadBindingConfig, loadPresets, resolveBinding } from "@/lib/settings-storage";
 import { getStatusRegionConfig, saveStatusRegionConfig, presetSupportsStatusRegion, isCustomStatusRegionActive, STATUS_REGION_SCHEME_TARGET, STATUS_REGION_UPDATED_EVENT, type StatusRegionConfig } from "@/lib/chat-status-region";
 import { downloadFile } from "@/lib/download-utils";
 import { getSchemes, saveScheme, deleteScheme, type CSSScheme } from "@/lib/css-scheme-storage";
 import { CustomStatusFrame } from "@/components/chat/custom-status-frame";
 import { KeyboardAutoSendDebounceItem } from "@/components/chat/keyboard-auto-send-debounce-item";
-import { ChevronRight, Image as ImageIcon, Video, Mic, UserMinus, UserPlus, Users, Pin, MessageSquare, Search, AlertCircle, Code, Laptop, Trash2, Smile, Sparkles, X, Play, Upload, Download, Save, FolderOpen, type LucideIcon } from "lucide-react";
+import { ChevronRight, Image as ImageIcon, Video, Mic, UserMinus, UserPlus, Users, Pin, MessageSquare, Search, AlertCircle, Code, Laptop, Trash2, Smile, Sparkles, X, Play, Upload, Download, Save, FolderOpen, NotebookPen, type LucideIcon } from "lucide-react";
 import { BINDING_ACCENTS, CONTENT_APP_ACCENTS } from "@/lib/ui-accent-colors";
 import CSSSchemeBar from "@/components/ui/css-scheme-picker";
 import { ConfirmDialog } from "@/components/ui/modal";
@@ -390,6 +391,7 @@ export function ChatSettingsPanel({
         setShowStatusRegionDialog(true);
     };
     const [visionImagePromptLimit, setVisionImagePromptLimit] = useState(() => normalizeVisionImagePromptLimit(session.visionImagePromptLimit));
+    const [showScheduleNotePanel, setShowScheduleNotePanel] = useState(false);
     const [bilingualTranslationEnabled, setBilingualTranslationEnabled] = useState(session.bilingualTranslationEnabled !== false);
     const [offlineSummaryRetry, setOfflineSummaryRetry] = useState(session.offlineSummaryRetry !== false);
     const [collapseBilingualTranslation, setCollapseBilingualTranslation] = useState(session.collapseBilingualTranslation !== false);
@@ -985,6 +987,19 @@ export function ChatSettingsPanel({
                                 </div>
                             </div>
                         )}
+                    </div>
+                )}
+
+                {!session.isGroup && (
+                    <div className="menu-group">
+                        <div className="menu-item cursor-pointer" onClick={() => setShowScheduleNotePanel(true)}>
+                            <ChatInfoIcon icon={NotebookPen} color={BINDING_ACCENTS.preset} />
+                            <div className="menu-label-group">
+                                <span className="menu-label">日程便签</span>
+                                <span className="menu-desc">TA 记下的你的时间安排，会换算成「还有多久 / 已进行多久」进入对话</span>
+                            </div>
+                            <div className="menu-right"><ChevronRight size={16} className="opacity-40" /></div>
+                        </div>
                     </div>
                 )}
 
@@ -1700,6 +1715,15 @@ export function ChatSettingsPanel({
                 </div>
                 </div>
             )}
+            {showScheduleNotePanel && !session.isGroup && (
+                <ScheduleNotePanel
+                    characterId={session.contactId}
+                    characterName={character?.name || "对方"}
+                    sessionId={session.id}
+                    onClose={() => setShowScheduleNotePanel(false)}
+                />
+            )}
+
             {showStatusRegionDialog && (
                 <div className="fixed inset-0 z-[10030] flex items-end justify-center bg-black/45 sm:items-center" role="dialog" aria-modal="true" aria-label="自定义状态栏">
                     <div className="flex max-h-[86vh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl bg-[var(--c-page-body-bg)] text-[var(--c-text)] shadow-2xl sm:rounded-2xl">

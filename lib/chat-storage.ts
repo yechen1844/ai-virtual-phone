@@ -216,6 +216,8 @@ export type ChatMessage = {
         memoryContent?: string;   // 记忆写入内容
         memoryReason?: string;    // 记忆写入原因
         memoryImportance?: number;// 记忆写入重要性
+        // 写入目标（必须随待确认请求一起保存，否则用户点确认后会丢失，一律落回 float 长期记忆）
+        memoryScope?: "event" | "core" | "long_term";
         memoryRequestStatus?: "pending" | "approved" | "ignored";
         fileType?: "audio" | "image" | "video" | "file";
         fileName?: string;
@@ -359,7 +361,11 @@ export function getChatMessagePreview(msg: ChatMessage): string {
     if (msg.mediaType === "music_notify") return msg.content;
     if (msg.mediaType === "memory_write_request") {
         const status = msg.mediaData?.memoryRequestStatus;
-        if (status === "approved") return "[已写入长期记忆]";
+        if (status === "approved") {
+            const scope = msg.mediaData?.memoryScope;
+            const label = scope === "event" ? "事件记忆" : scope === "core" ? "核心记忆" : "长期记忆";
+            return `[已写入${label}]`;
+        }
         if (status === "ignored") return "[已忽略记忆写入]";
         return "[记忆写入申请]";
     }

@@ -31,6 +31,7 @@ import {
     saveInternalCapabilities,
     MUSIC_CONTROL_CAPABILITY_ID,
     NOTE_WALL_CAPABILITY_ID,
+    SCHEDULE_NOTE_CAPABILITY_ID,
     TOOLBOX_MANAGEMENT_CAPABILITY_ID,
 } from "@/lib/internal-capability-storage";
 import { discoverMcpTools, startMcpOAuth } from "@/lib/tool-executor";
@@ -261,11 +262,11 @@ export function ToolboxSettings() {
     }
 
     function defaultInternalMode(id: string): InternalCapabilityConfig["mode"] {
-        return id === NOTE_WALL_CAPABILITY_ID || id === MUSIC_CONTROL_CAPABILITY_ID || id === CALENDAR_MANAGEMENT_CAPABILITY_ID || id === LOCAL_DATA_LIBRARY_CAPABILITY_ID || id === TOOLBOX_MANAGEMENT_CAPABILITY_ID ? "auto" : "confirm";
+        return id === NOTE_WALL_CAPABILITY_ID || id === MUSIC_CONTROL_CAPABILITY_ID || id === CALENDAR_MANAGEMENT_CAPABILITY_ID || id === LOCAL_DATA_LIBRARY_CAPABILITY_ID || id === TOOLBOX_MANAGEMENT_CAPABILITY_ID || id === SCHEDULE_NOTE_CAPABILITY_ID ? "auto" : "confirm";
     }
 
     function isAutoOnlyInternalCapability(id: string): boolean {
-        return id === NOTE_WALL_CAPABILITY_ID || id === MUSIC_CONTROL_CAPABILITY_ID || id === CALENDAR_MANAGEMENT_CAPABILITY_ID || id === LOCAL_DATA_LIBRARY_CAPABILITY_ID || id === TOOLBOX_MANAGEMENT_CAPABILITY_ID;
+        return id === NOTE_WALL_CAPABILITY_ID || id === MUSIC_CONTROL_CAPABILITY_ID || id === CALENDAR_MANAGEMENT_CAPABILITY_ID || id === LOCAL_DATA_LIBRARY_CAPABILITY_ID || id === TOOLBOX_MANAGEMENT_CAPABILITY_ID || id === SCHEDULE_NOTE_CAPABILITY_ID;
     }
 
     function getAutoOnlyCapabilityDetail(id: string): string {
@@ -283,6 +284,9 @@ export function ToolboxSettings() {
         }
         if (id === TOOLBOX_MANAGEMENT_CAPABILITY_ID) {
             return "工具箱管理开启后，角色可以创建和维护它自己写入的 REST 工具、REST 套件、组合工具和组合工具套件；系统会拒绝修改用户手动创建或内置内容。";
+        }
+        if (id === SCHEDULE_NOTE_CAPABILITY_ID) {
+            return "日程便签开启后，角色可以把聊天里提到的时间安排记成便签（要发生的事、正在进行的状态、要到点提醒的事），系统会在每轮对话里自动换算成「还有多久 / 已进行多久」注入，避免角色把没发生的事当成已经发生。便签按角色独立，可在聊天信息页查看和修改。";
         }
         return "这是内置工具能力，开启后角色可以在聊天中按需获取并调用对应工具。";
     }

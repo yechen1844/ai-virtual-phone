@@ -79,7 +79,8 @@ import { kvGet, kvSet, registerKvMigration } from "./kv-db";
 import { pushApiLog } from "./api-log-store";
 export { getApiLogs, clearApiLogs, type DebugInfo } from "./api-log-store";
 import { stripStateAndInnerForPrompt } from "./prompt-sanitizer";
-import { getInternalCapability, getInternalCapabilitySubToolDefinitions } from "./internal-capability-storage";
+import { getInternalCapability, getInternalCapabilitySubToolDefinitions, SCHEDULE_NOTE_CAPABILITY_ID } from "./internal-capability-storage";
+import { buildScheduleNotePromptBlock } from "./schedule-note-storage";
 import { isMediaStoreRef, loadMediaBlob } from "./media-cache-storage";
 import {
     DEFAULT_CHAT_BILINGUAL_PROMPT,
@@ -343,6 +344,7 @@ type ChatPromptBuildOptions = {
     followUpDelay?: number;
     timedWakeElapsedMinutes?: number;
     timedWakeIntent?: string;
+    scheduleReminderContext?: string;
     periodCareContext?: string;
     appId?: string;
     appTags?: string[];
@@ -1939,6 +1941,13 @@ export async function buildChatPromptMessages(
     const toolsEnabled = enabledTools.length > 0
         && (options?.forceEnableTools === true || presetIncludesToolsMacro(preset, resolvedAppId, effectiveAppTags));
     const usesNativeActions = Boolean(toolsEnabled && nativeToolProtocolForConfig(config));
+    // 日程便签：把角色自己记的日程换算成「还有多久 / 已进行多久」，贴到时间块后面逐轮注入
+    const scheduleNoteBlock = (effectiveAppTags ?? []).includes("chat")
+        && !(effectiveAppTags ?? []).includes("story")
+        && !(effectiveAppTags ?? []).includes("vn")
+        && getInternalCapability(SCHEDULE_NOTE_CAPABILITY_ID)?.enabled
+        ? buildScheduleNotePromptBlock(character.id, now)
+        : "";
     const { recentBlocks, truncatedHistory, wbActivationContext, unifiedRecentItems } = prepareShortTermContext(character.id, resolvedAppId, {
         history: historyForPrompt,
         includeDirectChatEntries: isOfflineMode,
@@ -2068,6 +2077,7 @@ export async function buildChatPromptMessages(
         followUpDelay: options?.followUpDelay,
         timedWakeElapsedMinutes: options?.timedWakeElapsedMinutes,
         timedWakeIntent: options?.timedWakeIntent,
+        scheduleReminderContext: options?.scheduleReminderContext,
         periodCareContext: options?.periodCareContext,
         scheduleSummary,
         currentSchedule,
@@ -2082,7 +2092,9 @@ export async function buildChatPromptMessages(
         musicLocal,
         musicCloud,
         musicOnlineHint,
-        timeContext: promptTimeContext,
+        timeContext: scheduleNoteBlock
+            ? { ...promptTimeContext, timeContext: `${promptTimeContext.timeContext}\n\n${scheduleNoteBlock}` }
+            : promptTimeContext,
         promptTimestampOptions,
         enableVision: config.enableImageRecognition,
         timeAware: loadChatAppSettings().timeAware,

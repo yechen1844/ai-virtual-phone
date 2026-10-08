@@ -59,6 +59,7 @@ export interface AssemblerInput {
     followUpDelay?: number;
     timedWakeElapsedMinutes?: number;
     timedWakeIntent?: string;
+    scheduleReminderContext?: string;
     periodCareContext?: string;
     scheduleSummary?: string;
     currentSchedule?: string;
@@ -693,6 +694,7 @@ export function assemblePromptPayload(input: AssemblerInput): LLMMessage[] {
     const followUpDelay = input.followUpDelay ?? 0;
     const timedWakeElapsedMinutes = input.timedWakeElapsedMinutes ?? 0;
     const timedWakeIntent = input.timedWakeIntent ?? "";
+    const scheduleReminderContext = input.scheduleReminderContext ?? "";
     const periodCareContext = input.periodCareContext ?? "";
     const resolvedUserName = userIdentity?.name || userName;
     const blocks: PromptBlock[] = [];
@@ -740,6 +742,7 @@ export function assemblePromptPayload(input: AssemblerInput): LLMMessage[] {
         engine.followUpDelay = followUpDelay;
         engine.timedWakeElapsedMinutes = String(timedWakeElapsedMinutes);
         engine.timedWakeIntent = timedWakeIntent;
+        engine.scheduleReminderContext = scheduleReminderContext;
         engine.periodCareContext = periodCareContext;
         engine.customStickerNames = input.customStickerNames ?? "";
         engine.customStickerExample = input.customStickerExample ?? "";

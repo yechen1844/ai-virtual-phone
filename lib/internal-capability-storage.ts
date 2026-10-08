@@ -15,6 +15,7 @@ export const AGENT_COMPUTER_CAPABILITY_ID = "agent_computer";
 export const LOCAL_DATA_LIBRARY_CAPABILITY_ID = "local_data_library";
 export const TOOLBOX_MANAGEMENT_CAPABILITY_ID = "toolbox_management";
 export const TIMED_WAKE_CAPABILITY_ID = "timed_wake";
+export const SCHEDULE_NOTE_CAPABILITY_ID = "schedule_note";
 export const REALITY_BRIDGE_CAPABILITY_ID = "reality_bridge_send";
 
 export type InternalToolDefinition = {
@@ -305,6 +306,64 @@ const CALENDAR_MANAGEMENT_USAGE_GUIDE = [
     "- 添加、修改、取消会直接执行。执行时只输出执行动作指令，不要附加闲聊内容。",
 ].join("\n");
 
+const SCHEDULE_NOTE_USAGE_GUIDE = [
+    "以下是你获取指令的返回结果：",
+    "服务：日程便签",
+    "用途：把{{user}}提到的、跟时间有关的事记成便签。系统会在每轮对话里自动帮你把便签换算成「还有多久 / 已经进行多久」，并在到点时按类型提醒你。",
+    "这样你就不会把还没发生的事当成已经发生，也不会在只过了几分钟的时候就跳到「吃完饭了 / 下课了」。",
+    "",
+    "执行时必须使用下面的具体动作名，不要输出“日程便签”本身。",
+    "",
+    "四种类型（kind，记录时必填）：",
+    "- instant 瞬间事件：一个时间点，到点就结束了。例：下课、到站、考试开始、上车。到点后系统会往聊天里写一条提示，然后这条便签自动归档。",
+    "- state 状态事件：会持续一段时间的状态。例：吃饭中、上课中、睡觉中、坐车中。进行中每轮都会告诉你「已经进行多久」。",
+    "- reminder 提醒事件：到点你需要主动发消息提醒{{user}}。例：提醒{{user}}吃药、提醒{{user}}带伞。",
+    "- future 未来事件：还没到的安排，只是让你心里有数。例：明天九点面试。到点后会按瞬间事件处理一次。",
+    "",
+    "什么时候该记录：",
+    "- {{user}}说了未来某个时间点要做的事（“我一点半要坐火车”“还有四十分钟下课”）",
+    "- {{user}}说他正在做某件会持续一段时间的事（“我去吃饭了”“在上课”）",
+    "- 你答应过要在某个时间提醒{{user}}一件事",
+    "",
+    "动作：记录日程",
+    "参数：",
+    "  - kind (必填 string): instant / state / reminder / future",
+    "  - title (必填 string): 一句话描述这件事，不要写时间（时间由 at 表达）。例：“下课”",
+    "  - at (必填 string): 事件时间，三种写法任选——",
+    "      · \"HH:MM\" 表示今天该时刻（若今天已过则算明天），例 \"10:40\"",
+    "      · \"YYYY-MM-DD HH:MM\" 表示具体日期时间，例 \"2026-03-18 09:00\"",
+    "      · \"+40m\" / \"+2h\" 表示从现在起过多久，例 {{user}}说“还有四十分钟下课”就写 \"+40m\"",
+    "  - until (仅 state，可选 string): 预计结束时间，写法同 at。填了就会在到点时自动结束",
+    "  - expireMinutes (仅 state，可选 number): 说不准持续多久时的兜底时长（分钟），默认 240",
+    "  - note (可选 string): 补充说明，例如{{user}}原话",
+    "示例：",
+    '[执行动作:记录日程({"kind":"instant","title":"下课","at":"+40m"})]',
+    '[执行动作:记录日程({"kind":"state","title":"吃饭","at":"+0m","until":"+40m"})]',
+    "",
+    "动作：更新日程",
+    "描述：改一条已经记下的便签。先用「列出日程」拿到 id。",
+    "参数：id (必填 string)，以及要改的字段（title / kind / at / until / expireMinutes / note，只传要改的）",
+    "示例：",
+    '[执行动作:更新日程({"id":"snote_xxx","at":"+20m"})]',
+    "",
+    "动作：结束日程",
+    "描述：立刻结束一条便签。{{user}}说“我吃完了”“下课了”这类话时，用它结束对应的状态事件，不要让状态一直挂着。",
+    "参数：id (string，可选)，或 title (string，可选，按标题匹配)。两者至少给一个",
+    "示例：",
+    '[执行动作:结束日程({"title":"吃饭"})]',
+    "",
+    "动作：列出日程",
+    "描述：列出当前所有还没归档的便签（含 id、类型、时间），确认自己记了什么。无参数。",
+    "示例：",
+    "[执行动作:列出日程({})]",
+    "",
+    "注意：",
+    "- 只要{{user}}的话里出现了时间安排，就先记录，不要凭记忆估算。",
+    "- 没到点的事不要当成已经发生；进行中的事要按系统告诉你的已进行时长来理解。",
+    "- 要结束状态事件就用「结束日程」，不要只在自己心里认为结束了。",
+    "- 记录和结束会直接执行，执行时只输出执行动作指令，不要附加闲聊内容。",
+].join("\n");
+
 const NOTE_WALL_LIST_PARAMETER_SCHEMA = JSON.stringify({
     type: "object",
     properties: {
@@ -580,6 +639,70 @@ const CALENDAR_MANAGEMENT_SUBTOOLS: InternalToolDefinition[] = [
         name: "取消日程",
         description: "取消一条已存在日程。",
         parameterSchema: CALENDAR_DELETE_PARAMETER_SCHEMA,
+    },
+];
+
+// ── 日程便签（角色自己记 user 的日程）───────────────
+
+const SCHEDULE_NOTE_KIND_ENUM = ["instant", "state", "reminder", "future"];
+
+const SCHEDULE_NOTE_RECORD_SCHEMA = JSON.stringify({
+    type: "object",
+    properties: {
+        kind: { type: "string", enum: SCHEDULE_NOTE_KIND_ENUM, description: "事件类型：instant 瞬间事件（到点即结束，如上课下课）/ state 状态事件（会持续一段时间，如吃饭中、上课中）/ reminder 提醒事件（到点你要主动发消息提醒）/ future 未来事件（还没到的安排）" },
+        title: { type: "string", description: "一句话描述这件事，不要写时间。例如「下课」「吃饭」「提醒对方吃药」" },
+        at: { type: "string", description: "事件时间。可用 \"HH:MM\"（今天该时刻，已过则算明天，如 \"10:40\"）、\"YYYY-MM-DD HH:MM\"、或相对写法 \"+40m\" / \"+2h\" / \"+40\"（分钟后）" },
+        until: { type: "string", description: "仅 state：预计结束时间，写法同 at。填了就在到点时自动结束" },
+        expireMinutes: { type: "number", description: "仅 state：说不准持续多久时的兜底时长（分钟），默认 240" },
+        note: { type: "string", description: "补充说明（可选），例如对方原话" },
+    },
+    required: ["kind", "title", "at"],
+});
+
+const SCHEDULE_NOTE_UPDATE_SCHEMA = JSON.stringify({
+    type: "object",
+    properties: {
+        id: { type: "string", description: "便签 id，先用「列出日程」获取" },
+        title: { type: "string", description: "新的事项描述" },
+        kind: { type: "string", enum: SCHEDULE_NOTE_KIND_ENUM, description: "新的类型" },
+        at: { type: "string", description: "新的时间，写法同「记录日程」" },
+        until: { type: "string", description: "新的预计结束时间（仅 state）" },
+        expireMinutes: { type: "number", description: "新的兜底时长（分钟，仅 state）" },
+        note: { type: "string", description: "新的补充说明" },
+    },
+    required: ["id"],
+});
+
+const SCHEDULE_NOTE_END_SCHEMA = JSON.stringify({
+    type: "object",
+    properties: {
+        id: { type: "string", description: "要结束的便签 id（可选）" },
+        title: { type: "string", description: "要结束的便签标题，按名字匹配（可选）。id 与 title 至少给一个" },
+    },
+});
+
+const SCHEDULE_NOTE_LIST_SCHEMA = JSON.stringify({ type: "object", properties: {} });
+
+const SCHEDULE_NOTE_SUBTOOLS: InternalToolDefinition[] = [
+    {
+        name: "记录日程",
+        description: "把{{user}}提到的、跟时间有关的事记成便签（未来要做的、正在进行的状态、要到点提醒的事）。到点后系统会按类型处理。",
+        parameterSchema: SCHEDULE_NOTE_RECORD_SCHEMA,
+    },
+    {
+        name: "更新日程",
+        description: "修改一条已记下的便签（时间、类型、事项、预计结束时间）。",
+        parameterSchema: SCHEDULE_NOTE_UPDATE_SCHEMA,
+    },
+    {
+        name: "结束日程",
+        description: "立刻结束一条便签。{{user}}说“我吃完了”“下课了”时用它结束对应的状态事件。",
+        parameterSchema: SCHEDULE_NOTE_END_SCHEMA,
+    },
+    {
+        name: "列出日程",
+        description: "列出当前所有还没归档的便签（含 id、类型、时间）。",
+        parameterSchema: SCHEDULE_NOTE_LIST_SCHEMA,
     },
 ];
 
@@ -1275,6 +1398,15 @@ const BUILTIN_INTERNAL_CAPABILITIES: InternalCapabilityConfig[] = [
         createdAt: 0,
         updatedAt: 0,
     },
+    {
+        id: SCHEDULE_NOTE_CAPABILITY_ID,
+        name: "日程便签",
+        description: "记录并跟踪{{user}}的日程与时间安排：什么时候要做什么、还有多久、已经进行了多久。用来避免把没发生的事当成已发生、把进行中的事当成已结束。",
+        enabled: true,
+        mode: "auto",
+        createdAt: 0,
+        updatedAt: 0,
+    },
 ];
 
 export function loadInternalCapabilities(): InternalCapabilityConfig[] {
@@ -1303,6 +1435,8 @@ export function getEnabledInternalCapabilities(appId?: string): InternalCapabili
         if (!item.enabled || item.mode === "off") return false;
         // 角色电脑是可插拔模块：没连接就不注入，模型完全看不见
         if (item.id === AGENT_COMPUTER_CAPABILITY_ID && !isAgentComputerConfigured()) return false;
+        // 日程便签按角色独立，只在单聊生效（群聊一轮会生成多个角色，无法安放到具体某个人）
+        if (item.id === SCHEDULE_NOTE_CAPABILITY_ID && appId !== "chat") return false;
         return true;
     });
 }
@@ -1386,6 +1520,14 @@ export function getInternalCapabilityToolDefinition(capability: InternalCapabili
             description: capability.description,
             parameterSchema: "{}",
             usageGuide: buildRealityBridgeUsageGuide(),
+        };
+    }
+    if (capability.id === SCHEDULE_NOTE_CAPABILITY_ID) {
+        return {
+            name: capability.name,
+            description: capability.description,
+            parameterSchema: "{}",
+            usageGuide: SCHEDULE_NOTE_USAGE_GUIDE,
         };
     }
     return null;
@@ -1482,6 +1624,9 @@ export function getInternalCapabilitySubToolDefinition(
     if (capability.id === REALITY_BRIDGE_CAPABILITY_ID) {
         return realityBridgeSubTools().find(tool => tool.name === name) ?? null;
     }
+    if (capability.id === SCHEDULE_NOTE_CAPABILITY_ID) {
+        return SCHEDULE_NOTE_SUBTOOLS.find(tool => tool.name === name) ?? null;
+    }
     return null;
 }
 
@@ -1505,6 +1650,9 @@ export function getInternalCapabilitySubToolDefinitions(
     }
     if (capability.id === REALITY_BRIDGE_CAPABILITY_ID) {
         return realityBridgeSubTools();
+    }
+    if (capability.id === SCHEDULE_NOTE_CAPABILITY_ID) {
+        return SCHEDULE_NOTE_SUBTOOLS;
     }
     return [];
 }

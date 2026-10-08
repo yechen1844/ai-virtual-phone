@@ -26,6 +26,7 @@ export class MacroEngine {
     followUpDelay: number = 0;
     timedWakeElapsedMinutes: string = "";
     timedWakeIntent: string = "";
+    scheduleReminderContext: string = "";
     periodCareContext: string = "";
     timeContext: string = "";
     systemTimeZone: string = "";
@@ -188,6 +189,7 @@ export class MacroEngine {
         if (body === "delay") return String(this.followUpDelay);
         if (body === "timedWakeElapsedMinutes" || body === "timedWakeMinutes") return this.timedWakeElapsedMinutes || "0";
         if (body === "timedWakeIntent") return this.timedWakeIntent || "\x00TRIM\x00";
+        if (body === "scheduleReminderContext") return this.scheduleReminderContext || "\x00TRIM\x00";
         if (body === "periodCareContext") return this.periodCareContext || "\x00TRIM\x00";
         if (body === "timeContext") return this.timeContext || buildCharacterTimeContext().timeContext;
         if (body === "systemTimeZone") return this.systemTimeZone || getSystemTimeZone();
@@ -400,6 +402,7 @@ export const STATIC_MACRO_NAMES: ReadonlySet<string> = new Set([
     // 应用级
     "affinity", "state", "count", "delay",
     "timedWakeElapsedMinutes", "timedWakeMinutes", "timedWakeIntent",
+    "scheduleReminderContext",
     "periodCareContext", "timeContext", "systemTimeZone", "characterTime",
     "characterTimeZone", "characterWeekday",
     "customStickers", "stickerExample", "musicLocal", "musicCloud", "musicOnlineHint",

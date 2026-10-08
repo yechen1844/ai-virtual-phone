@@ -549,7 +549,12 @@ function MemoryWriteRequestCard({
     const content = msg.mediaData?.memoryContent || msg.content;
     const reason = msg.mediaData?.memoryReason;
     const importance = msg.mediaData?.memoryImportance;
-    const statusText = status === "approved" ? "已写入长期记忆" : status === "ignored" ? "已忽略本次写入" : "等待你确认";
+    // 写入目标：让用户看清这条会落到哪一层，避免「看起来只进了长期记忆」
+    const scope = msg.mediaData?.memoryScope;
+    const scopeLabel = scope === "event" ? "事件记忆（复杂记忆）" : scope === "core" ? "核心记忆（复杂记忆）" : "长期记忆";
+    const statusText = status === "approved"
+        ? `已写入${scopeLabel}`
+        : status === "ignored" ? "已忽略本次写入" : "等待你确认";
 
     return (
         <div className="w-[280px] rounded-2xl border border-[var(--c-border)] bg-[var(--c-card)]/95 backdrop-blur px-4 py-3 flex flex-col gap-3 ui-bubble-shadow">
@@ -565,6 +570,9 @@ function MemoryWriteRequestCard({
                     {reason && <span className="menu-desc !mt-0">原因：{reason}</span>}
                     {typeof importance === "number" && <span className="menu-desc !mt-0">重要性：{importance.toFixed(2)}</span>}
                 </div>
+            )}
+            {status === "pending" && (
+                <span className="menu-desc !mt-0">将写入：{scopeLabel}</span>
             )}
             {status === "pending" ? (
                 <div className="flex gap-2">
@@ -3094,6 +3102,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                 memoryContent: pending.pendingRequest.content,
                 memoryReason: pending.pendingRequest.reason,
                 memoryImportance: pending.pendingRequest.importance,
+                // scope 必须随待确认请求一起保存：确认时要用它决定写事件记忆/核心记忆还是长期记忆
+                memoryScope: pending.pendingRequest.scope,
                 memoryRequestStatus: "pending",
             });
         }
@@ -3128,6 +3138,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
             content: msg.mediaData?.memoryContent || msg.content,
             importance: msg.mediaData?.memoryImportance ?? 0.8,
             ...(msg.mediaData?.memoryReason ? { reason: msg.mediaData.memoryReason } : {}),
+            ...(msg.mediaData?.memoryScope ? { scope: msg.mediaData.memoryScope } : {}),
         };
 
         const result = await approveMemoryWriteRequest(request);

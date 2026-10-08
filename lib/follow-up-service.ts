@@ -56,6 +56,13 @@ import {
     saveMenstrualPeriodCareTrigger,
     type MenstrualPeriodCareEvent,
 } from "./menstrual-storage";
+import {
+    buildInstantNoticeText,
+    buildReminderContext,
+    buildStateEndNoticeText,
+    sweepScheduleNotes,
+    type ScheduleNote,
+} from "./schedule-note-storage";
 
 // ── Constants ──────────────────────────────────────────────
 const MAX_FOLLOW_UPS = 10;
@@ -389,6 +396,7 @@ function pollSchedules() {
             fireFollowUp(sched); // intentionally not awaited — fire & forget
         }
         pollTimedWakeSchedules(now);
+        pollScheduleNotes(now);
         pollMenstrualPeriodCare(now);
         pollIdleReconnect(now);
     } catch (e) {
@@ -404,6 +412,91 @@ function pollTimedWakeSchedules(now: number) {
         if (now < scheduledOutboxGraceUntil) continue;
         console.log(`[TimedWake] Firing now for session=${sched.sessionId}`);
         fireTimedWake(sched);
+    }
+}
+
+// ── 日程便签 ──────────────────────────────────────────────
+// 到点后：瞬间/未来事件写一条一次性系统提示进聊天记录并归档；状态事件写「已结束」提示；
+// 提醒事件走主动联系管线，让角色真的发一条关于这件事的消息。
+
+const scheduleReminderFiringSet = new Set<string>();
+
+function pollScheduleNotes(now: number) {
+    const sweep = sweepScheduleNotes(new Date(now));
+    const hasWork = sweep.instantNotices.length > 0 || sweep.stateNotices.length > 0 || sweep.reminders.length > 0;
+    if (!hasWork) return;
+
+    const sessions = loadChatSessions();
+    // 便签记得的会话可能已被删除/替换，退回该角色的最新单聊会话
+    const resolveSession = (note: ScheduleNote) => {
+        const byId = sessions.find(s => s.id === note.sessionId);
+        if (byId && byId.contactId === note.characterId) return byId;
+        return sessions.find(s => !s.isGroup && s.contactId === note.characterId);
+    };
+
+    const instantIds = new Set(sweep.instantNotices.map(note => note.id));
+    for (const note of [...sweep.instantNotices, ...sweep.stateNotices]) {
+        const session = resolveSession(note);
+        if (!session) continue;
+        pushChatMessage({
+            sessionId: session.id,
+            role: "system",
+            content: instantIds.has(note.id) ? buildInstantNoticeText(note) : buildStateEndNoticeText(note),
+        });
+    }
+
+    for (const note of sweep.reminders) {
+        if (scheduleReminderFiringSet.has(note.id)) continue;
+        const session = resolveSession(note);
+        if (!session || session.isGroup) continue;
+        if (now < scheduledOutboxGraceUntil) continue;
+        console.log(`[ScheduleNote] Firing reminder for session=${session.id}, title=${note.title}`);
+        void fireScheduleReminder(note, session.id);
+    }
+}
+
+async function fireScheduleReminder(note: ScheduleNote, sessionId: string) {
+    scheduleReminderFiringSet.add(note.id);
+    try {
+        const session = loadChatSessions().find(s => s.id === sessionId);
+        if (!session) return;
+
+        const latestMessages = loadChatMessages(session.id);
+        backgroundGeneratingSessions.add(session.id);
+        window.dispatchEvent(new CustomEvent("followup-started", { detail: { sessionId: session.id } }));
+
+        const rounds = await generateBackgroundCompletionRounds(session, latestMessages, {
+            appTags: ["chat", "text", "schedule_reminder"],
+            scheduleReminderContext: buildReminderContext(note),
+        });
+
+        if (isBackgroundGenerationCancelled(session.id)) {
+            window.dispatchEvent(new CustomEvent("followup-fired", { detail: { sessionId: session.id } }));
+            return;
+        }
+
+        const { hasVisible, stateValues } = await saveBackgroundCompletionRounds(
+            rounds,
+            session.id,
+            0,
+            undefined,
+            latestMessages,
+        );
+
+        if (hasVisible) scheduleFollowUp(session.id, 0, stateValues);
+        window.dispatchEvent(new CustomEvent("followup-fired", { detail: { sessionId: session.id } }));
+    } catch (error: any) {
+        console.error("[ScheduleNote] reminder failed:", error);
+        pushChatMessage({
+            sessionId,
+            role: "system",
+            content: `⚠️ 日程提醒失败: ${error?.message || String(error)}`,
+        });
+        window.dispatchEvent(new CustomEvent("followup-fired", { detail: { sessionId } }));
+    } finally {
+        backgroundGeneratingSessions.delete(sessionId);
+        cancelledBackgroundSessions.delete(sessionId);
+        scheduleReminderFiringSet.delete(note.id);
     }
 }
 

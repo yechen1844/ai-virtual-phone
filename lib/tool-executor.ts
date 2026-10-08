@@ -23,7 +23,19 @@ import {
 } from "./tool-storage";
 import { executeCustomAppToolCall } from "./custom-app-tool-runtime";
 import { characterWorkspace, agentComputerRequest, isAgentComputerConfigured } from "./agent-computer";
-import { AGENT_COMPUTER_CAPABILITY_ID, CALENDAR_MANAGEMENT_CAPABILITY_ID, LOCAL_DATA_LIBRARY_CAPABILITY_ID, MEMORY_WRITE_CAPABILITY_ID, MUSIC_CONTROL_CAPABILITY_ID, NOTE_WALL_CAPABILITY_ID, REALITY_BRIDGE_CAPABILITY_ID, SEND_FILE_CAPABILITY_ID, TIMED_WAKE_CAPABILITY_ID, TOOLBOX_MANAGEMENT_CAPABILITY_ID, getInternalCapability } from "./internal-capability-storage";
+import { AGENT_COMPUTER_CAPABILITY_ID, CALENDAR_MANAGEMENT_CAPABILITY_ID, LOCAL_DATA_LIBRARY_CAPABILITY_ID, MEMORY_WRITE_CAPABILITY_ID, MUSIC_CONTROL_CAPABILITY_ID, NOTE_WALL_CAPABILITY_ID, REALITY_BRIDGE_CAPABILITY_ID, SCHEDULE_NOTE_CAPABILITY_ID, SEND_FILE_CAPABILITY_ID, TIMED_WAKE_CAPABILITY_ID, TOOLBOX_MANAGEMENT_CAPABILITY_ID, getInternalCapability } from "./internal-capability-storage";
+import {
+    DEFAULT_STATE_EXPIRE_MINUTES,
+    SCHEDULE_NOTE_KINDS,
+    SCHEDULE_NOTE_KIND_LABELS,
+    addScheduleNote,
+    formatClockLabel,
+    loadScheduleNotesByCharacter,
+    resolveStateNoteEnd,
+    updateScheduleNote,
+    type ScheduleNote,
+    type ScheduleNoteKind,
+} from "./schedule-note-storage";
 import { bridgeConnection, loadBridgeDataItems, loadBridgeShortcutActions, readAllBridgeStateSnapshots, readBridgeStateSnapshot } from "./reality-bridge/storage";
 import { createShortcutCommand, deliverShortcutCommand, waitForShortcutCommand } from "./shortcut-command-client";
 import { loadMemoryEntriesByType, saveMemoryEntry } from "./memory-storage";
@@ -795,6 +807,7 @@ async function executeInternalTool(call: ToolCall, context?: ToolExecutionContex
     if (call.name === "角色电脑") return executeAgentComputerTool(call, context);
     if (isRealityBridgeToolName(call.name)) return executeRealityBridgeTool(call, context);
     if (call.name === "稍后主动联系" || call.name === "设置定时醒来") return executeTimedWakeTool(call, context);
+    if (isScheduleNoteToolName(call.name)) return executeScheduleNoteTool(call, context);
 
     if (call.name !== "写入记忆") return null;
 
@@ -2167,6 +2180,261 @@ function dispatchCalendarUpdated(): void {
     }
 }
 
+// ── 日程便签（角色自己记 user 的日程，逐轮换算「还有多久 / 已进行多久」）──
+
+function isScheduleNoteToolName(name: string): boolean {
+    return name === "记录日程"
+        || name === "更新日程"
+        || name === "结束日程"
+        || name === "列出日程";
+}
+
+const SCHEDULE_NOTE_HOUR = 3_600_000;
+const SCHEDULE_NOTE_DAY = 86_400_000;
+
+/**
+ * 解析便签时间，支持四种写法：
+ *   "+40m" / "+2h" / "+30"   相对现在
+ *   "40分钟后" / "2小时后"     相对现在（自然写法）
+ *   "HH:MM"                   今天该时刻（已过则算明天）
+ *   "YYYY-MM-DD HH:MM"        具体日期时间（只给日期时按当天 09:00）
+ * 返回毫秒时间戳，无法解析返回 null。
+ */
+function parseScheduleNoteTime(raw: unknown, now = new Date()): number | null {
+    const text = String(raw ?? "").trim();
+    if (!text) return null;
+
+    const relative = text.match(/^\+\s*(\d+(?:\.\d+)?)\s*(m|min|分钟|h|小时|d|天)?$/i);
+    if (relative) {
+        const value = Number.parseFloat(relative[1]);
+        const unit = (relative[2] || "m").toLowerCase();
+        const factor = unit.startsWith("h") || unit === "小时" ? SCHEDULE_NOTE_HOUR
+            : unit.startsWith("d") || unit === "天" ? SCHEDULE_NOTE_DAY
+            : 60_000;
+        return now.getTime() + value * factor;
+    }
+
+    const natural = text.match(/^(\d+(?:\.\d+)?)\s*(分钟|小时|天)\s*(?:后|之后|以后)$/);
+    if (natural) {
+        const value = Number.parseFloat(natural[1]);
+        const factor = natural[2] === "小时" ? SCHEDULE_NOTE_HOUR : natural[2] === "天" ? SCHEDULE_NOTE_DAY : 60_000;
+        return now.getTime() + value * factor;
+    }
+
+    const clock = text.match(/^(\d{1,2})[:：](\d{1,2})$/);
+    if (clock) {
+        const hours = Number.parseInt(clock[1], 10);
+        const minutes = Number.parseInt(clock[2], 10);
+        if (hours > 23 || minutes > 59) return null;
+        const target = new Date(now);
+        target.setHours(hours, minutes, 0, 0);
+        if (target.getTime() <= now.getTime()) target.setDate(target.getDate() + 1);
+        return target.getTime();
+    }
+
+    const dateTime = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[ T](\d{1,2})[:：](\d{1,2})$/);
+    if (dateTime) {
+        const [, y, mo, d, h, mi] = dateTime;
+        return new Date(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), 0, 0).getTime();
+    }
+
+    const dateOnly = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+    if (dateOnly) {
+        const [, y, mo, d] = dateOnly;
+        return new Date(Number(y), Number(mo) - 1, Number(d), 9, 0, 0, 0).getTime();
+    }
+
+    const parsed = Date.parse(text);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+function scheduleNoteFailure(name: string, error: string, userNotice: string): ToolResult {
+    return {
+        name,
+        success: false,
+        error,
+        continueConversation: false,
+        persistToHistory: false,
+        userNotice,
+    };
+}
+
+function resolveScheduleNoteTarget(note: ScheduleNote, now = new Date()): string {
+    if (note.kind === "state") {
+        const endMs = resolveStateNoteEnd(note);
+        return now.getTime() >= new Date(note.at).getTime()
+            ? `从 ${formatClockLabel(note.at, now)} 开始，预计 ${formatClockLabel(new Date(endMs).toISOString(), now)} 结束`
+            : `${formatClockLabel(note.at, now)} 开始`;
+    }
+    return formatClockLabel(note.at, now);
+}
+
+async function executeScheduleNoteTool(call: ToolCall, context?: ToolExecutionContext): Promise<ToolResult> {
+    const capability = getInternalCapability(SCHEDULE_NOTE_CAPABILITY_ID);
+    if (!capability || !capability.enabled || capability.mode === "off") {
+        return scheduleNoteFailure(call.name, "日程便签能力未启用", "日程便签能力未启用");
+    }
+    if (!isSupportedChatToolContext(context)) {
+        return scheduleNoteFailure(call.name, "当前场景暂不支持日程便签", "当前场景暂不支持日程便签");
+    }
+
+    const characterId = context.characterId;
+    const sessionId = context.sessionId || "";
+    const now = new Date();
+
+    try {
+        switch (call.name) {
+            case "记录日程": {
+                const kind = String(call.args.kind ?? "").trim();
+                if (!SCHEDULE_NOTE_KINDS.includes(kind as ScheduleNoteKind)) {
+                    return scheduleNoteFailure("记录日程", "kind 必须是 instant / state / reminder / future", "记录日程失败：类型无效");
+                }
+                const title = cleanToolString(call.args.title, 80);
+                if (!title) return scheduleNoteFailure("记录日程", "缺少 title", "记录日程失败：缺少事项");
+                const atMs = parseScheduleNoteTime(call.args.at, now);
+                if (atMs === null) {
+                    return scheduleNoteFailure("记录日程", "at 格式无效，可用 \"HH:MM\"、\"YYYY-MM-DD HH:MM\" 或 \"+40m\"", "记录日程失败：时间格式无效");
+                }
+                const atIso = new Date(atMs).toISOString();
+                let untilIso: string | undefined;
+                if (kind === "state") {
+                    const untilMs = parseScheduleNoteTime(call.args.until, now);
+                    if (untilMs !== null) {
+                        if (untilMs <= atMs) {
+                            return scheduleNoteFailure("记录日程", "until 必须晚于 at", "记录日程失败：结束时间早于开始时间");
+                        }
+                        untilIso = new Date(untilMs).toISOString();
+                    }
+                }
+                const extraNote = cleanToolString(call.args.note, 200);
+                const saved = addScheduleNote({
+                    characterId,
+                    sessionId,
+                    kind: kind as ScheduleNoteKind,
+                    title,
+                    at: atIso,
+                    ...(untilIso ? { until: untilIso } : {}),
+                    ...(kind === "state"
+                        ? { expireMinutes: numberArg(call.args.expireMinutes, 1, 1440, DEFAULT_STATE_EXPIRE_MINUTES) }
+                        : {}),
+                    ...(extraNote ? { note: extraNote } : {}),
+                });
+                return {
+                    name: "记录日程",
+                    success: true,
+                    data: `已记下（id=${saved.id}）：${SCHEDULE_NOTE_KIND_LABELS[saved.kind]}「${saved.title}」，${resolveScheduleNoteTarget(saved, now)}。`,
+                    continueConversation: false,
+                    persistToHistory: false,
+                    userNotice: `已记下日程：${saved.title}`,
+                };
+            }
+            case "更新日程": {
+                const found = findScheduleNoteByArgs(call.args, characterId);
+                if (!found) return scheduleNoteFailure("更新日程", "未找到匹配的便签", "未找到要更新的日程");
+                const patch: Record<string, unknown> = {};
+                if (call.args.title !== undefined) {
+                    const title = cleanToolString(call.args.title, 80);
+                    if (!title) return scheduleNoteFailure("更新日程", "title 不能为空", "更新日程失败：事项为空");
+                    patch.title = title;
+                }
+                if (call.args.kind !== undefined) {
+                    const kind = String(call.args.kind).trim();
+                    if (!SCHEDULE_NOTE_KINDS.includes(kind as ScheduleNoteKind)) {
+                        return scheduleNoteFailure("更新日程", "kind 必须是 instant / state / reminder / future", "更新日程失败：类型无效");
+                    }
+                    patch.kind = kind;
+                }
+                if (call.args.at !== undefined) {
+                    const atMs = parseScheduleNoteTime(call.args.at, now);
+                    if (atMs === null) return scheduleNoteFailure("更新日程", "at 格式无效", "更新日程失败：时间格式无效");
+                    patch.at = new Date(atMs).toISOString();
+                }
+                if (call.args.until !== undefined) {
+                    const untilMs = parseScheduleNoteTime(call.args.until, now);
+                    patch.until = untilMs === null ? undefined : new Date(untilMs).toISOString();
+                }
+                if (call.args.expireMinutes !== undefined) {
+                    patch.expireMinutes = numberArg(call.args.expireMinutes, 1, 1440, DEFAULT_STATE_EXPIRE_MINUTES);
+                }
+                if (call.args.note !== undefined) {
+                    patch.note = cleanToolString(call.args.note, 200);
+                }
+                const updated = updateScheduleNote(found.id, patch as Parameters<typeof updateScheduleNote>[1]);
+                if (!updated) return scheduleNoteFailure("更新日程", "更新失败", "更新日程失败");
+                return {
+                    name: "更新日程",
+                    success: true,
+                    data: `已更新：${SCHEDULE_NOTE_KIND_LABELS[updated.kind]}「${updated.title}」，${resolveScheduleNoteTarget(updated, now)}。`,
+                    continueConversation: false,
+                    persistToHistory: false,
+                    userNotice: `已更新日程：${updated.title}`,
+                };
+            }
+            case "结束日程": {
+                const found = findScheduleNoteByArgs(call.args, characterId);
+                if (!found) return scheduleNoteFailure("结束日程", "未找到匹配的便签", "未找到要结束的日程");
+                updateScheduleNote(found.id, { done: true });
+                return {
+                    name: "结束日程",
+                    success: true,
+                    data: `已结束：「${found.title}」。`,
+                    continueConversation: false,
+                    persistToHistory: false,
+                    userNotice: `已结束日程：${found.title}`,
+                };
+            }
+            case "列出日程": {
+                const notes = loadScheduleNotesByCharacter(characterId).filter(note => !note.done);
+                if (notes.length === 0) {
+                    return {
+                        name: "列出日程",
+                        success: true,
+                        data: "当前没有记下的日程便签。",
+                        continueConversation: false,
+                        persistToHistory: false,
+                        userNotice: "暂无日程便签",
+                    };
+                }
+                const lines = notes.map(note => {
+                    const target = resolveScheduleNoteTarget(note, now);
+                    return `- ${note.title}（${SCHEDULE_NOTE_KIND_LABELS[note.kind]}）${target}，id=${note.id}`;
+                });
+                return {
+                    name: "列出日程",
+                    success: true,
+                    data: `当前共有 ${notes.length} 条日程便签：\n${lines.join("\n")}`,
+                    continueConversation: false,
+                    persistToHistory: false,
+                    userNotice: `共 ${notes.length} 条日程便签`,
+                };
+            }
+        }
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return scheduleNoteFailure(call.name, message, `${call.name}失败：${message}`);
+    }
+
+    return scheduleNoteFailure(call.name, "未知日程便签动作", "未知日程便签动作");
+}
+
+function findScheduleNoteByArgs(args: Record<string, unknown>, characterId: string): ScheduleNote | undefined {
+    const notes = loadScheduleNotesByCharacter(characterId);
+    const id = cleanToolString(args.id, 80);
+    if (id) {
+        const byId = notes.find(note => note.id === id);
+        if (byId) return byId;
+    }
+    const title = cleanToolString(args.title, 80);
+    if (title) {
+        const norm = (value: string) => value.replace(/\s+/g, "").toLowerCase();
+        const target = norm(title);
+        const candidates = notes.filter(note => !note.done);
+        return candidates.find(note => norm(note.title) === target)
+            || candidates.find(note => norm(note.title).includes(target) || target.includes(norm(note.title)));
+    }
+    return undefined;
+}
+
 // ── 角色电脑（角色自己的云端小电脑）───────────────
 
 function agentComputerMimeFor(path: string): string {
@@ -3057,11 +3325,14 @@ async function persistMemoryWriteRequest(
     const now = new Date().toISOString();
 
     // 复杂记忆路由：角色启用复杂记忆 + 明确写了 event / core → 写入复杂记忆系统
+    let complexScopeFallback = false;
     if (request.scope === "event" || request.scope === "core") {
         const { isComplexMemoryEnabled } = await import("./complex-memory/config");
         if (isComplexMemoryEnabled(request.characterId)) {
             return writeToComplexMemory(request, now, options);
         }
+        // 角色未启用复杂记忆时不能静默落到长期记忆，否则用户会以为写错了层
+        complexScopeFallback = true;
     }
 
     // 默认：float 长期记忆
@@ -3102,7 +3373,9 @@ async function persistMemoryWriteRequest(
         data: `记忆写入成功：${request.content}`,
         continueConversation: false,
         persistToHistory: false,
-        userNotice: options?.approvedByUser ? "已写入长期记忆" : "已自动写入长期记忆",
+        userNotice: complexScopeFallback
+            ? "该角色未启用复杂记忆，已改为写入长期记忆"
+            : (options?.approvedByUser ? "已写入长期记忆" : "已自动写入长期记忆"),
     };
 }
 
