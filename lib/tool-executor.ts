@@ -2196,11 +2196,16 @@ const SCHEDULE_NOTE_DAY = 86_400_000;
  * 解析便签时间，支持四种写法：
  *   "+40m" / "+2h" / "+30"   相对现在
  *   "40分钟后" / "2小时后"     相对现在（自然写法）
- *   "HH:MM"                   今天该时刻（已过则算明天）
+ *   "HH:MM"                   今天该时刻（已过则算明天；allowPastHours 内则仍算今天）
  *   "YYYY-MM-DD HH:MM"        具体日期时间（只给日期时按当天 09:00）
+ * "24:00" 一律视作次日 00:00。
  * 返回毫秒时间戳，无法解析返回 null。
  */
-function parseScheduleNoteTime(raw: unknown, now = new Date()): number | null {
+function parseScheduleNoteTime(
+    raw: unknown,
+    now = new Date(),
+    options?: { allowPastHours?: number },
+): number | null {
     const text = String(raw ?? "").trim();
     if (!text) return null;
 
@@ -2221,14 +2226,18 @@ function parseScheduleNoteTime(raw: unknown, now = new Date()): number | null {
         return now.getTime() + value * factor;
     }
 
-    const clock = text.match(/^(\d{1,2})[:：](\d{1,2})$/);
+    const clock = matchScheduleClock(text);
     if (clock) {
-        const hours = Number.parseInt(clock[1], 10);
-        const minutes = Number.parseInt(clock[2], 10);
-        if (hours > 23 || minutes > 59) return null;
         const target = new Date(now);
-        target.setHours(hours, minutes, 0, 0);
-        if (target.getTime() <= now.getTime()) target.setDate(target.getDate() + 1);
+        // 24:00 = 次日 00:00
+        target.setDate(target.getDate() + clock.dayShift);
+        target.setHours(clock.hours, clock.minutes, 0, 0);
+        if (target.getTime() <= now.getTime()) {
+            // 状态事件允许「已经开始但没过多久」：留一个回看窗口，否则「从12点开始」在 13 点会被推到明天
+            const graceMs = (options?.allowPastHours ?? 0) * SCHEDULE_NOTE_HOUR;
+            const lateMs = now.getTime() - target.getTime();
+            if (!(graceMs > 0 && lateMs <= graceMs)) target.setDate(target.getDate() + 1);
+        }
         return target.getTime();
     }
 
@@ -2246,6 +2255,46 @@ function parseScheduleNoteTime(raw: unknown, now = new Date()): number | null {
 
     const parsed = Date.parse(text);
     return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** 解析 "HH:MM"（含 24:00 写法）。无法解析返回 null。 */
+function matchScheduleClock(text: string): { hours: number; minutes: number; dayShift: number } | null {
+    const match = text.match(/^(\d{1,2})[:：](\d{1,2})$/);
+    if (!match) return null;
+    let hours = Number.parseInt(match[1], 10);
+    const minutes = Number.parseInt(match[2], 10);
+    if (minutes > 59) return null;
+    let dayShift = 0;
+    if (hours === 24) {
+        if (minutes !== 0) return null;
+        hours = 0;
+        dayShift = 1;
+    }
+    if (hours > 23) return null;
+    return { hours, minutes, dayShift };
+}
+
+/**
+ * 结束时间解析：HH:MM 一律以「开始时间所在的那一天」为锚点，早于开始时间就顺延一天。
+ * 这样 23:00 → 00:00 这种跨零点区间不会被误判成「结束早于开始」，也不会因为两个时刻
+ * 各自相对「现在」取整而在深夜整段错位。
+ */
+function parseScheduleUntil(raw: unknown, atMs: number, now = new Date()): number | null {
+    const text = String(raw ?? "").trim();
+    if (!text) return null;
+    // 相对写法仍相对现在（"+2h" = 从现在起两小时）
+    if (/^\+/.test(text) || /(分钟|小时|天)\s*(?:后|之后|以后)$/.test(text)) {
+        return parseScheduleNoteTime(text, now);
+    }
+    const clock = matchScheduleClock(text);
+    if (clock) {
+        const target = new Date(atMs);
+        target.setDate(target.getDate() + clock.dayShift);
+        target.setHours(clock.hours, clock.minutes, 0, 0);
+        while (target.getTime() <= atMs) target.setDate(target.getDate() + 1);
+        return target.getTime();
+    }
+    return parseScheduleNoteTime(text, now);
 }
 
 function scheduleNoteFailure(name: string, error: string, userNotice: string): ToolResult {
@@ -2291,14 +2340,14 @@ async function executeScheduleNoteTool(call: ToolCall, context?: ToolExecutionCo
                 }
                 const title = cleanToolString(call.args.title, 80);
                 if (!title) return scheduleNoteFailure("记录日程", "缺少 title", "记录日程失败：缺少事项");
-                const atMs = parseScheduleNoteTime(call.args.at, now);
+                const atMs = parseScheduleNoteTime(call.args.at, now, { allowPastHours: kind === "state" ? 12 : 0 });
                 if (atMs === null) {
                     return scheduleNoteFailure("记录日程", "at 格式无效，可用 \"HH:MM\"、\"YYYY-MM-DD HH:MM\" 或 \"+40m\"", "记录日程失败：时间格式无效");
                 }
                 const atIso = new Date(atMs).toISOString();
                 let untilIso: string | undefined;
                 if (kind === "state") {
-                    const untilMs = parseScheduleNoteTime(call.args.until, now);
+                    const untilMs = parseScheduleUntil(call.args.until, atMs, now);
                     if (untilMs !== null) {
                         if (untilMs <= atMs) {
                             return scheduleNoteFailure("记录日程", "until 必须晚于 at", "记录日程失败：结束时间早于开始时间");
@@ -2344,13 +2393,20 @@ async function executeScheduleNoteTool(call: ToolCall, context?: ToolExecutionCo
                     }
                     patch.kind = kind;
                 }
+                const nextKind = (patch.kind as ScheduleNoteKind | undefined) ?? found.kind;
+                let nextAtMs = new Date(found.at).getTime();
                 if (call.args.at !== undefined) {
-                    const atMs = parseScheduleNoteTime(call.args.at, now);
+                    const atMs = parseScheduleNoteTime(call.args.at, now, { allowPastHours: nextKind === "state" ? 12 : 0 });
                     if (atMs === null) return scheduleNoteFailure("更新日程", "at 格式无效", "更新日程失败：时间格式无效");
+                    nextAtMs = atMs;
                     patch.at = new Date(atMs).toISOString();
                 }
                 if (call.args.until !== undefined) {
-                    const untilMs = parseScheduleNoteTime(call.args.until, now);
+                    // 结束时间以（新的）开始时间为锚点解析，避免跨零点被误判
+                    const untilMs = parseScheduleUntil(call.args.until, nextAtMs, now);
+                    if (untilMs !== null && untilMs <= nextAtMs) {
+                        return scheduleNoteFailure("更新日程", "until 必须晚于 at", "更新日程失败：结束时间早于开始时间");
+                    }
                     patch.until = untilMs === null ? undefined : new Date(untilMs).toISOString();
                 }
                 if (call.args.expireMinutes !== undefined) {
