@@ -14,6 +14,7 @@ import type { LlmToolDefinition } from "./llm-provider-adapter";
 import type { ToolCall, ToolResult } from "./tool-executor";
 import type { MascotPageContext } from "./mascot-context";
 import type { Prompt } from "./settings-types";
+import type { ChatMessage } from "./chat-storage";
 import { CHARACTER_CARD_PROMPT, CHARACTER_WORLD_PROMPT, WORLDBOOK_PROMPT, PRESET_PROMPT, GENERAL_PRESET_PROMPT, REGEX_PROMPT, CSS_PROMPT, WIDGET_PROMPT, MIXOLOGY_PROMPT } from "./mascot-prompts";
 import {
     buildCssAssetNineSliceCss,
@@ -914,6 +915,40 @@ const MIX_SAVE_RECIPE_SCHEMA = {
     required: ["name", "slots"],
 };
 
+// ── 聊天记录套件 ──
+const LIST_CHATLOG_SCHEMA = {
+    type: "object",
+    properties: {
+        keyword: { type: "string", description: "可选：按会话名/角色名过滤；不传则列出全部会话" },
+    },
+    additionalProperties: false,
+};
+
+const READ_CHATLOG_SCHEMA = {
+    type: "object",
+    properties: {
+        target: { type: "string", description: "角色名或群聊名（可用「列出聊天会话」查到）" },
+        limit: { type: "number", description: "最多返回多少条（默认 60，上限 300），只取最近的" },
+        keyword: { type: "string", description: "可选：只返回内容含该关键词的消息" },
+        after: { type: "string", description: "可选：ISO 时间，只取该时刻之后的消息" },
+        before: { type: "string", description: "可选：ISO 时间，只取该时刻之前的消息" },
+    },
+    required: ["target"],
+    additionalProperties: false,
+};
+
+const SEARCH_CHATLOG_SCHEMA = {
+    type: "object",
+    properties: {
+        keyword: { type: "string", description: "要搜索的关键词" },
+        target: { type: "string", description: "可选：限定某个角色/群聊；不传则搜全部会话" },
+        contextSize: { type: "number", description: "命中消息前后各带几条上下文（默认 2，上限 5）" },
+        limit: { type: "number", description: "最多返回多少个命中（默认 20，上限 50）" },
+    },
+    required: ["keyword"],
+    additionalProperties: false,
+};
+
 export const MASCOT_TOOL_PACKAGES: MascotToolPackage[] = [
     {
         id: "css_pack",
@@ -1000,6 +1035,28 @@ export const MASCOT_TOOL_PACKAGES: MascotToolPackage[] = [
             { name: "更新预设信息", description: "修改预设的 name 或 description。", parameterSchema: UPDATE_PRESET_INFO_SCHEMA },
         ],
         usageGuide: `${PRESET_PROMPT}\n\n=== 通用型预设（type=general）补充规则 ===\n${GENERAL_PRESET_PROMPT}`,
+    },
+    {
+        id: "chatlog_pack",
+        label: "聊天记录套件",
+        description: "查看 user 与角色/群聊的真实聊天记录。写世界书、补人设、确认「角色实际经历过什么」时，先读真实对话再下笔，避免凭空编造。",
+        subTools: [
+            { name: "列出聊天会话", description: "列出全部单聊/群聊会话（会话名、消息条数、最后一条时间）。先用它确认目标名，再用「读取聊天记录」。可传 keyword 过滤。", parameterSchema: LIST_CHATLOG_SCHEMA },
+            { name: "读取聊天记录", description: "读取某角色/群聊的聊天记录，按时间返回「[时间] 说话人：内容」。默认取最近 60 条；对话长时用 keyword / after / before 收窄，避免一次拉太多。语音转成其文字，表情包转成名称，图片标为 [图片]。", parameterSchema: READ_CHATLOG_SCHEMA },
+            { name: "搜索聊天记录", description: "按关键词搜索聊天记录，返回命中消息 + 前后各几条上下文。适合「找某件事发生在哪次对话里」。", parameterSchema: SEARCH_CHATLOG_SCHEMA },
+        ],
+        usageGuide: [
+            "=== 聊天记录套件使用说明 ===",
+            "用途：查看 user 与角色/群聊的真实对话，作为写世界书 / 补人设 / 梳理时间线的事实依据，不要凭印象编。",
+            "工作流：",
+            "1. 不确定会话名字，先「列出聊天会话」；",
+            "2. 「读取聊天记录」拿某段对话原文（默认最近 60 条）；",
+            "3. 只想定位某件事，用「搜索聊天记录」，它会带前后上下文。",
+            "返回格式：每行「[月-日 时:分] 说话人：内容」。",
+            "媒体说明：语音 → 它的文字内容；表情包 → 表情名；图片 → [图片]（你看不到画面，只知道发过图）。",
+            "省 token：对话很长时必须用 keyword / after / before / limit 收窄；单条超 500 字会截断，总量超约 8000 字会截断并提示。",
+            "注意：三个工具都只读，不会改动任何聊天数据。",
+        ].join("\n"),
     },
     {
         id: "regex_pack",
@@ -1313,6 +1370,185 @@ export type MascotToolContext = {
 };
 
 /** 执行小卷工具调用 */
+// ─── 聊天记录套件 ───
+
+const CHATLOG_MSG_CHAR_LIMIT = 500;
+const CHATLOG_TOTAL_CHAR_LIMIT = 8000;
+
+function formatChatLogTime(iso: string): string {
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return "";
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function clipChatLogText(text: string): string {
+    const clean = (text || "").replace(/\s+/g, " ").trim();
+    return clean.length > CHATLOG_MSG_CHAR_LIMIT ? `${clean.slice(0, CHATLOG_MSG_CHAR_LIMIT)}…` : clean;
+}
+
+type ChatLogSessionRow = {
+    sessionId: string;
+    isGroup: boolean;
+    target: string;
+    charName: string;
+    count: number;
+    lastAt: string;
+};
+
+/** 列出所有聊天会话（单聊按备注名/角色名，群聊按群名），按最后活跃时间倒序。 */
+async function listChatLogSessionRows(): Promise<ChatLogSessionRow[]> {
+    const [chatStorage, characterStorage] = await Promise.all([
+        import("./chat-storage"),
+        import("./character-storage"),
+    ]);
+    const byId = new Map(characterStorage.loadCharacters().map((c) => [c.id, c]));
+    return chatStorage.loadChatSessions().map((session) => {
+        const contact = byId.get(session.contactId);
+        const charName = contact?.name || "未知角色";
+        const messages = chatStorage.loadChatMessages(session.id);
+        return {
+            sessionId: session.id,
+            isGroup: session.isGroup === true,
+            target: session.isGroup ? (session.groupName?.trim() || "群聊") : (session.alias?.trim() || charName),
+            charName,
+            count: messages.length,
+            lastAt: messages[messages.length - 1]?.createdAt ?? session.updatedAt ?? "",
+        };
+    }).sort((a, b) => String(b.lastAt).localeCompare(String(a.lastAt)));
+}
+
+/** 目标名匹配：先精确（会话名或角色名），再模糊包含。 */
+function findChatLogSession(rows: ChatLogSessionRow[], target: string): ChatLogSessionRow | null {
+    const needle = (target || "").trim();
+    if (!needle) return null;
+    return rows.find((r) => r.target === needle || r.charName === needle)
+        ?? rows.find((r) => r.target.includes(needle) || r.charName.includes(needle))
+        ?? null;
+}
+
+/** 格式化成「[时间] 说话人：内容」；媒体转文字，只保留 user/assistant。 */
+function buildChatLogLines(
+    messages: ChatMessage[],
+    row: ChatLogSessionRow,
+    describeMedia: (msg: ChatMessage) => string | undefined,
+): string[] {
+    const lines: string[] = [];
+    for (const msg of messages) {
+        if (msg.role !== "user" && msg.role !== "assistant") continue;
+        const media = describeMedia(msg);
+        const text = clipChatLogText([(msg.content || "").trim(), media ? `（${media}）` : ""].filter(Boolean).join(" "));
+        if (!text) continue;
+        const speaker = msg.role === "user"
+            ? (msg.senderName?.trim() || "用户")
+            : (row.isGroup ? (msg.senderName?.trim() || row.charName) : row.charName);
+        lines.push(`[${formatChatLogTime(msg.createdAt)}] ${speaker}：${text}`);
+    }
+    return lines;
+}
+
+/** 汇总输出并做总量截断，保护小卷上下文。 */
+function joinChatLogLines(lines: string[]): string {
+    let total = 0;
+    const kept: string[] = [];
+    for (const line of lines) {
+        if (total + line.length > CHATLOG_TOTAL_CHAR_LIMIT) {
+            kept.push("……（内容过长已截断：请用 keyword / after / before / limit 收窄后再读）");
+            break;
+        }
+        kept.push(line);
+        total += line.length;
+    }
+    return kept.join("\n");
+}
+
+async function handleListChatLogSessions(args: Record<string, unknown>): Promise<ToolResult> {
+    const keyword = typeof args.keyword === "string" ? args.keyword.trim() : "";
+    let rows = await listChatLogSessionRows();
+    if (keyword) rows = rows.filter((r) => r.target.includes(keyword) || r.charName.includes(keyword));
+    if (rows.length === 0) {
+        return { name: "列出聊天会话", success: true, data: keyword ? `没有匹配「${keyword}」的会话。` : "（没有任何聊天会话）" };
+    }
+    const lines = rows.map((r) => `· ${r.isGroup ? "（群聊）" : ""}${r.target}${r.isGroup ? "" : `（角色：${r.charName}）`} — ${r.count} 条，最后 ${formatChatLogTime(r.lastAt) || "未知"}`);
+    return { name: "列出聊天会话", success: true, data: `共 ${rows.length} 个会话：\n${lines.join("\n")}` };
+}
+
+async function handleReadChatLog(args: Record<string, unknown>): Promise<ToolResult> {
+    const target = typeof args.target === "string" ? args.target.trim() : "";
+    if (!target) return { name: "读取聊天记录", success: false, error: "target 不能为空（角色名或群聊名）" };
+
+    const rows = await listChatLogSessionRows();
+    const row = findChatLogSession(rows, target);
+    if (!row) return { name: "读取聊天记录", success: false, error: `找不到会话「${target}」，先用「列出聊天会话」查看可用名称` };
+
+    const limit = Math.min(Math.max(1, Number(args.limit) || 60), 300);
+    const keyword = typeof args.keyword === "string" ? args.keyword.trim() : "";
+    const after = typeof args.after === "string" ? args.after.trim() : "";
+    const before = typeof args.before === "string" ? args.before.trim() : "";
+
+    const [chatStorage, chatExport] = await Promise.all([
+        import("./chat-storage"),
+        import("./chat-export"),
+    ]);
+    let messages = chatStorage.loadChatMessages(row.sessionId);
+    if (after) messages = messages.filter((m) => m.createdAt > after);
+    if (before) messages = messages.filter((m) => m.createdAt < before);
+    if (keyword) messages = messages.filter((m) => (m.content || "").includes(keyword));
+    messages = messages.slice(-limit);
+
+    if (messages.length === 0) {
+        return { name: "读取聊天记录", success: true, data: `「${row.target}」在给定条件下没有消息。` };
+    }
+    const lines = buildChatLogLines(messages, row, chatExport.describeMessageMedia);
+    const title = `${row.isGroup ? "（群聊）" : ""}${row.target} 的聊天记录（${lines.length} 条${keyword ? `，关键词「${keyword}」` : ""}）：`;
+    return { name: "读取聊天记录", success: true, data: `${title}\n${joinChatLogLines(lines)}` };
+}
+
+async function handleSearchChatLog(args: Record<string, unknown>): Promise<ToolResult> {
+    const keyword = typeof args.keyword === "string" ? args.keyword.trim() : "";
+    if (!keyword) return { name: "搜索聊天记录", success: false, error: "keyword 不能为空" };
+    const targetFilter = typeof args.target === "string" ? args.target.trim() : "";
+    const contextSize = Math.min(Math.max(0, Number(args.contextSize) || 2), 5);
+    const hitLimit = Math.min(Math.max(1, Number(args.limit) || 20), 50);
+
+    const [chatStorage, chatExport] = await Promise.all([
+        import("./chat-storage"),
+        import("./chat-export"),
+    ]);
+    let rows = await listChatLogSessionRows();
+    if (targetFilter) {
+        const row = findChatLogSession(rows, targetFilter);
+        rows = row ? [row] : [];
+    }
+    if (rows.length === 0) {
+        return { name: "搜索聊天记录", success: false, error: targetFilter ? `找不到会话「${targetFilter}」` : "没有任何聊天会话" };
+    }
+
+    const sections: string[] = [];
+    let hits = 0;
+    for (const row of rows) {
+        if (hits >= hitLimit) break;
+        const messages = chatStorage.loadChatMessages(row.sessionId).filter((m) => m.role === "user" || m.role === "assistant");
+        const picked = new Set<number>();
+        for (let i = 0; i < messages.length && hits < hitLimit; i += 1) {
+            if (!(messages[i].content || "").includes(keyword)) continue;
+            hits += 1;
+            for (let j = Math.max(0, i - contextSize); j <= Math.min(messages.length - 1, i + contextSize); j += 1) {
+                picked.add(j);
+            }
+        }
+        if (picked.size === 0) continue;
+        const ordered = [...picked].sort((a, b) => a - b).map((i) => messages[i]);
+        const lines = buildChatLogLines(ordered, row, chatExport.describeMessageMedia);
+        sections.push(`【${row.isGroup ? "（群聊）" : ""}${row.target}】\n${lines.join("\n")}`);
+    }
+
+    if (sections.length === 0) {
+        return { name: "搜索聊天记录", success: true, data: `没有找到包含「${keyword}」的消息。` };
+    }
+    return { name: "搜索聊天记录", success: true, data: joinChatLogLines([`共命中 ${hits} 处（关键词「${keyword}」）：`, ...sections]) };
+}
+
 export async function executeMascotToolCall(call: ToolCall, ctx: MascotToolContext): Promise<ToolResult> {
     try {
         switch (call.name) {
@@ -1369,6 +1605,11 @@ export async function executeMascotToolCall(call: ToolCall, ctx: MascotToolConte
             case "添加预设条目": return await handleAddPresetPrompt(call.args);
             case "更新预设条目": return await handleUpdatePresetPrompt(call.args);
             case "更新预设信息": return await handleUpdatePresetInfo(call.args);
+
+            // ─── 聊天记录 ───
+            case "列出聊天会话": return await handleListChatLogSessions(call.args);
+            case "读取聊天记录": return await handleReadChatLog(call.args);
+            case "搜索聊天记录": return await handleSearchChatLog(call.args);
 
             // ─── 正则 ───
             case "列出正则组": return await handleListRegexGroups();
