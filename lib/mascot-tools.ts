@@ -1278,6 +1278,9 @@ const MASCOT_NATIVE_TOOL_NAMES: Record<string, string> = {
     "预览DIY组件": "mascot_preview_diy_widget",
     "摆放组件": "mascot_place_widget",
     "移除DIY组件": "mascot_remove_diy_widget",
+    "列出聊天会话": "mascot_list_chat_sessions",
+    "读取聊天记录": "mascot_read_chat_log",
+    "搜索聊天记录": "mascot_search_chat_log",
 };
 
 const MASCOT_NATIVE_LOADER_NAMES: Record<string, string> = {
@@ -1291,6 +1294,7 @@ const MASCOT_NATIVE_LOADER_NAMES: Record<string, string> = {
     status_bar_pack: "mascot_load_status_bar_pack",
     widget_pack: "mascot_load_widget_pack",
     mixology_pack: "mascot_load_mixology_pack",
+    chatlog_pack: "mascot_load_chatlog_pack",
 };
 
 export function getMascotNativeToolName(displayName: string): string {
