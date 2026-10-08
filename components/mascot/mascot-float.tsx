@@ -614,6 +614,8 @@ export function MascotFloat() {
   const [pendingImages, setPendingImages] = useState<string[]>([]);
   // ref → blob object URL 缓存，渲染预览用
   const [imagePreviewCache, setImagePreviewCache] = useState<Record<string, string>>({});
+  // 解码失败的图片 ref：渲染成可见占位，避免「气泡在、图完全看不见」，也便于一眼认出坏图
+  const [brokenImageRefs, setBrokenImageRefs] = useState<Record<string, true>>({});
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
   const [nineSliceCalibration, setNineSliceCalibration] = useState<NineSliceCalibrationEventDetail | null>(null);
   const [diyWidgetPreview, setDiyWidgetPreview] = useState<DiyWidgetPreviewRequest | null>(null);
@@ -692,6 +694,21 @@ export function MascotFloat() {
           blob = await compressImageToBlob(file);
         } catch (e) {
           console.warn("[Mascot] 图片压缩失败，使用原图:", e);
+        }
+        // 兜底补 mime：安卓文件选择器给出的 file.type 常为空或非 image/*，
+        // 直接转 data URL 会得到 data:;base64 / application/octet-stream，<img> 无法当图片渲染，
+        // 表现为「图发出去了但不显示」。这里按扩展名补一个可信的 image/* 类型再转。
+        if (!blob.type || !blob.type.startsWith("image/")) {
+          const lowerName = (file.name || "").toLowerCase();
+          const guessedMime = lowerName.endsWith(".png") ? "image/png"
+            : lowerName.endsWith(".webp") ? "image/webp"
+              : lowerName.endsWith(".gif") ? "image/gif"
+                : lowerName.endsWith(".avif") ? "image/avif"
+                  : lowerName.endsWith(".heic") ? "image/heic"
+                    : lowerName.endsWith(".bmp") ? "image/bmp"
+                      : "image/jpeg";
+          console.warn("[Mascot] 图片 MIME 缺失，按扩展名补为", guessedMime);
+          blob = new Blob([blob], { type: guessedMime });
         }
         const ref = await blobToDataUrl(blob);
         refs.push(ref);
@@ -1019,6 +1036,9 @@ export function MascotFloat() {
               {msg.images.map((ref, idx) => {
                 const url = imagePreviewCache[ref];
                 if (!url) return <div key={idx} className="mascot-msg-image mascot-msg-image-loading" />;
+                if (brokenImageRefs[ref]) {
+                  return <div key={idx} className="mascot-msg-image mascot-msg-image-error">图片无法显示</div>;
+                }
                 /* eslint-disable-next-line @next/next/no-img-element */
                 return (
                   <img
@@ -1027,6 +1047,7 @@ export function MascotFloat() {
                     alt=""
                     className="mascot-msg-image"
                     style={{ cursor: "pointer" }}
+                    onError={() => setBrokenImageRefs(prev => (prev[ref] ? prev : { ...prev, [ref]: true }))}
                     onClick={e => { e.stopPropagation(); setPreviewImageUrl(url); }}
                   />
                 );
@@ -1637,6 +1658,20 @@ export function MascotFloat() {
           height: 100px;
           background: var(--mascot-btn-bg, rgba(255,255,255,0.04));
           animation: mascot-img-pulse 1.2s ease-in-out infinite;
+        }
+        .mascot-msg-image-error {
+          width: 100px;
+          height: 100px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 4px;
+          text-align: center;
+          box-sizing: border-box;
+          border: 1px dashed var(--mascot-border, rgba(255,255,255,0.16));
+          background: var(--mascot-btn-bg, rgba(255,255,255,0.04));
+          color: var(--mascot-text-dim, rgba(255,255,255,0.45));
+          font-size: calc(10px*var(--app-text-scale,1));
         }
         @keyframes mascot-img-pulse {
           0%, 100% { opacity: 0.4; }
