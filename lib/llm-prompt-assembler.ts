@@ -1270,6 +1270,15 @@ export function formatRichMediaForHistory(msg: ChatMessage, userName: string, ch
             const body = d?.appCardBody || d?.appCardSummary || msg.content;
             return body ? `[${appName}卡片:${title}]${body}` : `[${appName}卡片:${title}]`;
         }
+        case "forward_card": {
+            // 转发卡片：两道保险——来源标注 + 全文原文。
+            // 让接收方明确「这是被转发来的一段聊天记录」，不会误当成当前这段会话里发生过的话。
+            const forwardText = d?.forwardText?.trim();
+            const from = d?.forwardFrom?.trim() || "聊天记录";
+            const count = typeof d?.forwardCount === "number" ? d.forwardCount : 0;
+            if (!forwardText) return `[转发了${from}的聊天记录${count ? `（${count} 条）` : ""}]`;
+            return `[转发的聊天记录：${from}${count ? `，共 ${count} 条` : ""}]\n${forwardText}\n[/转发的聊天记录]`;
+        }
         case "image":
             return formatPhotoDirective(msg);
         case "media_file":

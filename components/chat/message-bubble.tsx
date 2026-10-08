@@ -84,6 +84,27 @@ function PluginKindBubble({ msg, kind }: { msg: ChatMessage; kind: string }) {
     return <div ref={containerRef} data-chat-plugin-kind={kind} />;
 }
 
+/** 转发卡片：来源 + 条数 + 可展开全文（用原生 details，零额外状态）。 */
+function ForwardCardBubble({ msg }: { msg: ChatMessage }) {
+    const from = msg.mediaData?.forwardFrom?.trim() || "聊天记录";
+    const count = msg.mediaData?.forwardCount;
+    const text = msg.mediaData?.forwardText || msg.content || "";
+    return (
+        <div className="chat-forward-card">
+            <div className="chat-forward-card-head">
+                <span className="chat-forward-card-title">转发消息</span>
+                <span className="chat-forward-card-meta">{from}{count ? ` · ${count} 条` : ""}</span>
+            </div>
+            {text.trim() ? (
+                <details className="chat-forward-card-body">
+                    <summary>查看全文</summary>
+                    <pre className="chat-forward-card-text">{text}</pre>
+                </details>
+            ) : null}
+        </div>
+    );
+}
+
 /**
  * Renders a message bubble based on its mediaType.
  * Falls back to ReactMarkdown for plain text messages.
@@ -120,6 +141,8 @@ export const MessageBubble = memo(function MessageBubble({ msg, onUpdate, charNa
             return <MediaFileBubble msg={msg} onUpdate={onUpdate} characterId={characterId} />;
         case "xiaohongshu_note_share":
             return <XiaohongshuShareBubble msg={msg} />;
+        case "forward_card":
+            return <ForwardCardBubble msg={msg} />;
         case "audio":
             return <VoiceMessageBubble msg={msg} characterId={characterId} onUpdate={onUpdate} defaultTranslationExpanded={defaultTranslationExpanded} />;
         default: {

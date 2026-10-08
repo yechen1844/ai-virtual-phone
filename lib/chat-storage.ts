@@ -111,6 +111,7 @@ export type ChatMessage = {
         | "payment_request" | "accept_payment_request" | "decline_payment_request"
         | "music" | "music_share" | "music_notify" | "music_not_found"
         | "xiaohongshu_note_share"
+        | "forward_card"
         | "gift"
         | "contact_card"
         | "app_card"
@@ -205,6 +206,10 @@ export type ChatMessage = {
         xiaohongshuImages?: string[];             // 全部配图 data URL（发送后三轮内注入视觉，不进聊天 UI）
         xiaohongshuHotComments?: { nickname: string; content: string; likedCount?: number | string }[]; // 首屏热评
         xiaohongshuStats?: string;                // 互动数据描述（赞/藏/评）
+        // ── 转发卡片（多选转发聊天记录）──
+        forwardFrom?: string;                     // 来源描述，如「我 与 张三」「群聊『三人行』」
+        forwardCount?: number;                    // 转发的消息条数
+        forwardText?: string;                     // 带来源标注的全文：进模型上下文；UI 折叠展示
         callDuration?: string;    // 通话时长（如 05:23）
         voiceDuration?: number;   // 语音条时长（秒）
         synthesizedFromText?: string; // 语音条当前音频对应的合成文本
@@ -311,6 +316,7 @@ const MEDIA_PREVIEW_MAP: Record<string, string> = {
     poke: "[拍了拍你]", sticker: "[表情]", quote: "[引用]", dice: "[掷骰子]",
     gift: "[礼物]",
     contact_card: "[名片]",
+    forward_card: "[转发消息]",
     payment_request: "[代付请求]",
     music: "[音乐]",
     music_share: "[音乐分享]",

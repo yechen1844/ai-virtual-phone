@@ -1301,6 +1301,10 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
     const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
     const [selectedMessageIds, setSelectedMessageIds] = useState<Set<string>>(new Set());
     const [showConfirmMultiDelete, setShowConfirmMultiDelete] = useState(false);
+    // ── 多选转发 ──
+    const [showForwardPicker, setShowForwardPicker] = useState(false);
+    const [forwardOptions, setForwardOptions] = useState<{ key: string; label: string }[]>([]);
+    const [forwardSelected, setForwardSelected] = useState<ReadonlySet<string>>(() => new Set());
     const [expandedMonologueId, setExpandedThinkingId] = useState<string | null>(null);
     // 思维链底部弹窗：存当前查看的 reasoning 文本，null = 关闭
     const [reasoningSheetText, setReasoningSheetText] = useState<string | null>(null);
@@ -5304,6 +5308,80 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
         setShowConfirmMultiDelete(false);
     }, []);
 
+    // ── 多选转发：把选中消息打包成带来源标注的记录（UI 卡片 + 上下文全文） ──
+    const formatForwardTime = (iso: string): string => {
+        const date = new Date(iso);
+        if (Number.isNaN(date.getTime())) return "";
+        const pad = (n: number) => String(n).padStart(2, "0");
+        return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    };
+
+    const buildForwardPayload = useCallback(async () => {
+        const { describeMessageMedia } = await import("@/lib/chat-export");
+        const stored = loadChatMessages(session.id);
+        const lines: string[] = [];
+        for (const msg of stored) {
+            if (!selectedMessageIds.has(msg.id)) continue;
+            if (msg.role !== "user" && msg.role !== "assistant") continue;
+            const media = describeMessageMedia(msg);
+            const body = [(msg.content || "").trim(), media ? `（${media}）` : ""].filter(Boolean).join(" ");
+            if (!body) continue;
+            const speaker = msg.role === "user" ? "我" : (msg.senderName?.trim() || character?.name || "对方");
+            lines.push(`[${formatForwardTime(msg.createdAt)}] ${speaker}：${body}`);
+        }
+        const source = session.isGroup
+            ? `群聊「${session.groupName?.trim() || "群聊"}」`
+            : `我 与 ${character?.name || "对方"}`;
+        return { source, count: lines.length, text: lines.join("\n") };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [character?.name, selectedMessageIds, session.groupName, session.id, session.isGroup]);
+
+    const openForwardPicker = useCallback(() => {
+        const options: { key: string; label: string }[] = [{ key: "mascot", label: "小卷（助手）" }];
+        const byId = new Map(loadCharacters().map(c => [c.id, c.name]));
+        for (const s of loadChatSessions()) {
+            if (s.id === session.id) continue;
+            const name = byId.get(s.contactId) || "未知角色";
+            options.push({
+                key: s.id,
+                label: s.isGroup ? `群聊「${s.groupName?.trim() || "群聊"}」` : (s.alias?.trim() || name),
+            });
+        }
+        setForwardOptions(options);
+        setForwardSelected(new Set(["mascot"]));
+        setShowForwardPicker(true);
+    }, [session.id]);
+
+    const confirmForward = useCallback(async () => {
+        const targets = forwardSelected;
+        if (targets.size === 0) return;
+        const payload = await buildForwardPayload();
+        if (payload.count === 0) return;
+        // 与小卷/聊天共用同一份带标注全文：接收方明确知道「这是被转发来的一段记录」
+        const labeled = `[转发的聊天记录：${payload.source}，共 ${payload.count} 条]\n${payload.text}\n[/转发的聊天记录]`;
+        setShowForwardPicker(false);
+        cancelMultiSelect();
+        for (const key of targets) {
+            if (key === "mascot") {
+                const { sendMascotMessage } = await import("@/lib/mascot-chat-store");
+                await sendMascotMessage({ text: labeled });
+                continue;
+            }
+            pushChatMessage({
+                sessionId: key,
+                role: "user",
+                content: "",
+                status: "sent",
+                mediaType: "forward_card",
+                mediaData: {
+                    forwardFrom: payload.source,
+                    forwardCount: payload.count,
+                    forwardText: payload.text,
+                },
+            });
+        }
+    }, [buildForwardPayload, cancelMultiSelect, forwardSelected]);
+
     const toggleMultiSelectedMessage = useCallback((messageId: string) => {
         setSelectedMessageIds(prev => {
             const next = new Set(prev);
@@ -6282,6 +6360,14 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                     </div>
                     <button
                         type="button"
+                        className="chat-multi-select-forward-btn"
+                        disabled={selectedMessageIds.size === 0}
+                        onClick={openForwardPicker}
+                    >
+                        转发
+                    </button>
+                    <button
+                        type="button"
                         className="chat-multi-select-delete-btn"
                         disabled={selectedMessageIds.size === 0 || multiDeleteTargetIds.length === 0}
                         onClick={confirmMultiDelete}
@@ -6340,6 +6426,55 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                 onSendSticker={(name, url) => { setShowStickerPanel(false); sendRichMessage("sticker", { label: name, stickerUrl: url }); }}
             />
             ))}
+
+            {showForwardPicker && (
+                <div className="modal-overlay" data-ui="modal" role="dialog" aria-modal="true" aria-label="转发消息" onClick={() => setShowForwardPicker(false)}>
+                    <div
+                        className="modal-dialog"
+                        data-ui="modal-dialog"
+                        onClick={(e) => e.stopPropagation()}
+                        style={{ maxWidth: 460, width: "92vw", maxHeight: "80vh", display: "flex", flexDirection: "column" }}
+                    >
+                        <div className="modal-header" data-ui="modal-header">
+                            <h3 className="modal-title">转发 {selectedMessageIds.size} 条消息</h3>
+                            <button type="button" className="ui-bare-btn text-[var(--c-icon)]" onClick={() => setShowForwardPicker(false)} aria-label="关闭">
+                                <X size={18} strokeWidth={2} />
+                            </button>
+                        </div>
+                        <div className="modal-body" data-ui="modal-body" style={{ overflow: "auto", textAlign: "left", width: "100%" }}>
+                            <p className="menu-desc">
+                                选择转发目标（可多选）。接收方看到的是带来源标注的完整记录，不会被误当成自己经历过的对话。
+                            </p>
+                            {forwardOptions.map(opt => (
+                                <label key={opt.key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", cursor: "pointer" }}>
+                                    <input
+                                        type="checkbox"
+                                        checked={forwardSelected.has(opt.key)}
+                                        onChange={() => setForwardSelected(prev => {
+                                            const next = new Set(prev);
+                                            if (next.has(opt.key)) next.delete(opt.key);
+                                            else next.add(opt.key);
+                                            return next;
+                                        })}
+                                    />
+                                    <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{opt.label}</span>
+                                </label>
+                            ))}
+                        </div>
+                        <div className="modal-footer" data-ui="modal-footer" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                            <button
+                                type="button"
+                                className="ui-btn ui-btn-primary"
+                                style={{ width: "100%" }}
+                                disabled={forwardSelected.size === 0}
+                                onClick={() => { void confirmForward(); }}
+                            >
+                                转发到已选 {forwardSelected.size} 个目标
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {showConfirmMultiDelete && (
                 <ConfirmDialog
