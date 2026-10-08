@@ -5319,6 +5319,10 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
     const buildForwardPayload = useCallback(async () => {
         const { describeMessageMedia } = await import("@/lib/chat-export");
         const stored = loadChatMessages(session.id);
+        // 一律用真实名字，不用「我」：转发记录是给别的角色/小卷读的，
+        // 「我」在接收方眼里可能被理解成它自己，必须写清是谁说的。
+        const myName = userIdentity?.name?.trim() || "用户";
+        const charName = character?.name || "对方";
         const lines: string[] = [];
         for (const msg of stored) {
             if (!selectedMessageIds.has(msg.id)) continue;
@@ -5326,15 +5330,16 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
             const media = describeMessageMedia(msg);
             const body = [(msg.content || "").trim(), media ? `（${media}）` : ""].filter(Boolean).join(" ");
             if (!body) continue;
-            const speaker = msg.role === "user" ? "我" : (msg.senderName?.trim() || character?.name || "对方");
+            const speaker = msg.senderName?.trim()
+                || (msg.role === "user" ? myName : charName);
             lines.push(`[${formatForwardTime(msg.createdAt)}] ${speaker}：${body}`);
         }
         const source = session.isGroup
             ? `群聊「${session.groupName?.trim() || "群聊"}」`
-            : `我 与 ${character?.name || "对方"}`;
+            : `${myName} 与 ${charName}`;
         return { source, count: lines.length, text: lines.join("\n") };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [character?.name, selectedMessageIds, session.groupName, session.id, session.isGroup]);
+    }, [character?.name, selectedMessageIds, session.groupName, session.id, session.isGroup, userIdentity?.name]);
 
     const openForwardPicker = useCallback(() => {
         const options: { key: string; label: string }[] = [{ key: "mascot", label: "小卷（助手）" }];

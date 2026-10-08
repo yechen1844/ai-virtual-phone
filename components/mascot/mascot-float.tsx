@@ -55,6 +55,29 @@ function isLikelyImageFile(file: File): boolean {
   return file.type.startsWith("image/") || IMAGE_FILE_EXT_RE.test(file.name) || !file.type;
 }
 
+/**
+ * 历史坏图修复：早期版本在 file.type 为空时转出的 data URL 缺少 image mime
+ * （形如 `data:;base64,` / `data:application/octet-stream;base64,`），<img> 无法当图片渲染。
+ * 这里在展示层按 base64 头部字节猜出真实图片类型、改写前缀——同一份字节即可正常显示，
+ * 用户不需要重发（重发既费事、又会把旧图再灌一遍进上下文）。
+ */
+function normalizeMascotDataUrl(ref: string): string {
+  const match = /^data:([^;,]*)((?:;[^,]*)*),(.*)$/s.exec(ref);
+  if (!match) return ref;
+  const [, mime, params, payload] = match;
+  if (mime.startsWith("image/")) return ref;
+  const isBase64 = params.includes("base64");
+  let guessed = "image/jpeg";
+  if (isBase64) {
+    const head = payload.slice(0, 12);
+    if (head.startsWith("iVBOR")) guessed = "image/png";
+    else if (head.startsWith("R0lGOD")) guessed = "image/gif";
+    else if (head.startsWith("UklGR")) guessed = "image/webp";
+    else if (head.startsWith("/9j/")) guessed = "image/jpeg";
+  }
+  return `data:${guessed}${isBase64 ? ";base64" : ""},${payload}`;
+}
+
 function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -740,7 +763,7 @@ export function MascotFloat() {
       const updates: Record<string, string> = {};
       for (const ref of missing) {
         if (ref.startsWith("data:")) {
-          updates[ref] = ref;
+          updates[ref] = normalizeMascotDataUrl(ref);
           continue;
         }
         const url = await loadMediaObjectUrl(ref);
