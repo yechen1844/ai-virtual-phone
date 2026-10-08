@@ -43,6 +43,7 @@ import { GroupCallScreen } from "./group-call-screen";
 import { TransferTargetModal } from "./transfer-target-modal";
 import { GiftPickerModal } from "./gift-picker-modal";
 import { XhsShareDialog } from "./xhs-share-dialog";
+import { ScheduleNotePanel } from "./schedule-note-panel";
 import { ConfirmDialog } from "@/components/ui/modal";
 import { deleteWeixinCloudMessagesFromCloud, syncAllWeixinBotRuntimesToCloud, emitWeixinSyncToast } from "@/lib/weixin-cloud-sync";
 import { loadBindingConfig, loadRegexes, resolveBinding, resolveUserIdentity } from "@/lib/settings-storage";
@@ -53,7 +54,7 @@ import { scheduleFollowUp, cancelFollowUp } from "@/lib/follow-up-service";
 import { useKeyboardDismissAutoSend } from "@/components/chat/use-keyboard-dismiss-auto-send";
 import { PENDING_REPLY_PREFIX } from "@/lib/friend-request-engine";
 import type { UserIdentity } from "@/components/settings/user-identity";
-import { AlertCircle, Blocks, Check, Trash2, User, ChevronLeft, ChevronRight, Clapperboard, Clock, Gift, Languages, Loader2, MoreHorizontal, X } from "lucide-react";
+import { AlertCircle, Blocks, Check, Trash2, User, ChevronLeft, ChevronRight, Clapperboard, Clock, Gift, Languages, Loader2, MoreHorizontal, NotebookPen, X } from "lucide-react";
 import { setDebugChatState } from "@/lib/debug-store";
 import { SessionCustomCSS } from "@/components/ui/session-custom-css";
 import { setChatActive } from "@/lib/music-action-queue";
@@ -646,6 +647,7 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
     onCloseTheaterMode: () => void;
     onOpenRichModal: (modal: RichModalKind) => void;
     onOpenCustomPlusAction: (action: RegisteredCustomAppChatPlusAction) => void;
+    onOpenScheduleNotes: () => void;
     onStartVideoCall: () => void;
     onStartVoiceCall: () => void;
     onSendText: (text: string, options?: { autoReply?: boolean }) => boolean;
@@ -677,6 +679,7 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
     onCloseTheaterMode,
     onOpenRichModal,
     onOpenCustomPlusAction,
+    onOpenScheduleNotes,
     onStartVideoCall,
     onStartVoiceCall,
     onSendText,
@@ -754,6 +757,7 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
         { icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--c-text)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" /><circle cx="12" cy="10" r="3" /></svg>, label: "位置", onClick: () => onOpenRichModal("location") },
         { icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--c-text)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="22" /><line x1="8" y1="22" x2="16" y2="22" /></svg>, label: "语音条", onClick: () => onOpenRichModal("voice_msg") },
         { icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--c-text)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="4" width="20" height="16" rx="3" /><text x="12" y="16" textAnchor="middle" fontSize="9" fontWeight="700" fill="var(--c-text)" stroke="none">RED</text></svg>, label: "小红书", onClick: () => onOpenRichModal("xhs_share") },
+        ...(!isGroup ? [{ icon: <NotebookPen size={22} strokeWidth={1.5} color="var(--c-text)" />, label: "日程便签", onClick: onOpenScheduleNotes }] : []),
         ...customPlusActions.map(action => ({
             icon: action.appIconDataUrl
                 ? <span className="chat-plus-custom-app-icon" style={{ backgroundImage: `url(${action.appIconDataUrl})` }} aria-hidden="true" />
@@ -1311,6 +1315,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
     const [showConfirmMultiDelete, setShowConfirmMultiDelete] = useState(false);
     // ── 多选转发 ──
     const [showForwardPicker, setShowForwardPicker] = useState(false);
+    const [showScheduleNotePanel, setShowScheduleNotePanel] = useState(false);
     const [forwardOptions, setForwardOptions] = useState<{ key: string; label: string }[]>([]);
     const [forwardSelected, setForwardSelected] = useState<ReadonlySet<string>>(() => new Set());
     const [expandedMonologueId, setExpandedThinkingId] = useState<string | null>(null);
@@ -6434,6 +6439,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
 	                onCloseTheaterMode={closeTheaterMode}
 	                onOpenRichModal={(modal) => { setShowPlusMenu(false); setRichModal(modal); }}
                 onOpenCustomPlusAction={handleOpenCustomPlusAction}
+                onOpenScheduleNotes={() => { setShowPlusMenu(false); setShowScheduleNotePanel(true); }}
                 onStartVideoCall={() => { cancelFollowUp(session.id); setShowPlusMenu(false); setCallInitiator("user"); setShowVideoCall(true); }}
                 onStartVoiceCall={() => { cancelFollowUp(session.id); setShowPlusMenu(false); setCallInitiator("user"); setShowVoiceCall(true); }}
                 onSendText={handleSendText}
@@ -6442,6 +6448,15 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                 onSendSticker={(name, url) => { setShowStickerPanel(false); sendRichMessage("sticker", { label: name, stickerUrl: url }); }}
             />
             ))}
+
+            {showScheduleNotePanel && !session.isGroup && (
+                <ScheduleNotePanel
+                    characterId={session.contactId}
+                    characterName={character?.name || "对方"}
+                    sessionId={session.id}
+                    onClose={() => setShowScheduleNotePanel(false)}
+                />
+            )}
 
             {showForwardPicker && (
                 <div className="modal-overlay" data-ui="modal" role="dialog" aria-modal="true" aria-label="转发消息" onClick={() => setShowForwardPicker(false)}>

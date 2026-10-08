@@ -202,16 +202,19 @@ export function resolveStateNoteEnd(note: ScheduleNote): number {
 // ── 逐轮注入 ─────────────────────────────────────────
 
 /**
- * 生成注入到角色上下文的日程便签块。没有可注入内容时返回空串。
- * 内容形如：
- *   [日程便签]
- *   · 下课（瞬间事件）—— 今天 12:40，距离现在还有 10 分钟
- *   · 吃饭（状态事件）—— 从今天 12:05 开始，已进行 35 分钟
- *   [/日程便签]
+ * 生成注入到角色上下文的日程便签块。
+ * 即使一条便签都没有也会返回一小段——常驻的出现本身就是「你有这个功能」的提醒，
+ * 否则角色永远不会主动去记第一条。
  */
 export function buildScheduleNotePromptBlock(characterId: string, now = new Date()): string {
     const notes = loadScheduleNotesByCharacter(characterId).filter(note => !note.done);
-    if (notes.length === 0) return "";
+    if (notes.length === 0) {
+        return [
+            "[日程便签]",
+            "（现在没有记下的日程。听到对方提到跟时间有关的事——几点要做什么、还有多久下课、正在做什么、要提醒什么——就用「记录日程」记一条，之后每轮会自动帮你算还差多久。）",
+            "[/日程便签]",
+        ].join("\n");
+    }
 
     const nowMs = now.getTime();
     const lines: string[] = [];

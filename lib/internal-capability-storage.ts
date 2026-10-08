@@ -1401,7 +1401,7 @@ const BUILTIN_INTERNAL_CAPABILITIES: InternalCapabilityConfig[] = [
     {
         id: SCHEDULE_NOTE_CAPABILITY_ID,
         name: "日程便签",
-        description: "记录并跟踪{{user}}的日程与时间安排：什么时候要做什么、还有多久、已经进行了多久。用来避免把没发生的事当成已发生、把进行中的事当成已结束。",
+        description: "记录并跟踪{{user}}的日程与时间安排。只要{{user}}的话里出现跟时间有关的信息（「我一点半要坐火车」「还有四十分钟下课」「我去吃饭了」「提醒我吃药」「明天九点面试」），就先用这里的动作把它记下来——系统之后每轮都会把这些换算成「还有多久 / 已经进行多久」告诉你，避免你把还没发生的事当成已经发生、把进行中的事当成已经结束。",
         enabled: true,
         mode: "auto",
         createdAt: 0,
