@@ -288,6 +288,7 @@ export type ChatAppSettings = {
     enterToSendEnabled?: boolean; // When true, Enter sends chat input and Shift+Enter inserts a newline
     callVibrationEnabled?: boolean; // 语音/视频来电等待接听时循环振动（默认开；iOS 网页不支持振动则无效果）
     maxToolRounds?: number; // 单条消息的工具循环轮数上限（默认 5；每轮=一次模型请求，轮内调用条数不限）
+    llmRetryEnabled?: boolean; // 上游返回 429/5xx 或网络抖动时自动退避重试（默认开）
     floatingDockEnabled?: boolean; // 悬浮球贴边半隐藏收拢模式（默认关）
 };
 
@@ -296,6 +297,11 @@ export function getMaxToolRounds(): number {
     const raw = loadChatAppSettings().maxToolRounds;
     if (typeof raw !== "number" || !Number.isFinite(raw)) return 5;
     return Math.max(1, Math.min(20, Math.round(raw)));
+}
+
+/** 上游 429/5xx / 网络抖动时是否自动退避重试（默认开） */
+export function isLlmRetryEnabled(): boolean {
+    return loadChatAppSettings().llmRetryEnabled !== false;
 }
 
 /** 会话是否开启线上流式生成（默认关；按会话独立控制，单聊/群聊都生效） */
@@ -793,6 +799,7 @@ const DEFAULT_CHAT_APP_SETTINGS: ChatAppSettings = {
     promptViewerEnabled: false,
     quickActionEnabled: false,
     enterToSendEnabled: false,
+    llmRetryEnabled: true,
     floatingDockEnabled: false,
 };
 

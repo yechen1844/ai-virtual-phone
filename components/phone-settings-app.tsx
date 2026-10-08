@@ -110,6 +110,7 @@ export function PhoneSettingsApp({ onClose, onNotice }: SettingsPageProps) {
     const [subpageRightActions, setSubpageRightActions] = useState<Record<string, ReactNode>>({});
     const [overrideBack, setOverrideBack] = useState<(() => void) | null>(null);
     const [timeAware, setTimeAware] = useState(true);
+    const [llmRetryEnabled, setLlmRetryEnabled] = useState(true);
     const [promptViewerEnabled, setPromptViewerEnabled] = useState(false);
     const [quickActionEnabled, setQuickActionEnabled] = useState(false);
     const [floatingDockEnabled, setFloatingDockEnabled] = useState(false);
@@ -225,6 +226,12 @@ export function PhoneSettingsApp({ onClose, onNotice }: SettingsPageProps) {
         setTimeAware(next);
         saveChatAppSettings({ ...loadChatAppSettings(), timeAware: next });
         onNotice(next ? "已开启全局真实时间感知" : "已关闭全局真实时间感知");
+    }, [onNotice]);
+
+    const handleLlmRetryChange = useCallback((next: boolean) => {
+        setLlmRetryEnabled(next);
+        saveChatAppSettings({ ...loadChatAppSettings(), llmRetryEnabled: next });
+        onNotice(next ? "已开启请求自动重试" : "已关闭请求自动重试");
     }, [onNotice]);
 
     const handlePromptViewerChange = useCallback((next: boolean) => {
@@ -351,6 +358,7 @@ export function PhoneSettingsApp({ onClose, onNotice }: SettingsPageProps) {
     useEffect(() => {
         const settings = loadChatAppSettings();
         setTimeAware(settings.timeAware !== false);
+        setLlmRetryEnabled(settings.llmRetryEnabled !== false);
         setPromptViewerEnabled(settings.promptViewerEnabled === true);
         setQuickActionEnabled(settings.quickActionEnabled === true);
         setFloatingDockEnabled(settings.floatingDockEnabled === true);
@@ -439,6 +447,16 @@ export function PhoneSettingsApp({ onClose, onNotice }: SettingsPageProps) {
                                     <div className="card-featured-desc">控制全局历史事件流中是否注入时间戳</div>
                                 </div>
                                 <Toggle checked={timeAware} onChange={handleTimeAwareChange} className="settings-toggle-control" />
+                            </div>
+                            <div className="app-card card-featured settings-toggle-card">
+                                <span className="card-icon card-icon-glass">
+                                    <GlassIcon name="api" />
+                                </span>
+                                <div className="card-featured-body">
+                                    <div className="card-featured-label">请求自动重试</div>
+                                    <div className="card-featured-desc">上游返回 429/5xx 或网络抖动时自动退避重试（最多 2 次），避免一次瞬时故障就整条回复失败</div>
+                                </div>
+                                <Toggle checked={llmRetryEnabled} onChange={handleLlmRetryChange} className="settings-toggle-control" />
                             </div>
                             <div className="app-card card-featured settings-toggle-card">
                                 <span className="card-icon card-icon-glass">
