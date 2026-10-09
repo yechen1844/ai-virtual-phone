@@ -147,7 +147,13 @@ class PushService : Service() {
         }
     }
 
-    private data class PushConfig(val supabaseUrl: String, val anonKey: String, val userId: String)
+    private data class PushConfig(
+        val supabaseUrl: String,
+        val anonKey: String,
+        val userId: String,
+        /** 离线推送中转地址（站点 /api/online/config 的 pushRelayUrl）；空串 = 直连 Supabase */
+        val relayUrl: String = "",
+    )
 
     /** 配置拉取结果：区分「真的没配置」与「网络暂时不通」，两者处理方式完全不同。 */
     private sealed class ConfigResult {
@@ -185,17 +191,28 @@ class PushService : Service() {
             val sp = getSharedPreferences("float_supabase", 0)
             var url = sp.getString("url", "")?.trim().orEmpty()
             var key = sp.getString("key", "")?.trim().orEmpty()
-            if (url.isEmpty() || key.isEmpty()) {
-                val online = try {
-                    fetchJson("/api/online/config")
-                } catch (e: Exception) {
-                    // 只是这次没连上站点——不能当成「未配置」，否则会停 60 秒并显示错的文案
-                    Log.d(LOG_TAG, "fetchConfig: /api/online/config failed: ${e.message}")
-                    return ConfigResult.Unreachable
-                }
-                if (online.optBoolean("configured")) {
-                    url = online.optString("supabaseUrl")
-                    key = online.optString("anonKey")
+            // 中转地址单独存一份：站点暂时连不上时沿用上次拿到的，避免无声退化成直连
+            val spPush = getSharedPreferences("float_push", 0)
+            var relayUrl = ""
+
+            // 站点配置每次都要问——中转地址只在这里下发，和本地有没有存 Supabase 凭据无关。
+            // （早先只在本机没凭据时才请求，那样本地一旦存过凭据就永远拿不到中转地址。）
+            val online = try {
+                fetchJson("/api/online/config")
+            } catch (e: Exception) {
+                Log.d(LOG_TAG, "fetchConfig: /api/online/config failed: ${e.message}")
+                if (url.isEmpty() || key.isEmpty()) return ConfigResult.Unreachable
+                relayUrl = spPush.getString("relay", "")?.trim().orEmpty()
+                null
+            }
+            if (online != null) {
+                relayUrl = online.optString("pushRelayUrl").trim().trimEnd('/')
+                spPush.edit().putString("relay", relayUrl).apply()
+                if (url.isEmpty() || key.isEmpty()) {
+                    if (online.optBoolean("configured")) {
+                        url = online.optString("supabaseUrl")
+                        key = online.optString("anonKey")
+                    }
                 }
             }
             if (url.isEmpty() || key.isEmpty()) {
@@ -205,12 +222,28 @@ class PushService : Service() {
                 // 站点路由在自托管模式写的是 account.id=local_user，进不了 owner 的订阅清单；
                 // 个人云网关才能写入 user_id='owner'，让 push-generate 取到并广播。
                 registerShellSubscription(userId, url.trimEnd('/'), key)
-                ConfigResult.Ok(PushConfig(url.trimEnd('/'), key, userId))
+                ConfigResult.Ok(PushConfig(url.trimEnd('/'), key, userId, relayUrl))
             }
         } catch (e: Exception) {
             Log.d(LOG_TAG, "fetchConfig error: ${e.message}")
             ConfigResult.Unreachable
         }
+    }
+
+    /**
+     * 拼出要连的 WebSocket 地址。
+     * - 没配中转：直连 Supabase Realtime；
+     * - 配了中转：只把「主机」换成中转，path 与 apikey 原样带上——中转按 path 替我们转发到 Supabase。
+     *   这样中转侧不需要知道任何密钥，客户端也只改一个主机名。
+     * 中转地址若自带路径（如 wss://host/push），则原样使用，不再拼接。
+     */
+    private fun buildWsUrl(config: PushConfig): String {
+        val directPath = "/realtime/v1/websocket?apikey=${config.anonKey}&vsn=1.0.0"
+        val relay = config.relayUrl.trim().trimEnd('/')
+        if (relay.isEmpty()) return config.supabaseUrl.replaceFirst("http", "ws") + directPath
+        val schemeEnd = relay.indexOf("://")
+        val hasOwnPath = schemeEnd >= 0 && relay.indexOf('/', schemeEnd + 3) >= 0
+        return if (hasOwnPath) relay else relay + directPath
     }
 
     /**
@@ -251,8 +284,9 @@ class PushService : Service() {
 
     /** 跑一条 WebSocket 直到断开。 */
     private fun runSocket(config: PushConfig): SocketRun {
-        val wsUrl = config.supabaseUrl.replaceFirst("http", "ws") +
-            "/realtime/v1/websocket?apikey=${config.anonKey}&vsn=1.0.0"
+        // 直连 wss://<项目>.supabase.co/... 或经中转（站点下发的 pushRelayUrl）
+        val wsUrl = buildWsUrl(config)
+        Log.d(LOG_TAG, "runSocket: mode=${if (config.relayUrl.isNotEmpty()) "relay" else "direct"}")
         val topic = "realtime:shellpush:${config.userId}"
         val lock = Object()
         var joined = false

@@ -15,13 +15,18 @@ const CACHE_HEADERS = {
 export async function GET() {
   const config = getSupabaseServerConfig();
   const anonKey = (process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "").trim();
+  // 离线推送中转地址：填了就让 App 壳改连中转（形如 wss://relay.example.com），
+  // 由中转替客户端去连 Supabase Realtime —— 把「手机跨境」这一段变成「机房跨境」。
+  // 留空则客户端照旧直连 Supabase。
+  const pushRelayUrl = (process.env.PUSH_RELAY_URL || "").trim().replace(/\/+$/, "");
   if (!config || !anonKey) {
-    return NextResponse.json({ ok: true, configured: false }, { headers: CACHE_HEADERS });
+    return NextResponse.json({ ok: true, configured: false, pushRelayUrl }, { headers: CACHE_HEADERS });
   }
   return NextResponse.json({
     ok: true,
     configured: true,
     supabaseUrl: config.url,
     anonKey,
+    pushRelayUrl,
   }, { headers: CACHE_HEADERS });
 }
