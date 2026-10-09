@@ -23,6 +23,7 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
 /**
@@ -42,6 +43,8 @@ class PushService : Service() {
         private const val CH_MESSAGES = "shell_messages"
         private const val CH_CALLS = "shell_calls"
         private const val NOTIF_FG_ID = 1
+        /** 订阅 join 的 ref（用于识别 join 回执） */
+        private const val JOIN_REF = "1"
         private var running = false
 
         fun start(context: Context) {
@@ -62,6 +65,8 @@ class PushService : Service() {
     private var msgSeq = 2
     private var notifId = 100
     private var shellSubRegistered = false
+    /** 当前常驻通知文案：只在真的变化时才 notify，避免同一状态被反复刷新。 */
+    private var currentNotifText: String? = null
 
     // 保活增强用的“活跃媒体会话”：不申请音频焦点、不实际播放任何声音，
     // 只让系统认为有个正在使用的媒体服务 → 整体存活优先级更高。
@@ -98,26 +103,71 @@ class PushService : Service() {
     }
 
     // ── 连接循环：拿配置 → 连 WS → 断线退避重连 ──
+    //
+    // 稳定性要点（针对运营商掐长连接）：
+    //  1) 配置拉取失败不能当成「未启用」——瞬时网络抖动只短暂退避，不干等 60 秒；
+    //  2) 连接活过 1 分钟就算「稳定过」，退避立刻回到最短，避免反复被掐后一路涨到 120 秒；
+    //  3) 短到 20 秒内就接回来的闪断，不改通知文案（避免刷屏），真的断了才提示。
     private fun connectionLoop() {
         var backoffSec = 5L
         while (!stopped) {
-            val config = fetchConfig()
-            if (config == null) {
-                updateKeepAlive("离线推送未启用")
-                sleepSec(60); continue
+            when (val result = fetchConfig()) {
+                is ConfigResult.NotConfigured -> {
+                    updateKeepAlive("离线推送未启用")
+                    sleepSec(60)
+                    continue
+                }
+                is ConfigResult.Unreachable -> {
+                    // 拉不到配置（网络问题，不是没配）：保持原文案，短退避后重试
+                    Log.d(LOG_TAG, "connLoop: config unreachable, retry in 15s")
+                    sleepSec(15)
+                    continue
+                }
+                is ConfigResult.Ok -> {
+                    val startedAt = System.currentTimeMillis()
+                    val run = runSocket(result.config)
+                    if (stopped) break
+                    val stable = run.aliveMs >= 60_000
+                    val disconnectedAt = System.currentTimeMillis()
+                    if (stable) backoffSec = 5L
+                    val delaySec = if (stable) 3L else backoffSec
+                    Log.d(
+                        LOG_TAG,
+                        "connLoop: joined=${run.joinedOk} alive=${run.aliveMs}ms delay=${delaySec}s backoff=${backoffSec}s (total ${System.currentTimeMillis() - startedAt}ms)",
+                    )
+                    // 闪断：先用最短延迟抢回来；只有超过 20 秒还没接上才把文案改成重连中
+                    sleepSec(delaySec)
+                    if (stopped) break
+                    if (System.currentTimeMillis() - disconnectedAt > 20_000) {
+                        updateKeepAlive("连接断开，重连中…")
+                    }
+                    if (!stable) backoffSec = (backoffSec * 2).coerceAtMost(120)
+                }
             }
-            updateKeepAlive("已连接，等待角色消息")
-            val closedNormally = runSocket(config)
-            if (stopped) break
-            Log.d(LOG_TAG, "connLoop: socket ended normal=$closedNormally, sleeping=${if (closedNormally) 3 else backoffSec}s")
-            updateKeepAlive("连接断开，重连中…")
-            sleepSec(if (closedNormally) 3 else backoffSec)
-            backoffSec = (backoffSec * 2).coerceAtMost(120)
-            if (closedNormally) backoffSec = 5
         }
     }
 
     private data class PushConfig(val supabaseUrl: String, val anonKey: String, val userId: String)
+
+    /** 配置拉取结果：区分「真的没配置」与「网络暂时不通」，两者处理方式完全不同。 */
+    private sealed class ConfigResult {
+        data class Ok(val config: PushConfig) : ConfigResult()
+        object NotConfigured : ConfigResult()
+        object Unreachable : ConfigResult()
+    }
+
+    /** 取一个站点 JSON 接口；网络异常/非 2xx 都会抛异常（由调用方决定是重试还是当成未配置）。 */
+    private fun fetchJson(path: String): JSONObject {
+        val request = Request.Builder()
+            .url("${MainActivity.SITE_URL}$path")
+            .header("Accept", "application/json")
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw IllegalStateException("HTTP ${response.code}")
+            val body = response.body?.string() ?: throw IllegalStateException("empty body")
+            return JSONObject(body)
+        }
+    }
 
     /**
      * 获取连接参数。float 自托管模式（NEXT_PUBLIC_SELF_HOSTED_MODE=true）下，
@@ -125,40 +175,43 @@ class PushService : Service() {
      * 因此壳不再强求站点 Cookie——否则免登录环境因 getCookie 为 null 永远
      * "未登录或站点不可达"，Realtime 长连接也建不起来。
      */
-    private fun fetchConfig(): PushConfig? = runCatching {
-        fun getJson(path: String): JSONObject? {
-            val request = Request.Builder()
-                .url("${MainActivity.SITE_URL}$path")
-                .header("Accept", "application/json")
-                .build()
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return null
-                return JSONObject(response.body?.string() ?: return null)
+    private fun fetchConfig(): ConfigResult {
+        return try {
+            // 离线推送的身份必须与个人云服务端一致：个人云固定 OWNER_ID="owner"，
+            // push-generate 只按 user_id=eq.owner 取订阅、广播到 shellpush:owner。
+            // 此前硬编码 local_user，导致「喊 owner / 听 local_user」频道对不上，收不到广播。
+            val userId = "owner"
+            // 优先用「float 设置里配好的 Supabase」(recordSupabase 存 SharedPreferences)，否则回退服务器 /api/online/config
+            val sp = getSharedPreferences("float_supabase", 0)
+            var url = sp.getString("url", "")?.trim().orEmpty()
+            var key = sp.getString("key", "")?.trim().orEmpty()
+            if (url.isEmpty() || key.isEmpty()) {
+                val online = try {
+                    fetchJson("/api/online/config")
+                } catch (e: Exception) {
+                    // 只是这次没连上站点——不能当成「未配置」，否则会停 60 秒并显示错的文案
+                    Log.d(LOG_TAG, "fetchConfig: /api/online/config failed: ${e.message}")
+                    return ConfigResult.Unreachable
+                }
+                if (online.optBoolean("configured")) {
+                    url = online.optString("supabaseUrl")
+                    key = online.optString("anonKey")
+                }
             }
-        }
-
-        // 离线推送的身份必须与个人云服务端一致：个人云固定 OWNER_ID="owner"，
-        // push-generate 只按 user_id=eq.owner 取订阅、广播到 shellpush:owner。
-        // 此前硬编码 local_user，导致「喊 owner / 听 local_user」频道对不上，收不到广播。
-        val userId = "owner"
-        // 优先用「float 设置里配好的 Supabase」(recordSupabase 存 SharedPreferences)，否则回退服务器 /api/online/config
-        val sp = getSharedPreferences("float_supabase", 0)
-        var url = sp.getString("url", "")?.trim().orEmpty()
-        var key = sp.getString("key", "")?.trim().orEmpty()
-        if (url.isEmpty() || key.isEmpty()) {
-            val online = runCatching { getJson("/api/online/config") }.getOrNull()
-            if (online != null && online.optBoolean("configured")) {
-                url = online.optString("supabaseUrl")
-                key = online.optString("anonKey")
+            if (url.isEmpty() || key.isEmpty()) {
+                ConfigResult.NotConfigured
+            } else {
+                // 登记走个人云网关 ai-phone-push?action=subscribe 而不是站点 /api/push/subscribe：
+                // 站点路由在自托管模式写的是 account.id=local_user，进不了 owner 的订阅清单；
+                // 个人云网关才能写入 user_id='owner'，让 push-generate 取到并广播。
+                registerShellSubscription(userId, url.trimEnd('/'), key)
+                ConfigResult.Ok(PushConfig(url.trimEnd('/'), key, userId))
             }
+        } catch (e: Exception) {
+            Log.d(LOG_TAG, "fetchConfig error: ${e.message}")
+            ConfigResult.Unreachable
         }
-        if (url.isEmpty() || key.isEmpty()) return null
-        // 登记走个人云网关 ai-phone-push?action=subscribe 而不是站点 /api/push/subscribe：
-        // 站点路由在自托管模式写的是 account.id=local_user，进不了 owner 的订阅清单；
-        // 个人云网关才能写入 user_id='owner'，让 push-generate 取到并广播。
-        registerShellSubscription(userId, url.trimEnd('/'), key)
-        PushConfig(url.trimEnd('/'), key, userId)
-    }.getOrNull()
+    }
 
     /**
      * 在【个人云】注册一条合成推送订阅（endpoint = shell:<userId>）。
@@ -193,22 +246,28 @@ class PushService : Service() {
         }
     }
 
-    /** 跑一条 WebSocket 直到断开；返回是否属于正常关闭。 */
-    private fun runSocket(config: PushConfig): Boolean {
+    /** 一条 WS 连接的运行结果：join 是否成功、以及 join 成功之后活了多久（毫秒）。 */
+    private data class SocketRun(val joinedOk: Boolean, val aliveMs: Long)
+
+    /** 跑一条 WebSocket 直到断开。 */
+    private fun runSocket(config: PushConfig): SocketRun {
         val wsUrl = config.supabaseUrl.replaceFirst("http", "ws") +
             "/realtime/v1/websocket?apikey=${config.anonKey}&vsn=1.0.0"
         val topic = "realtime:shellpush:${config.userId}"
         val lock = Object()
-        var normal = false
+        var joined = false
+        var joinedAt = 0L
         var done = false
+        // 任意下行帧都会刷新它：长时间没有任何下行说明连接已被中间设备悄悄掐断
+        val lastInbound = AtomicLong(System.currentTimeMillis())
 
         val listener = object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                Log.d(LOG_TAG, "onOpen: joined ${topic}")
+                Log.d(LOG_TAG, "onOpen: joining ${topic}")
                 val join = JSONObject()
                     .put("topic", topic)
                     .put("event", "phx_join")
-                    .put("ref", "1")
+                    .put("ref", JOIN_REF)
                     .put(
                         "payload",
                         JSONObject().put(
@@ -224,6 +283,13 @@ class PushService : Service() {
                     while (!done && !stopped) {
                         sleepSec(25)
                         if (done || stopped) break
+                        // 超过 90 秒（≈3 次心跳）没有任何下行帧 → 认为这条连接已经废了，
+                        // 主动断开重连；比等 TCP 超时（可能几分钟）快得多。
+                        if (System.currentTimeMillis() - lastInbound.get() > 90_000) {
+                            Log.d(LOG_TAG, "heartbeat: no inbound for 90s, forcing reconnect")
+                            runCatching { webSocket.cancel() }
+                            break
+                        }
                         runCatching {
                             webSocket.send(
                                 JSONObject()
@@ -239,9 +305,29 @@ class PushService : Service() {
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                lastInbound.set(System.currentTimeMillis())
                 runCatching {
                     val msg = JSONObject(text)
-                    if (msg.optString("event") != "broadcast") return
+                    val event = msg.optString("event")
+
+                    // join 回执：只有 status=ok 才算真的订阅成功（否则界面会假「已连接」而实际收不到消息）
+                    if (event == "phx_reply" && msg.optString("ref") == JOIN_REF) {
+                        val status = msg.optJSONObject("payload")?.optString("status")
+                        if (status == "ok") {
+                            joined = true
+                            joinedAt = System.currentTimeMillis()
+                            Log.d(LOG_TAG, "join ok: $topic")
+                            updateKeepAlive("已连接，等待角色消息")
+                        } else {
+                            Log.d(LOG_TAG, "join rejected: status=$status")
+                        }
+                        return
+                    }
+                    if (event == "phx_error" || event == "phx_close") {
+                        Log.d(LOG_TAG, "$event on $topic")
+                        return
+                    }
+                    if (event != "broadcast") return
                     val payload = msg.optJSONObject("payload") ?: return
                     if (payload.optString("event") != "notify") return
                     val body = payload.optJSONObject("payload") ?: return
@@ -276,7 +362,6 @@ class PushService : Service() {
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 Log.d(LOG_TAG, "onClosed: code=$code reason=$reason")
-                normal = true
                 synchronized(lock) { done = true; lock.notifyAll() }
             }
 
@@ -295,7 +380,7 @@ class PushService : Service() {
         }
         socket?.cancel()
         socket = null
-        return normal
+        return SocketRun(joined, if (joined) System.currentTimeMillis() - joinedAt else 0L)
     }
 
     // ── 通知 ──
@@ -337,7 +422,10 @@ class PushService : Service() {
             .setPriority(NotificationCompat.PRIORITY_MIN)
             .build()
 
+    /** 更新常驻通知文案。文案没变就不重复 notify，避免同一状态反复刷新。 */
     private fun updateKeepAlive(text: String) {
+        if (text == currentNotifText) return
+        currentNotifText = text
         getSystemService(NotificationManager::class.java)
             .notify(NOTIF_FG_ID, buildKeepAliveNotification(text))
     }
