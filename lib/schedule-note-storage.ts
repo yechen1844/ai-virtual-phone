@@ -205,13 +205,20 @@ export function resolveStateNoteEnd(note: ScheduleNote): number {
  * 生成注入到角色上下文的日程便签块。
  * 即使一条便签都没有也会返回一小段——常驻的出现本身就是「你有这个功能」的提醒，
  * 否则角色永远不会主动去记第一条。
+ * 注意：便签记的永远是「对方的」日程，块头必须写明归属，否则角色会把它当成自己的安排。
  */
-export function buildScheduleNotePromptBlock(characterId: string, now = new Date()): string {
+export function buildScheduleNotePromptBlock(
+    characterId: string,
+    now = new Date(),
+    userName?: string,
+): string {
+    const forWhom = userName?.trim() || "对方";
+    const header = `[日程便签·关于${forWhom}]`;
     const notes = loadScheduleNotesByCharacter(characterId).filter(note => !note.done);
     if (notes.length === 0) {
         return [
-            "[日程便签]",
-            "（现在没有记下的日程。听到对方提到跟时间有关的事——几点要做什么、还有多久下课、正在做什么、要提醒什么——就用「记录日程」记一条，之后每轮会自动帮你算还差多久。）",
+            header,
+            `（现在没有记下的日程。这里记的是${forWhom}的时间安排，不是你自己的事；听到${forWhom}提到跟时间有关的事——几点要做什么、还有多久下课、正在做什么、要提醒什么——就用「记录日程」记一条，之后每轮会自动帮你算还差多久。）`,
             "[/日程便签]",
         ].join("\n");
     }
@@ -228,10 +235,10 @@ export function buildScheduleNotePromptBlock(characterId: string, now = new Date
         if (note.kind === "state") {
             const endMs = resolveStateNoteEnd(note);
             if (nowMs < atMs) {
-                lines.push(`· ${note.title}（状态事件）—— ${clock} 开始，距离现在还有 ${formatDurationLabel(atMs - nowMs)}`);
+                lines.push(`· ${forWhom}「${note.title}」（状态事件）—— ${clock} 开始，距离现在还有 ${formatDurationLabel(atMs - nowMs)}`);
             } else {
                 const endLabel = `预计 ${formatClockLabel(new Date(endMs).toISOString(), now)} 结束`;
-                lines.push(`· ${note.title}（状态事件）—— 从 ${clock} 开始，已进行 ${formatDurationLabel(nowMs - atMs)}，${endLabel}`);
+                lines.push(`· ${forWhom}「${note.title}」（状态事件）—— 从 ${clock} 开始，已进行 ${formatDurationLabel(nowMs - atMs)}，${endLabel}`);
             }
             continue;
         }
@@ -239,19 +246,19 @@ export function buildScheduleNotePromptBlock(characterId: string, now = new Date
         if (nowMs < atMs) {
             const suffix = note.kind === "reminder" ? "到点你会主动发消息提醒" : "";
             lines.push(
-                `· ${note.title}（${kindLabel}）—— ${clock}，距离现在还有 ${formatDurationLabel(atMs - nowMs)}${suffix ? `，${suffix}` : ""}`,
+                `· ${forWhom}「${note.title}」（${kindLabel}）—— ${clock}，距离现在还有 ${formatDurationLabel(atMs - nowMs)}${suffix ? `，${suffix}` : ""}`,
             );
         } else {
             // 还没被 sweep 处理（例如刚过点），照实说明已经过去了
-            lines.push(`· ${note.title}（${kindLabel}）—— ${clock} 已经过去 ${formatDurationLabel(nowMs - atMs)}`);
+            lines.push(`· ${forWhom}「${note.title}」（${kindLabel}）—— ${clock} 已经过去 ${formatDurationLabel(nowMs - atMs)}`);
         }
     }
 
     if (lines.length === 0) return "";
     return [
-        "[日程便签]",
+        header,
+        `（这些都是你替${forWhom}记下的时间安排，说的是${forWhom}的事，不是你自己的日程。请严格按它理解${forWhom}的时间线：没到点的事不要当成已经发生，进行中的事要按已进行时长理解，不要凭空跳到之后。）`,
         ...lines,
-        "（这些是你自己记下的时间线，请严格按它理解时间：没到点的事不要当成已经发生，进行中的事要按已进行时长理解，不要凭空跳到之后。）",
         "[/日程便签]",
     ].join("\n");
 }
@@ -306,21 +313,23 @@ export function sweepScheduleNotes(now = new Date()): ScheduleNoteSweep {
 }
 
 /** 瞬间/未来事件到点后写进聊天记录的那条一次性提示。 */
-export function buildInstantNoticeText(note: ScheduleNote, now = new Date()): string {
+export function buildInstantNoticeText(note: ScheduleNote, now = new Date(), userName?: string): string {
+    const forWhom = userName?.trim() || "对方";
     const atLabel = formatClockLabel(note.at, now);
-    const late = formatDurationLabel(now.getTime() - new Date(note.at).getTime());
-    return `[日程便签] ${note.title} —— ${atLabel} 已经到了（你之前记下过这件事，现在它已经发生/开始了，不要再当成还没到）`;
+    return `[日程便签·关于${forWhom}] ${forWhom}「${note.title}」—— ${atLabel} 已经到了（你之前替${forWhom}记下过这件事，现在它已经发生/开始了，不要再当成还没到）`;
 }
 
 /** 状态事件结束后的那条提示。 */
-export function buildStateEndNoticeText(note: ScheduleNote, now = new Date()): string {
+export function buildStateEndNoticeText(note: ScheduleNote, now = new Date(), userName?: string): string {
+    const forWhom = userName?.trim() || "对方";
     const start = formatClockLabel(note.at, now);
-    return `[日程便签] ${note.title} —— 已经结束（从 ${start} 开始，持续了 ${formatDurationLabel(now.getTime() - new Date(note.at).getTime())}）`;
+    return `[日程便签·关于${forWhom}] ${forWhom}「${note.title}」—— 已经结束（从 ${start} 开始，持续了 ${formatDurationLabel(now.getTime() - new Date(note.at).getTime())}）`;
 }
 
 /** 提醒事件触发时喂给模型的上下文块。 */
-export function buildReminderContext(note: ScheduleNote, now = new Date()): string {
+export function buildReminderContext(note: ScheduleNote, now = new Date(), userName?: string): string {
+    const forWhom = userName?.trim() || "对方";
     const atLabel = formatClockLabel(note.at, now);
     const late = formatDurationLabel(now.getTime() - new Date(note.at).getTime());
-    return `⏰ 日程提醒：${note.title}（你在 ${atLabel} 记下的，现在到点了，已过 ${late}）`;
+    return `⏰ 日程提醒：${forWhom}「${note.title}」（这是你替${forWhom}记下的事，不是你自己的安排；你在 ${atLabel} 记下它，现在到点了，已过 ${late}）`;
 }

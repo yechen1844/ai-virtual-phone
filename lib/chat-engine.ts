@@ -1946,7 +1946,7 @@ export async function buildChatPromptMessages(
         && !(effectiveAppTags ?? []).includes("story")
         && !(effectiveAppTags ?? []).includes("vn")
         && getInternalCapability(SCHEDULE_NOTE_CAPABILITY_ID)?.enabled
-        ? buildScheduleNotePromptBlock(character.id, now)
+        ? buildScheduleNotePromptBlock(character.id, now, userIdentity?.name)
         : "";
     const { recentBlocks, truncatedHistory, wbActivationContext, unifiedRecentItems } = prepareShortTermContext(character.id, resolvedAppId, {
         history: historyForPrompt,

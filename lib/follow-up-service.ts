@@ -29,7 +29,7 @@ import {
     suppressIdleReconnectUntil,
     type IdleReconnectRule,
 } from "./idle-reconnect-storage";
-import { loadFollowUpConfig } from "./settings-storage";
+import { loadFollowUpConfig, resolveUserIdentity } from "./settings-storage";
 import { parseAIResponse } from "./rich-message-parser";
 import type { ParsedMessagePart } from "./rich-message-parser";
 import { getStatusRegionConfig, isCustomStatusRegionActive } from "./chat-status-region";
@@ -421,6 +421,15 @@ function pollTimedWakeSchedules(now: number) {
 
 const scheduleReminderFiringSet = new Set<string>();
 
+/** 便签记的是「对方（user）」的日程：取会话里用户的显示名，用于在提示里标明归属。 */
+function resolveNoteOwnerName(session: { contactId: string }): string {
+    try {
+        return resolveUserIdentity(session.contactId, "chat")?.name?.trim() || "对方";
+    } catch {
+        return "对方";
+    }
+}
+
 function pollScheduleNotes(now: number) {
     const sweep = sweepScheduleNotes(new Date(now));
     const hasWork = sweep.instantNotices.length > 0 || sweep.stateNotices.length > 0 || sweep.reminders.length > 0;
@@ -438,10 +447,13 @@ function pollScheduleNotes(now: number) {
     for (const note of [...sweep.instantNotices, ...sweep.stateNotices]) {
         const session = resolveSession(note);
         if (!session) continue;
+        const ownerName = resolveNoteOwnerName(session);
         pushChatMessage({
             sessionId: session.id,
             role: "system",
-            content: instantIds.has(note.id) ? buildInstantNoticeText(note) : buildStateEndNoticeText(note),
+            content: instantIds.has(note.id)
+                ? buildInstantNoticeText(note, new Date(now), ownerName)
+                : buildStateEndNoticeText(note, new Date(now), ownerName),
         });
     }
 
@@ -467,7 +479,7 @@ async function fireScheduleReminder(note: ScheduleNote, sessionId: string) {
 
         const rounds = await generateBackgroundCompletionRounds(session, latestMessages, {
             appTags: ["chat", "text", "schedule_reminder"],
-            scheduleReminderContext: buildReminderContext(note),
+            scheduleReminderContext: buildReminderContext(note, new Date(), resolveNoteOwnerName(session)),
         });
 
         if (isBackgroundGenerationCancelled(session.id)) {

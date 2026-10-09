@@ -2330,6 +2330,14 @@ async function executeScheduleNoteTool(call: ToolCall, context?: ToolExecutionCo
     const characterId = context.characterId;
     const sessionId = context.sessionId || "";
     const now = new Date();
+    // 便签记的是「对方（user）」的日程：回执里带上归属，避免角色把它当成自己的安排
+    const ownerName = (() => {
+        try {
+            return resolveUserIdentity(characterId, "chat")?.name?.trim() || "对方";
+        } catch {
+            return "对方";
+        }
+    })();
 
     try {
         switch (call.name) {
@@ -2371,7 +2379,7 @@ async function executeScheduleNoteTool(call: ToolCall, context?: ToolExecutionCo
                 return {
                     name: "记录日程",
                     success: true,
-                    data: `已记下（id=${saved.id}）：${SCHEDULE_NOTE_KIND_LABELS[saved.kind]}「${saved.title}」，${resolveScheduleNoteTarget(saved, now)}。`,
+                    data: `已记下${SCHEDULE_NOTE_KIND_LABELS[saved.kind]}「${saved.title}」（这是${ownerName}的日程，不是你自己的）：${resolveScheduleNoteTarget(saved, now)}，id=${saved.id}。`,
                     continueConversation: false,
                     persistToHistory: false,
                     userNotice: `已记下日程：${saved.title}`,
@@ -2458,7 +2466,7 @@ async function executeScheduleNoteTool(call: ToolCall, context?: ToolExecutionCo
                 return {
                     name: "列出日程",
                     success: true,
-                    data: `当前共有 ${notes.length} 条日程便签：\n${lines.join("\n")}`,
+                    data: `当前共有 ${notes.length} 条日程便签（都是关于${ownerName}的，不是你自己的）：\n${lines.join("\n")}`,
                     continueConversation: false,
                     persistToHistory: false,
                     userNotice: `共 ${notes.length} 条日程便签`,

@@ -312,6 +312,8 @@ const SCHEDULE_NOTE_USAGE_GUIDE = [
     "用途：把{{user}}提到的、跟时间有关的事记成便签。系统会在每轮对话里自动帮你把便签换算成「还有多久 / 已经进行多久」，并在到点时按类型提醒你。",
     "这样你就不会把还没发生的事当成已经发生，也不会在只过了几分钟的时候就跳到「吃完饭了 / 下课了」。",
     "",
+    "重要：便签记的都是{{user}}的事——{{user}}什么时候要做什么、{{user}}正在做什么、要提醒{{user}}什么。它不是你自己的日程，不要把自己要做的事记进去，也不要把便签里的安排当成你自己的安排。",
+    "",
     "执行时必须使用下面的具体动作名，不要输出“日程便签”本身。",
     "",
     "四种类型（kind，记录时必填）：",
@@ -358,6 +360,7 @@ const SCHEDULE_NOTE_USAGE_GUIDE = [
     "[执行动作:列出日程({})]",
     "",
     "注意：",
+    "- 便签记的永远是{{user}}的事，不是你自己的日程；不要把便签内容当成你自己要做的事去执行。",
     "- 只要{{user}}的话里出现了时间安排，就先记录，不要凭记忆估算。",
     "- 跨零点的结束时间直接写 \"00:00\"（夜里十二点）即可，系统会自动按次日处理，不要改成别的时刻。",
     "- state 的开始时间可以是今天已经过去的时刻（例如现在 13 点、{{user}}说“我十二点开始吃饭了”），写 \"12:00\" 就会被当成今天。",
@@ -652,7 +655,7 @@ const SCHEDULE_NOTE_RECORD_SCHEMA = JSON.stringify({
     type: "object",
     properties: {
         kind: { type: "string", enum: SCHEDULE_NOTE_KIND_ENUM, description: "事件类型：instant 瞬间事件（到点即结束，如上课下课）/ state 状态事件（会持续一段时间，如吃饭中、上课中）/ reminder 提醒事件（到点你要主动发消息提醒）/ future 未来事件（还没到的安排）" },
-        title: { type: "string", description: "一句话描述这件事，不要写时间。例如「下课」「吃饭」「提醒对方吃药」" },
+        title: { type: "string", description: "一句话描述对方的这件事，不要写时间。例如「下课」「吃饭」「提醒对方吃药」" },
         at: { type: "string", description: "事件时间。可用 \"HH:MM\"（今天该时刻，已过则算明天，如 \"10:40\"）、\"YYYY-MM-DD HH:MM\"、或相对写法 \"+40m\" / \"+2h\" / \"+40\"（分钟后）" },
         until: { type: "string", description: "仅 state：预计结束时间，写法同 at。填了就在到点时自动结束" },
         expireMinutes: { type: "number", description: "仅 state：说不准持续多久时的兜底时长（分钟），默认 240" },
@@ -688,7 +691,7 @@ const SCHEDULE_NOTE_LIST_SCHEMA = JSON.stringify({ type: "object", properties: {
 const SCHEDULE_NOTE_SUBTOOLS: InternalToolDefinition[] = [
     {
         name: "记录日程",
-        description: "把{{user}}提到的、跟时间有关的事记成便签（未来要做的、正在进行的状态、要到点提醒的事）。到点后系统会按类型处理。",
+        description: "把{{user}}提到的时间安排记成便签（{{user}}要做的、正在进行的状态、要到点提醒{{user}}的事）。记的是{{user}}的事，不是你自己的日程。到点后系统会按类型处理。",
         parameterSchema: SCHEDULE_NOTE_RECORD_SCHEMA,
     },
     {
@@ -1403,7 +1406,7 @@ const BUILTIN_INTERNAL_CAPABILITIES: InternalCapabilityConfig[] = [
     {
         id: SCHEDULE_NOTE_CAPABILITY_ID,
         name: "日程便签",
-        description: "记录并跟踪{{user}}的日程与时间安排。只要{{user}}的话里出现跟时间有关的信息（「我一点半要坐火车」「还有四十分钟下课」「我去吃饭了」「提醒我吃药」「明天九点面试」），就先用这里的动作把它记下来——系统之后每轮都会把这些换算成「还有多久 / 已经进行多久」告诉你，避免你把还没发生的事当成已经发生、把进行中的事当成已经结束。",
+        description: "记录并跟踪{{user}}的日程与时间安排（记的是{{user}}的事，不是你自己的日程，别弄混）。只要{{user}}的话里出现跟时间有关的信息（「我一点半要坐火车」「还有四十分钟下课」「我去吃饭了」「提醒我吃药」「明天九点面试」），就先用这里的动作把它记下来——系统之后每轮都会把这些换算成「还有多久 / 已经进行多久」告诉你，避免你把还没发生的事当成已经发生、把进行中的事当成已经结束。",
         enabled: true,
         mode: "auto",
         createdAt: 0,
