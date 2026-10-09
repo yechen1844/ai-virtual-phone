@@ -1311,7 +1311,11 @@ function OfflinePushSettingsPage({ onBack }: { onBack: () => void }) {
             consecutiveCount: 0,
             createdAt: Date.now(),
         };
+        // 每角色只保留一条（upsert 会替换同角色的旧规则）。被替换掉的那条在服务端
+        // 还挂着排期任务，不撤就会变成"前端看不到、却在继续发消息"的幽灵链。
+        const replaced = loadIdleReconnectRules().filter(item => item.characterId === tmCharId);
         upsertIdleReconnectRule(rule);
+        for (const old of replaced) void cancelBailoutPrefix(`idle:${old.id}:`);
         setTmBusy(true);
         setTmHint("已保存本地规则，正在预约离线推送...");
         const armResult = await armIdleReconnectBailout(rule);
