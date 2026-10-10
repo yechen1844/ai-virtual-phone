@@ -641,9 +641,7 @@
 
 .chat-input-bar {
   position: absolute;
-  /* 键盘抬起时由 useChatKeyboardInset 写上遮挡高度，把整条输入栏抬到键盘上方；
-     键盘收起时变量被移除，回落到 0（原行为）。 */
-  bottom: var(--chat-keyboard-inset, 0px);
+  bottom: 0;
   left: 0;
   right: 0;
   z-index: 10;
