@@ -39,10 +39,19 @@ export function KbProbe() {
             const narrow = window.matchMedia("(max-width: 500px)").matches;
             const kbTop = vv ? Math.round(vv.offsetTop + vv.height) : -1;
             const barBottom = bar ? Math.round(bar.getBoundingClientRect().bottom) : -1;
+            // 当前实际加载的构建号：从 <script> 里读 Next 的 layout chunk 文件名。
+            // 和线上最新哈希对比即可确认「改动到底有没有到这台设备」。
+            const scriptSrc = Array.from(document.querySelectorAll<HTMLScriptElement>("script[src]"))
+                .map(item => item.src)
+                .find(src => /\/_next\/static\/chunks\/app\/layout-/.test(src)) || "";
+            const build = (scriptSrc.match(/layout-[a-f0-9]+/) || ["(未知)"])[0];
+            // 输入栏实际生效的 backdrop-filter：能直接证明新样式有没有落地。
+            const bf = bar ? (getComputedStyle(bar).backdropFilter || "none") : "(无输入栏)";
             setText(
                 `ih=${window.innerHeight} vv=${vv ? Math.round(vv.height) : -1} ot=${vv ? Math.round(vv.offsetTop) : -1} doc=${root.clientHeight}\n`
                 + `narrow=${narrow} coarse=${coarse} lift=${lift || "0"}\n`
-                + `barBottom=${barBottom} kbTop=${kbTop} 压住=${barBottom >= 0 && kbTop >= 0 ? barBottom - kbTop : "-"}`,
+                + `barBottom=${barBottom} kbTop=${kbTop} 压住=${barBottom >= 0 && kbTop >= 0 ? barBottom - kbTop : "-"}\n`
+                + `build=${build} bf=${bf}`,
             );
         };
 
