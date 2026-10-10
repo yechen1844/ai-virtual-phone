@@ -641,7 +641,9 @@
 
 .chat-input-bar {
   position: absolute;
-  bottom: 0;
+  /* 键盘抬起时由 useChatKeyboardInset 写上遮挡高度，把整条输入栏抬到键盘上方；
+     键盘收起时变量被移除，回落到 0（原行为）。 */
+  bottom: var(--chat-keyboard-inset, 0px);
   left: 0;
   right: 0;
   z-index: 10;
@@ -731,6 +733,14 @@
 
 .chat-input-bar .chat-input-actions .ui-bare-btn {
   font-size: 0;
+  /* 点按即时反馈：这些图标按钮原先没有任何按下态，点下去到消息出现之间毫无回应，
+     显得"卡手"。给一个极短的缩放/变暗，touchstart 当帧就画出来。 */
+  transition: transform 0.08s ease-out, opacity 0.08s ease-out;
+}
+
+.chat-input-bar .chat-input-actions .ui-bare-btn:active {
+  transform: scale(0.9);
+  opacity: 0.55;
 }
 
 .chat-input-bar .chat-input-actions svg {

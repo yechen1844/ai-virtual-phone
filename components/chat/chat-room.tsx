@@ -23,6 +23,7 @@ import { sendBrowserNotification } from "@/lib/browser-notification";
 import { dispatchChatMessageNotice } from "@/lib/chat-notification-events";
 import { shouldSendChatInputOnEnter } from "@/lib/chat-input-keyboard";
 import { useChatBottomReserve } from "./use-chat-bottom-reserve";
+import { useChatKeyboardInset } from "./use-chat-keyboard-inset";
 import ReactMarkdown from "react-markdown";
 import rehypeRaw from "rehype-raw";
 import remarkGfm from "remark-gfm";
@@ -1381,6 +1382,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
         scrollRef,
         `${session.id}:${offlineMode}:${isMultiSelectMode}:${showEmojiPanel}:${showStickerPanel}:${showPlusMenu}:${theaterMode}:${!!quotingMessage}`,
     );
+    // 键盘抬起时把输入栏 bottom 抬到键盘上方，避免发送按钮被压住半截
+    useChatKeyboardInset(wrapperRef);
 
     const selectStoredMessageWindow = useCallback((allMsgs: ChatMessage[]) => {
         if (allMsgs.length <= INITIAL_LOAD) {
