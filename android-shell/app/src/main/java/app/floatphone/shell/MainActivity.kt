@@ -29,6 +29,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -106,6 +107,16 @@ class MainActivity : AppCompatActivity() {
         webView = WebView(this)
         webViewRef = webView
         setContentView(webView)
+        // 把键盘高度落成 WebView 的底部内边距：WebView 的内容区（= 网页的布局视口）会随键盘收窄，
+        // 于是网页能像普通浏览器一样原生贴合键盘，不再需要 JS 去搬整个界面
+        //（那套 --mobile-keyboard-lift 既卡、又因键盘升降是动画而时序敏感，实测会随机差几十像素）。
+        // 注意：edge-to-edge（decorFitsSystemWindows=false）下系统不会自动应用这些 inset，
+        // 必须先声明「我不自己处理」再手动应用；只取 IME，不动状态栏/导航栏（那些由沉浸式隐藏）。
+        ViewCompat.setOnApplyWindowInsetsListener(webView) { view, insets ->
+            val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+            view.setPadding(0, 0, 0, imeBottom)
+            insets
+        }
         // 一进界面就沉浸（不等 onWindowFocusChanged），避免初始一帧露出状态栏/导航栏
         window.decorView.post { hideSystemBars() }
 

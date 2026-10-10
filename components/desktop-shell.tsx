@@ -935,6 +935,9 @@ function useAndroidCaretKeyboardLift() {
     let focusedElement: HTMLElement | null = null;
     let raf = 0;
     let currentLift = 0;
+    // 键盘关闭时的布局视口高度基线（本 effect 在应用启动、键盘关闭时建立）：
+    // 用来判断「布局视口是否已经随键盘原生收窄」。
+    let maxInnerHeight = window.innerHeight;
 
     const applyLift = (nextLift: number) => {
       const rounded = Math.max(0, Math.round(nextLift));
@@ -959,6 +962,15 @@ function useAndroidCaretKeyboardLift() {
       const keyboardInset = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
 
       if (keyboardInset < 80) {
+        applyLift(0);
+        return;
+      }
+
+      // 自停：若布局视口本身已经随键盘收窄（新壳把键盘高度落成 WebView 底部内边距，
+      // 或浏览器 resizes-content 生效），说明原生布局已经正确 —— 此时若再上移整个界面，
+      // 会和原生收窄叠加、把输入栏顶到键盘上方老远。所以这里直接不插手。
+      maxInnerHeight = Math.max(maxInnerHeight, window.innerHeight);
+      if (maxInnerHeight - window.innerHeight > 80) {
         applyLift(0);
         return;
       }
