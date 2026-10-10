@@ -979,24 +979,37 @@ function useAndroidCaretKeyboardLift() {
       raf = window.requestAnimationFrame(update);
     };
 
+    // 键盘升降是动画过程：中途读到的视口高度是过渡值，按它算出的上移量会差一截；
+    // 而键盘停稳后又不保证还有事件触发 → 曾出现「压住=61」这种一直差一点、
+    // 「有时正常有时不正常」的情况。这里每次触发都补几次延迟重算，覆盖停稳后的最终位置。
+    const settleTimers: number[] = [];
+    const scheduleSettle = () => {
+      while (settleTimers.length) window.clearTimeout(settleTimers.pop());
+      for (const delay of [80, 220, 480, 800]) {
+        settleTimers.push(window.setTimeout(() => { if (focusedElement) requestUpdate(); }, delay));
+      }
+    };
+
     const handleFocusIn = (event: FocusEvent) => {
       const target = event.target;
       if (!isKeyboardEditableElement(target)) return;
       focusedElement = target;
       requestUpdate();
+      scheduleSettle();
     };
 
     const handleFocusOut = () => {
       focusedElement = null;
+      while (settleTimers.length) window.clearTimeout(settleTimers.pop());
       applyLift(0);
     };
 
     const handleCaretMove = () => {
-      if (focusedElement) requestUpdate();
+      if (focusedElement) { requestUpdate(); scheduleSettle(); }
     };
 
     const handleViewportChange = () => {
-      if (focusedElement) requestUpdate();
+      if (focusedElement) { requestUpdate(); scheduleSettle(); }
     };
 
     document.addEventListener("focusin", handleFocusIn);
@@ -1009,6 +1022,7 @@ function useAndroidCaretKeyboardLift() {
 
     return () => {
       if (raf) window.cancelAnimationFrame(raf);
+      while (settleTimers.length) window.clearTimeout(settleTimers.pop());
       document.removeEventListener("focusin", handleFocusIn);
       document.removeEventListener("focusout", handleFocusOut);
       document.removeEventListener("click", handleCaretMove, true);
