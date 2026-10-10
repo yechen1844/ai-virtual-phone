@@ -34,6 +34,8 @@ import {
     type IdleReconnectRule,
 } from "./idle-reconnect-storage";
 import { loadCharacters } from "./character-storage";
+import { resolveUserIdentity } from "./settings-storage";
+import { buildReminderContext, type ScheduleNote } from "./schedule-note-storage";
 import type { RegexConfig } from "./settings-types";
 import type { LLMMessage } from "./llm-prompt-assembler";
 
@@ -538,6 +540,62 @@ export async function armTimedWakeBailout(schedule: TimedWakeSchedule): Promise<
         return posted ? { ok: true } : { ok: false, reason: "服务端预约接口没有确认成功" };
     } catch (err) {
         console.warn("[PushBailout] timed wake arm failed:", err);
+        return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+}
+
+/** 日程便签「提醒事件」离线兜底：到点前把生成快照预约到服务端，App 被杀时由服务端
+ *  到点接管生成并推送——复用「稍后主动联系」同一条 timed_task 通道。触发键 snote:<便签 id>。 */
+export async function armScheduleReminderBailout(note: ScheduleNote): Promise<BailoutArmResult> {
+    if (note.kind !== "reminder" || note.done) return { ok: false, reason: "只有未归档的提醒事件需要离线兜底" };
+    if (!bailoutEnabled()) return { ok: false, reason: "当前环境不支持服务端离线预约" };
+    try {
+        if (!(await hasAccountPushSubscription()) && !isShellLike()) return { ok: false, reason: "当前账号没有可用的离线推送订阅" };
+        const fireMs = Date.parse(note.at);
+        if (!Number.isFinite(fireMs)) return { ok: false, reason: "提醒时间无效" };
+        if (isWithinPushQuietHours(fireMs)) return { ok: false, reason: "触发时间落在推送安静时段内" };
+        const session = loadChatSessions().find(s => s.id === note.sessionId);
+        if (!session || session.isGroup || session.contactId !== note.characterId) return { ok: false, reason: "找不到对应的单聊会话" };
+        const history = loadChatMessages(session.id);
+        const ownerName = resolveUserIdentity(session.contactId, "chat")?.name?.trim() || "对方";
+
+        const { llmMessages, character, config, preset, regexes, userIdentity } = await buildChatPromptMessages(
+            session,
+            history,
+            {
+                appTags: ["chat", "text", "schedule_reminder"],
+                // 语境按预定的到点时刻烤入，服务端真在那一刻发时读起来才对
+                scheduleReminderContext: buildReminderContext(note, new Date(fireMs), ownerName),
+            },
+        );
+        maybeAppendShortcutCapability(llmMessages, { continuationAvailable: true });
+        const weixinBotId = maybeAppendWeixinChannel(llmMessages, note.characterId);
+        const request = buildProviderRequest(config, preset, toLlmRequestMessages(llmMessages));
+        const shortcutContinuation = buildOfflineShortcutContinuation(llmMessages, messages => {
+            const req = buildProviderRequest(config, preset, toLlmRequestMessages(messages));
+            return { url: req.url, headers: req.headers, body: req.body, providerKind: req.providerKind };
+        }, config.enableImageRecognition === true);
+        const posted = await postBailoutJob({
+            triggerKey: `snote:${note.id}`,
+            kind: "timed_task",
+            executeAtMs: fireMs + 15_000,
+            request,
+            notifyTitle: character.name,
+            weixinBotId,
+            shortcutContinuation,
+            merge: {
+                sessionId: session.id,
+                prevCount: 0,
+                regexes,
+                characterName: character.name,
+                userName: userIdentity?.name ?? "用户",
+                appId: "chat",
+                appTags: ["chat", "text", "schedule_reminder"],
+            },
+        });
+        return posted ? { ok: true } : { ok: false, reason: "服务端预约接口没有确认成功" };
+    } catch (err) {
+        console.warn("[PushBailout] schedule reminder arm failed:", err);
         return { ok: false, reason: err instanceof Error ? err.message : String(err) };
     }
 }

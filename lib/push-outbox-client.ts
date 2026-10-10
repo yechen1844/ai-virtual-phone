@@ -87,6 +87,17 @@ function clearTimedWakeIfHandled(triggerKey: string | null): void {
     if (timedWakeId) removeTimedWakeSchedule(timedWakeId);
 }
 
+/** 服务端替「日程便签·提醒事件」到点生成并投递后，本地便签要同步归档，
+ *  否则前台轮询会把它当成还没处理、再提醒一次。 */
+function clearScheduleNoteIfHandled(triggerKey: string | null): void {
+    if (!triggerKey?.startsWith("snote:")) return;
+    const noteId = triggerKey.slice("snote:".length).trim();
+    if (!noteId) return;
+    void import("./schedule-note-storage")
+        .then(m => m.removeScheduleNote(noteId))
+        .catch(() => undefined);
+}
+
 export async function consumeServerOutbox(options?: { silent?: boolean; force?: boolean }): Promise<void> {
     if (typeof window === "undefined") return;
     const force = options?.force === true;
@@ -247,6 +258,7 @@ export async function consumeServerOutbox(options?: { silent?: boolean; force?: 
                     const existingMessages = loadChatMessages(sessionId);
                     if (followUpIndex && existingMessages.some(m => m.role === "assistant" && m.followUpIndex === followUpIndex)) {
                         clearTimedWakeIfHandled(entry.trigger_key);
+                        clearScheduleNoteIfHandled(entry.trigger_key);
                         consumedIds.push(entry.id);
                         if (entry.trigger_key) handledTriggerKeys.add(entry.trigger_key);
                         continue;
@@ -259,6 +271,7 @@ export async function consumeServerOutbox(options?: { silent?: boolean; force?: 
                         return createdMs > armAtMs && createdMs < passStartMs;
                     })) {
                         clearTimedWakeIfHandled(entry.trigger_key);
+                        clearScheduleNoteIfHandled(entry.trigger_key);
                         consumedIds.push(entry.id);
                         if (entry.trigger_key) handledTriggerKeys.add(entry.trigger_key);
                         continue;
@@ -296,6 +309,7 @@ export async function consumeServerOutbox(options?: { silent?: boolean; force?: 
                     );
                     if (hasVisible && newCount < 10) scheduleFollowUp(sessionId, newCount, stateValues);
                     clearTimedWakeIfHandled(entry.trigger_key);
+                    clearScheduleNoteIfHandled(entry.trigger_key);
                     consumedIds.push(entry.id);
                     if (entry.trigger_key) handledTriggerKeys.add(entry.trigger_key);
                 } catch (err) {

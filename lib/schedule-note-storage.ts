@@ -85,6 +85,24 @@ function saveScheduleNotes(notes: ScheduleNote[]): void {
     kvSet(SCHEDULE_NOTES_KEY, JSON.stringify(notes));
 }
 
+// ── 提醒事件的服务端离线兜底 ─────────────────────────
+// 提醒到点时若 App 已被杀，前台 3 秒轮询不会跑，只能由服务端到点接管生成并推送。
+// 复用「稍后主动联系」同一条 timed_task 通道，触发键 snote:<便签 id>。
+// 动态引入避免模块环（push-bailout-client 会拉起 chat-engine，而本模块被多处静态引用）。
+
+function armReminderBailout(note: ScheduleNote): void {
+    if (note.kind !== "reminder" || note.done) return;
+    void import("./push-bailout-client")
+        .then(m => m.armScheduleReminderBailout(note))
+        .catch(() => undefined);
+}
+
+function cancelReminderBailout(id: string): void {
+    void import("./push-bailout-client")
+        .then(m => m.cancelBailoutKey(`snote:${id}`))
+        .catch(() => undefined);
+}
+
 export function loadScheduleNotesByCharacter(characterId: string): ScheduleNote[] {
     return loadScheduleNotes()
         .filter(note => note.characterId === characterId)
@@ -109,6 +127,7 @@ export function addScheduleNote(
     const all = loadScheduleNotes();
     all.push(note);
     saveScheduleNotes(pruneNotes(all, note.characterId));
+    armReminderBailout(note);
     return note;
 }
 
@@ -124,6 +143,9 @@ export function updateScheduleNote(
     if (patch.at !== undefined || patch.kind !== undefined) delete next.firedAt;
     all[index] = next;
     saveScheduleNotes(all);
+    // 提醒事件：重挂（同键先删后插，改时间即刷新）；不再是提醒 / 已归档则撤销
+    if (next.kind === "reminder" && !next.done) armReminderBailout(next);
+    else cancelReminderBailout(next.id);
     return next;
 }
 
@@ -132,11 +154,17 @@ export function removeScheduleNote(id: string): boolean {
     const next = all.filter(note => note.id !== id);
     if (next.length === all.length) return false;
     saveScheduleNotes(next);
+    cancelReminderBailout(id);
     return true;
 }
 
 export function clearDoneScheduleNotes(characterId: string): void {
-    saveScheduleNotes(loadScheduleNotes().filter(note => note.characterId !== characterId || !note.done));
+    const all = loadScheduleNotes();
+    const kept = all.filter(note => note.characterId !== characterId || !note.done);
+    for (const note of all) {
+        if (note.characterId === characterId && note.done && !kept.includes(note)) cancelReminderBailout(note.id);
+    }
+    saveScheduleNotes(kept);
 }
 
 function pruneNotes(notes: ScheduleNote[], characterId: string): ScheduleNote[] {
@@ -304,8 +332,13 @@ export function sweepScheduleNotes(now = new Date()): ScheduleNoteSweep {
 
         all[i] = { ...note, done: true, firedAt, updatedAt: firedAt };
         changed = true;
-        if (note.kind === "reminder") result.reminders.push(all[i]);
-        else result.instantNotices.push(all[i]);
+        if (note.kind === "reminder") {
+            // 本地已接手触发：撤销服务端兜底预约，避免两边各发一条
+            cancelReminderBailout(note.id);
+            result.reminders.push(all[i]);
+        } else {
+            result.instantNotices.push(all[i]);
+        }
     }
 
     if (changed) saveScheduleNotes(all);
