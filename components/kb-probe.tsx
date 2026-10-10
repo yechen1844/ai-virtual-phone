@@ -73,7 +73,7 @@ export function KbProbe() {
         <div
             style={{
                 position: "fixed",
-                top: 0,
+                top: "45%",
                 left: 0,
                 zIndex: 2147483647,
                 background: "rgba(0,0,0,0.82)",

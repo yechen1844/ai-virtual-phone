@@ -957,16 +957,20 @@ function useAndroidCaretKeyboardLift() {
 
       const keyboardTop = viewport.offsetTop + viewport.height;
       const keyboardInset = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
-      const targetRect = getKeyboardTargetRect(element);
-      const gap = 36;
 
       if (keyboardInset < 80) {
         applyLift(0);
         return;
       }
 
-      const naturalBottom = targetRect.bottom + currentLift;
-      const neededLift = Math.max(0, naturalBottom + gap - keyboardTop);
+      // 对准「整条输入栏」而不是光标/输入元素本身：输入栏在输入框下面还有一整排按钮
+      //（发送 / 表情 / 加号…），只让光标露出来时那排按钮仍压在键盘下（实测差 44px）。
+      // 找不到输入栏容器（设置页里的散装输入框）时退回原来的光标逻辑。
+      const bar = element.closest<HTMLElement>('[data-ui="input"]');
+      const naturalBottom = (bar
+        ? bar.getBoundingClientRect().bottom
+        : getKeyboardTargetRect(element).bottom + 36) + currentLift;
+      const neededLift = Math.max(0, naturalBottom - keyboardTop);
       applyLift(Math.min(keyboardInset, neededLift));
     };
 
