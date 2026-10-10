@@ -17,6 +17,10 @@ export const viewport: Viewport = {
   maximumScale: 1,
   userScalable: false,
   viewportFit: "cover",
+  // 键盘弹出时让浏览器把「布局视口」本身缩小（而非默认的只缩视觉视口）。
+  // 这样 fixed / height:100% 的界面（含聊天输入栏）天然跟着键盘走，无需 JS 猜键盘高度，
+  // 也就没有"输入栏被压住半截 / 追不上键盘动画"这类问题。roche（前一个小手机）用的就是这条。
+  interactiveWidget: "resizes-content",
 };
 
 export const metadata: Metadata = {
