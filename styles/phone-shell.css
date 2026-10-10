@@ -1124,10 +1124,6 @@
        .app-root 被裁掉，底部栏随之顶回可视区。上移量可在「状态栏」弹窗里按设备调节，
        让它约等于真实状态栏高度即可铺满。0 = 不上移（iOS 等能全屏的浏览器保持 0）。 */
     margin-top: calc(-1 * var(--status-bar-drop, 0px));
-    /* 键盘抬升位移：改用 2D translateY 并去掉 will-change——原写法（translate3d + will-change）
-       会让整页（含全部消息 DOM）永久常驻一个 3D 合成层，显存占用与重合成成本都高。 */
-    transform: translateY(calc(-1 * var(--mobile-keyboard-lift, 0px)));
-    transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
   }
 
   .phone-shell-wrap .phone-case {

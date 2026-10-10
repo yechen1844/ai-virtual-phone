@@ -307,6 +307,9 @@ const OFFLINE_LOAD_MORE_COUNT = 10;
 // 触发模型回复时提取的历史窗口条数：比可见/组装窗口留足余量，但远小于全量，
 // 配合 loadChatMessages(session.id, n) 的快速取尾路径，避免大会话全量重排卡顿。
 const CHAT_GEN_HISTORY_FETCH_LIMIT = 1500;
+// 发送后进入「组装提示词」等同步重活前让出主线程的时长：约等于软键盘收起动画时长，
+// 保证「点发送 → 键盘开始下落」这段动画先跑完，不被后续同步重活卡住。
+const KEYBOARD_DISMISS_YIELD_MS = 250;
 
 type PendingNativeToolCall = {
     id: string;
@@ -491,6 +494,29 @@ type ContextMenuAnchor = {
 type RenderChatMessage = ChatMessage & {
     displayProjected?: boolean;
     displaySourceId?: string;
+};
+
+/**
+ * 每条消息的显示层信息查表项：把渲染体里逐条计算的正则/归一化/隐藏判断/时间戳/
+ * 「向前回看上一条」全部前置到一次线性预处理。projectedMessages 渲染体里只做 O(1) 查表，
+ * 打字等无关状态变化不会触发重算。
+ */
+type MessageRenderInfo = {
+    displayContent: string;
+    visibleContent: string;
+    isVisualMedia: boolean;
+    isHidden: boolean;
+    hasFoldedPanel: boolean;
+    isSilentThought: boolean;
+    isStandaloneHtmlPreview: boolean;
+    isMediaBubble: boolean;
+    isEmptyBubble: boolean;
+    uiRoleValue: string;
+    selectableStoredId: string | null;
+    prevVisibleIndex: number;
+    showTime: boolean;
+    isConsecutive: boolean;
+    cardStateValues: StateValue[] | undefined;
 };
 
 type ScrollAnchorSnapshot = {
@@ -744,7 +770,9 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
         [isGroup, stickerCharacterIds, characterId],
     );
     const suggestEnabled = !inputLocked && !panelOpen && !suggestClosed && inputText.trim().length > 0;
-    const plusMenuItems = [
+    // 加号菜单项（含一堆内联 SVG）只在真正影响它的输入变化时重建，
+    // 避免每次父/自身重渲染都重建整组图标。
+    const plusMenuItems = useMemo(() => [
         { icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--c-text)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" /></svg>, label: "照片墙", onClick: () => onOpenRichModal("photo") },
         { icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--c-text)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><line x1="7" y1="8" x2="17" y2="8" /><line x1="7" y1="12" x2="14" y2="12" /><line x1="7" y1="16" x2="11" y2="16" /></svg>, label: "文字图片", onClick: () => onOpenRichModal("text_photo") },
         { icon: <AlertCircle size={22} strokeWidth={1.5} color="var(--c-text)" />, label: "系统指令", onClick: () => onOpenRichModal("system_instruction") },
@@ -765,7 +793,7 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
             label: action.label,
             onClick: () => onOpenCustomPlusAction(action),
         })),
-    ];
+    ], [isGroup, theaterMode, customPlusActions, onOpenRichModal, onToggleTheaterMode, onStartVideoCall, onStartVoiceCall, onOpenScheduleNotes, onOpenCustomPlusAction]);
 
     return (
         <div className="chat-input-bar chat-room-main-pane flex flex-col" data-ui="input">
@@ -3610,7 +3638,9 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
         // 先把这一帧交还给浏览器：让按钮点击反馈、输入区收起、键盘下落动画立刻开始，
         // 再去做组装提示词/工具表这类同步重活。否则主线程被占住，浏览器这一帧画不出来，
         // 动画只能排在重活后面 —— 体感就是"点了按钮先卡一下，然后才看到收起动画"。
-        await new Promise<void>(resolve => { window.setTimeout(resolve, 0); });
+        // 让出约一个键盘收起动画时长（~250ms）再进入 loadChatMessages / 组装提示词，
+        // 确保收起动画在重活之前完整跑完。仅推迟「何时开始算」，不改任何生成逻辑。
+        await new Promise<void>(resolve => { window.setTimeout(resolve, KEYBOARD_DISMISS_YIELD_MS); });
         try {
             // 主线程卡顿点修复：发送后无需对全量历史做 filter+sort，组装只用到最近一段窗口，
             // 用带 limit 的快速逆序取尾路径（loadChatMessages(session.id, n)），避免 2.8 万条级
@@ -4138,7 +4168,9 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
         setEditingOfflineContent(role === "user" ? turn.userContent : formatOfflineTurnXml(turn));
     };
 
-    const toggleOfflineMode = () => {
+    // 用 useCallback 稳定下列回调，使 memo 化的输入栏（ChatTextInputBar/OfflineTextInputBar）
+    // 在父组件因无关状态（如流式预览）重渲染时不必整体重建。
+    const toggleOfflineMode = useCallback(() => {
         if (!offlineMode && isGenerating) {
             showChatToast("请先等待对方回复");
             return;
@@ -4161,9 +4193,9 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
             kvSet(CHAT_OFFLINE_MODE_PREFIX + session.id, next ? "1" : "0");
             return next;
         });
-    };
+    }, [offlineMode, isGenerating, isOfflineGenerating, session.id]);
 
-    const toggleTheaterMode = () => {
+    const toggleTheaterMode = useCallback(() => {
         setShowPlusMenu(false);
         setShowEmojiPanel(false);
         setShowStickerPanel(false);
@@ -4173,12 +4205,55 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
             else kvRemove(CHAT_THEATER_MODE_PREFIX + session.id);
             return next;
         });
-    };
+    }, [session.id]);
 
-    const closeTheaterMode = () => {
+    const closeTheaterMode = useCallback(() => {
         kvRemove(CHAT_THEATER_MODE_PREFIX + session.id);
         setTheaterMode(false);
-    };
+    }, [session.id]);
+
+    const handleClearQuote = useCallback(() => setQuotingMessage(null), []);
+    const handleClosePanels = useCallback(() => {
+        setShowEmojiPanel(false);
+        setShowStickerPanel(false);
+        setShowPlusMenu(false);
+    }, []);
+    const handleCloseEmojiPanel = useCallback(() => setShowEmojiPanel(false), []);
+    const handleToggleEmojiPanel = useCallback(() => {
+        setShowEmojiPanel(prev => !prev);
+        setShowStickerPanel(false);
+        setShowPlusMenu(false);
+    }, []);
+    const handleToggleStickerPanel = useCallback(() => {
+        setShowStickerPanel(prev => !prev);
+        setShowEmojiPanel(false);
+        setShowPlusMenu(false);
+    }, []);
+    const handleTogglePlusMenu = useCallback(() => {
+        setShowPlusMenu(prev => !prev);
+        setShowEmojiPanel(false);
+        setShowStickerPanel(false);
+    }, []);
+    const handleOpenRichModal = useCallback((modal: RichModalKind) => {
+        setShowPlusMenu(false);
+        setRichModal(modal);
+    }, []);
+    const handleOpenScheduleNotes = useCallback(() => {
+        setShowPlusMenu(false);
+        setShowScheduleNotePanel(true);
+    }, []);
+    const handleStartVideoCall = useCallback(() => {
+        cancelFollowUp(session.id);
+        setShowPlusMenu(false);
+        setCallInitiator("user");
+        setShowVideoCall(true);
+    }, [session.id]);
+    const handleStartVoiceCall = useCallback(() => {
+        cancelFollowUp(session.id);
+        setShowPlusMenu(false);
+        setCallInitiator("user");
+        setShowVoiceCall(true);
+    }, [session.id]);
 
     const handleOfflineSend = (inputText: string): boolean => {
         if (isOfflineGenerating) {
@@ -5286,6 +5361,59 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
         return id;
     }, []);
 
+    // 逐条消息的显示信息查表：一次线性预处理，渲染体只做 O(1) 查表。
+    // 依赖包含所有会影响结果的输入（消息数组、显示正则的渲染函数、可选存储 id 解析、
+    // voice-call 分组、是否群聊），打字等无关状态变化不会命中重算。
+    const messageRenderInfos = useMemo<MessageRenderInfo[]>(() => {
+        const len = projectedMessages.length;
+        const infos: MessageRenderInfo[] = new Array(len);
+        // prevVisibleIdx：离当前消息最近的一条「非 voice-call 成员且非隐藏」消息下标。
+        // 只因这样的消息推进，等价于原来从 idx-1 逐个向前扫描、跳过成员/隐藏消息的反向搜索。
+        let prevVisibleIdx = -1;
+        for (let idx = 0; idx < len; idx += 1) {
+            const msg = projectedMessages[idx];
+            const isVoiceCallMember = voiceCallGroups.memberSet.has(idx);
+            const displayContent = getMessageDisplayContent(msg);
+            const uiRoleValue = uiRole(msg);
+            const isVisualMedia = isChatVisualMedia(msg);
+            const visibleContent = getChatFlowVisibleContent(msg, displayContent);
+            const isHidden = isHiddenChatFlowMessage(msg, displayContent);
+            const hasFoldedPanel = !!(msg.statusPanel || msg.innerMonologue);
+            const isSilentThought = !visibleContent && !msg.mediaType && hasFoldedPanel && msg.role !== "user";
+            const isStandaloneHtmlPreview = !msg.mediaType && isStandaloneHtmlPreviewContent(displayContent);
+            const isMediaBubble = (!!msg.mediaType && CHAT_MEDIA_BUBBLE_TYPES.has(msg.mediaType)) || isStandaloneHtmlPreview;
+            const isEmptyBubble = !isVisualMedia && !visibleContent && uiRoleValue !== "system" && !hasFoldedPanel;
+            const selectableStoredId = getSelectableStoredMessageId(msg);
+
+            const prevVisibleIndex = prevVisibleIdx;
+            if (!isVoiceCallMember && !isHidden) prevVisibleIdx = idx;
+
+            const prevVisibleMsg = prevVisibleIndex >= 0 ? projectedMessages[prevVisibleIndex] : null;
+            const showTime = shouldShowTimestamp(msg.createdAt, prevVisibleMsg?.createdAt ?? null);
+            const isConsecutive = !!prevVisibleMsg && !showTime && uiRole(prevVisibleMsg) === uiRoleValue && uiRoleValue !== "system"
+                && (!session.isGroup || prevVisibleMsg.senderCharacterId === msg.senderCharacterId);
+
+            infos[idx] = {
+                displayContent,
+                visibleContent,
+                isVisualMedia,
+                isHidden,
+                hasFoldedPanel,
+                isSilentThought,
+                isStandaloneHtmlPreview,
+                isMediaBubble,
+                isEmptyBubble,
+                uiRoleValue,
+                selectableStoredId,
+                prevVisibleIndex,
+                showTime,
+                isConsecutive,
+                cardStateValues: msg.freshStateValues ?? msg.stateValues,
+            };
+        }
+        return infos;
+    }, [projectedMessages, getMessageDisplayContent, getSelectableStoredMessageId, voiceCallGroups.memberSet, session.isGroup]);
+
     const visibleSelectableMessageIds = useMemo(() => {
         const ids: string[] = [];
         const seen = new Set<string>();
@@ -5960,32 +6088,25 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
 
                     const renderMsg = msg;
                     const isSystemInstruction = isSystemInstructionMessage(renderMsg);
-                    const bubbleDisplayContent = getMessageDisplayContent(renderMsg);
-                    let prevVisibleMsg: RenderChatMessage | null = null;
-                    for (let prevIdx = idx - 1; prevIdx >= 0; prevIdx -= 1) {
-                        if (voiceCallGroups.memberSet.has(prevIdx)) continue;
-                        const candidate = projectedMessages[prevIdx];
-                        const candidateDisplayContent = getMessageDisplayContent(candidate);
-                        if (isHiddenChatFlowMessage(candidate, candidateDisplayContent)) continue;
-                        prevVisibleMsg = candidate;
-                        break;
-                    }
-                    const showTime = shouldShowTimestamp(msg.createdAt, prevVisibleMsg?.createdAt ?? null);
-                    const isConsecutive = prevVisibleMsg && !showTime && uiRole(prevVisibleMsg) === uiRole(msg) && uiRole(msg) !== "system"
-                        && (!session.isGroup || prevVisibleMsg.senderCharacterId === msg.senderCharacterId);
+                    // 显示层信息全部来自预计算的查表（见 messageRenderInfos），渲染体只做 O(1) 读取，
+                    // 不再对每条消息实时跑显示正则/归一化/隐藏判断，也不再有 O(N²) 的向前回看。
+                    const info = messageRenderInfos[idx];
+                    const bubbleDisplayContent = info.displayContent;
+                    const showTime = info.showTime;
+                    const isConsecutive = info.isConsecutive;
                     // Hide bubbles with no visible content (empty text, stripped music tags, etc.)
-                    const visibleContent = getChatFlowVisibleContent(renderMsg, bubbleDisplayContent);
-                    const isVisualMedia = isChatVisualMedia(renderMsg);
-                    const hiddenEmpty = isHiddenChatFlowMessage(renderMsg, bubbleDisplayContent);
-                    const hasFoldedPanel = !!(renderMsg.statusPanel || renderMsg.innerMonologue);
+                    const visibleContent = info.visibleContent;
+                    const isVisualMedia = info.isVisualMedia;
+                    const hiddenEmpty = info.isHidden;
+                    const hasFoldedPanel = info.hasFoldedPanel;
                     // 内心卡片只展示本轮实际输出的状态值；旧数据没有 freshStateValues 时回退到合并快照
-                    const cardStateValues = msg.freshStateValues ?? msg.stateValues;
-                    const isSilentThought = !visibleContent && !renderMsg.mediaType && hasFoldedPanel && msg.role !== "user";
-                    const isStandaloneHtmlPreview = !renderMsg.mediaType && isStandaloneHtmlPreviewContent(bubbleDisplayContent);
-                    const isMediaBubble = (renderMsg.mediaType && CHAT_MEDIA_BUBBLE_TYPES.has(renderMsg.mediaType)) || isStandaloneHtmlPreview;
+                    const cardStateValues = info.cardStateValues;
+                    const isSilentThought = info.isSilentThought;
+                    const isStandaloneHtmlPreview = info.isStandaloneHtmlPreview;
+                    const isMediaBubble = info.isMediaBubble;
                     // Empty bubble: no visible content AND no visual media AND no folded panel.
-                    const isEmptyBubble = !isVisualMedia && !visibleContent && uiRole(msg) !== "system" && !hasFoldedPanel;
-                    const selectableStoredId = getSelectableStoredMessageId(msg);
+                    const isEmptyBubble = info.isEmptyBubble;
+                    const selectableStoredId = info.selectableStoredId;
                     const isMultiSelectable = isMultiSelectMode && !!selectableStoredId && !hiddenEmpty;
                     const isMultiSelected = !!selectableStoredId && selectedMessageIds.has(selectableStoredId);
                     const multiSelectWrapperProps = isMultiSelectable ? {
@@ -6417,8 +6538,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                     showEmojiPanel={showEmojiPanel}
                     enterToSendEnabled={enterToSendEnabled}
                     onToggleOfflineMode={toggleOfflineMode}
-                    onCloseEmojiPanel={() => setShowEmojiPanel(false)}
-                    onToggleEmojiPanel={() => { setShowEmojiPanel(!showEmojiPanel); setShowStickerPanel(false); setShowPlusMenu(false); }}
+                    onCloseEmojiPanel={handleCloseEmojiPanel}
+                    onToggleEmojiPanel={handleToggleEmojiPanel}
                     onSendText={handleOfflineSend}
                     onStopGeneration={clearOfflineGeneration}
                 />
@@ -6439,19 +6560,19 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                 showStickerPanel={showStickerPanel}
                 showPlusMenu={showPlusMenu}
                 customPlusActions={customPlusActions}
-                onClearQuote={() => setQuotingMessage(null)}
+                onClearQuote={handleClearQuote}
                 onToggleOfflineMode={toggleOfflineMode}
-                onClosePanels={() => { setShowEmojiPanel(false); setShowStickerPanel(false); setShowPlusMenu(false); }}
-	                onToggleEmojiPanel={() => { setShowEmojiPanel(!showEmojiPanel); setShowStickerPanel(false); setShowPlusMenu(false); }}
-	                onToggleStickerPanel={() => { setShowStickerPanel(!showStickerPanel); setShowEmojiPanel(false); setShowPlusMenu(false); }}
-	                onTogglePlusMenu={() => { setShowPlusMenu(!showPlusMenu); setShowEmojiPanel(false); setShowStickerPanel(false); }}
+                onClosePanels={handleClosePanels}
+	                onToggleEmojiPanel={handleToggleEmojiPanel}
+	                onToggleStickerPanel={handleToggleStickerPanel}
+	                onTogglePlusMenu={handleTogglePlusMenu}
 	                onToggleTheaterMode={toggleTheaterMode}
 	                onCloseTheaterMode={closeTheaterMode}
-	                onOpenRichModal={(modal) => { setShowPlusMenu(false); setRichModal(modal); }}
+	                onOpenRichModal={handleOpenRichModal}
                 onOpenCustomPlusAction={handleOpenCustomPlusAction}
-                onOpenScheduleNotes={() => { setShowPlusMenu(false); setShowScheduleNotePanel(true); }}
-                onStartVideoCall={() => { cancelFollowUp(session.id); setShowPlusMenu(false); setCallInitiator("user"); setShowVideoCall(true); }}
-                onStartVoiceCall={() => { cancelFollowUp(session.id); setShowPlusMenu(false); setCallInitiator("user"); setShowVoiceCall(true); }}
+                onOpenScheduleNotes={handleOpenScheduleNotes}
+                onStartVideoCall={handleStartVideoCall}
+                onStartVoiceCall={handleStartVoiceCall}
                 onSendText={handleSendText}
                 onStopGeneration={clearStuckGeneration}
                 onTriggerAIResponse={triggerAIResponse}
