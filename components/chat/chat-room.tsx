@@ -3595,6 +3595,10 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
         setGenerationLock(session.id);
         streamAccumRef.current = "";
         setStreamPreview(null);
+        // 先把这一帧交还给浏览器：让按钮点击反馈、输入区收起、键盘下落动画立刻开始，
+        // 再去做组装提示词/工具表这类同步重活。否则主线程被占住，浏览器这一帧画不出来，
+        // 动画只能排在重活后面 —— 体感就是"点了按钮先卡一下，然后才看到收起动画"。
+        await new Promise<void>(resolve => { window.setTimeout(resolve, 0); });
         try {
             // 主线程卡顿点修复：发送后无需对全量历史做 filter+sort，组装只用到最近一段窗口，
             // 用带 limit 的快速逆序取尾路径（loadChatMessages(session.id, n)），避免 2.8 万条级
