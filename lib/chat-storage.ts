@@ -589,9 +589,12 @@ export function getSortedSessionMessages(sessionId: string): ChatMessage[] {
 }
 
 function getNextMessageOrder(sessionId: string): number {
+    // 只在**本会话**的消息里求最大 order。原实现遍历的是全局 _messagesCache
+    //（所有会话的所有消息，量级可达数万条），而每落库一条消息都会调用一次，
+    // 于是变成随总消息量线性增长的同步阻塞。getSortedSessionMessages 有会话级缓存，
+    // 这里等价但只扫本会话。
     let maxOrder = -1;
-    for (const msg of _messagesCache) {
-        if (msg.sessionId !== sessionId) continue;
+    for (const msg of getSortedSessionMessages(sessionId)) {
         const order = getStableMessageOrder(msg);
         if (order !== null && order > maxOrder) maxOrder = order;
     }

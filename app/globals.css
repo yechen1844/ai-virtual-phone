@@ -574,12 +574,8 @@
 }
 
 /* ---------------- 键盘开合黑闪防护 ---------------- */
-/* 软键盘弹出/收起会触发视口 resize，WebView 在这瞬间把带 backdrop-filter
-   （毛玻璃）的层重合成黑色，导致整屏黑闪一下。这里在键盘期间（<html> 带
-   kb-open）临时禁用所有 backdrop-filter，收起后自动恢复，肉眼几乎无感。 */
-html.kb-open,
-html.kb-open * {
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
-}
+/* 注：原「键盘期间禁用所有 backdrop-filter」的全量通配规则已删除。
+   那条是当年为键盘黑闪加的补丁（`html.kb-open *` 会在键盘每次开合时对文档里
+   每个元素强制重算重绘滤镜，是「聊得越久越卡」的直接来源），而后确认黑闪的
+   真实成因在打包侧，与滤镜无关。 */
 

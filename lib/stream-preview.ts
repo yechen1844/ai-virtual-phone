@@ -42,6 +42,34 @@ export function splitStreamPreviewSegments(text: string): string[] {
     return text.split(/\n\n+/).map(seg => seg.trim()).filter(Boolean);
 }
 
+/** 流式预览节流器：把「每帧对累积全文重解析 + setState」降到约 intervalMs 一次。
+ *
+ *  背景：rAF 只保证「一帧最多一次」，但流式期间每帧都要对「已累积的全部文本」跑一遍
+ *  解析（净化/群聊逐行正则/线下 XML），单帧成本随文本变长线性上升，等于每秒 60 次
+ *  越来越贵的重算 + 整棵聊天组件重渲染 → 表现为「越写越卡、一顿一顿」。
+ *
+ *  行为：距上次执行不足 intervalMs 时直接丢弃这次调度（后续增量很快会再进来）；
+ *  刻意不用「尾帧定时器」补救——那会在生成结束、预览已清空之后又补一次 setState，
+ *  反而容易闪出陈旧预览。预览只是「正在打字」的临时呈现，最终正文由落库消息给出。 */
+export function createStreamPreviewThrottle(intervalMs = 100) {
+    let lastAt = 0;
+
+    return {
+        schedule(run: () => void): void {
+            const now = performance.now();
+            if (now - lastAt < intervalMs) return;
+            lastAt = now;
+            run();
+        },
+        /** 段落切换 / 停止生成 / 卸载时调用，让下一次调度立即生效。 */
+        reset(): void {
+            lastAt = 0;
+        },
+    };
+}
+
+export type StreamPreviewThrottle = ReturnType<typeof createStreamPreviewThrottle>;
+
 /** 剥掉不在气泡正文里展示的协议标签，保留对话正文（含群聊 [角色名]: 前缀）。
  *  stripXmlTags：额外剥掉的配置型 XML 标签块（如预设的线上思维链标签）；
  *  stripLiterals：按字面量直接删除的文本片段（预设 strip_texts，与引擎最终清洗对齐）。

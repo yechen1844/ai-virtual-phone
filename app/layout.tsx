@@ -3,7 +3,6 @@ import type { ReactNode } from "react";
 
 import { ChatPluginBootstrap } from "@/components/chat-plugin-bootstrap";
 import { ChatReasoningVisibilityController } from "@/components/chat-reasoning-visibility-controller";
-import { KeyboardGlassGuard } from "@/components/keyboard-glass-guard";
 import { KbProbe } from "@/components/kb-probe";
 import { CSSImportEnhancer } from "@/components/css-import-enhancer";
 import { PWAManifestInjector } from "@/components/pwa-manifest-injector";
@@ -52,7 +51,6 @@ export default function RootLayout({
         <CSSImportEnhancer />
         <ChatPluginBootstrap />
         <ChatReasoningVisibilityController />
-        <KeyboardGlassGuard />
         <KbProbe />
         <SupabaseBridge />
         {children}

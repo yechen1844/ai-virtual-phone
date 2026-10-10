@@ -2,7 +2,7 @@
 
 import { forwardRef, Fragment, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChatSession, ChatMessage, CHAT_APP_SETTINGS_UPDATED_EVENT, CHAT_INITIAL_VISIBLE_MESSAGE_COUNT, CHAT_LOAD_MORE_MESSAGE_COUNT, CHAT_REQUEST_REPLY_EVENT, loadChatAppSettings, loadChatMessages, loadChatContacts, loadChatSessions, saveChatSessions, pushChatMessage, updateChatMessage, deleteChatMessage, deleteChatMessagesFrom, deleteChatMessagesAfter, deleteChatMessagesByIds, retractChatMessage, editChatMessage, updateMessageMediaData, replaceResponseBatchWithParts, replaceGroupResponseRound, isReadingDiscussMessage, isMovieDiscussMessage, isReadingNoteMessage, isSystemInstructionMessage, createResponseBatchId, createResponseRoundId, getLatestStateValues, getLatestCharacterStateValues, compareChatMessages } from "@/lib/chat-storage";
-import { cleanStreamText } from "@/lib/stream-preview";
+import { cleanStreamText, createStreamPreviewThrottle, type StreamPreviewThrottle } from "@/lib/stream-preview";
 import type { StateValue } from "@/lib/chat-storage";
 import { parseStateValues, mergeStateValues } from "@/lib/state-value-parser";
 import { parseAIResponse, type ParsedMessagePart } from "@/lib/rich-message-parser";
@@ -1132,6 +1132,22 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
     const offlineStreamAccumRef = useRef("");
     // 群聊/单聊流式预览解析的 rAF 合并帧（限频：一帧最多解析一次全文）
     const streamParseFrameRef = useRef(0);
+    // 流式预览节流：原实现按帧（最高 60 次/秒）对「累积全文」重解析并 setState，
+    // 而 setState 会重渲染整棵聊天组件 → 单帧成本随回复变长上升，表现为「越写越卡」。
+    // 这里节流到 ~100ms 一次，保留 rAF 只用于合并同帧内的重复调度。
+    const streamPreviewThrottleRef = useRef<StreamPreviewThrottle | null>(null);
+    if (!streamPreviewThrottleRef.current) streamPreviewThrottleRef.current = createStreamPreviewThrottle();
+    // 单聊/群聊/线下两条路径共用的流式预览调度入口。
+    const scheduleStreamPreview = (frameRef: React.MutableRefObject<number>, run: () => void) => {
+        if (frameRef.current) return;
+        streamPreviewThrottleRef.current?.schedule(() => {
+            if (frameRef.current) return;
+            frameRef.current = window.requestAnimationFrame(() => {
+                frameRef.current = 0;
+                run();
+            });
+        });
+    };
     // 线下模式流式预览解析的 rAF 合并帧（独立于线上，避免互相干扰）
     const offlineStreamFrameRef = useRef(0);
     const [activeOfflineTarget, setActiveOfflineTarget] = useState<OfflineActionTarget | null>(null);
@@ -3259,10 +3275,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                         onStreamDelta: (delta) => {
                             if (!isCurrentGeneration()) return;
                             streamAccumRef.current += delta;
-                            // 群聊全文解析较重：合并到 rAF 下一帧执行，避免一帧多段增量重复解析
-                            if (streamParseFrameRef.current) return;
-                            streamParseFrameRef.current = window.requestAnimationFrame(() => {
-                                streamParseFrameRef.current = 0;
+                            scheduleStreamPreview(streamParseFrameRef, () => {
                                 if (!isCurrentGeneration()) return;
                                 const nameToId = new Map(groupCharacters.map(item => [item.name, item.id]));
                                 const rawParts = parseGroupChatResponse(streamAccumRef.current, nameToId);
@@ -3281,6 +3294,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                                 cancelAnimationFrame(streamParseFrameRef.current);
                                 streamParseFrameRef.current = 0;
                             }
+                            streamPreviewThrottleRef.current?.reset();
                             streamAccumRef.current = "";
                             setStreamPreview(null);
                         },
@@ -3306,10 +3320,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                         onStreamDelta: (delta) => {
                             if (!isCurrentGeneration()) return;
                             streamAccumRef.current += delta;
-                            // 预览更新合并到 rAF 下一帧：每帧最多一次全文净化+setState，避免高频增量卡顿
-                            if (streamParseFrameRef.current) return;
-                            streamParseFrameRef.current = window.requestAnimationFrame(() => {
-                                streamParseFrameRef.current = 0;
+                            scheduleStreamPreview(streamParseFrameRef, () => {
                                 if (!isCurrentGeneration()) return;
                                 setStreamPreview({ text: cleanStreamText(streamAccumRef.current) });
                             });
@@ -3319,6 +3330,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                                 cancelAnimationFrame(streamParseFrameRef.current);
                                 streamParseFrameRef.current = 0;
                             }
+                            streamPreviewThrottleRef.current?.reset();
                             streamAccumRef.current = "";
                             setStreamPreview(null);
                         },
@@ -4196,10 +4208,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                 const onOfflineDelta = (delta: string) => {
                     if (!isCurrentOfflineRun()) return;
                     offlineStreamAccumRef.current += delta;
-                    // 线下预览解析合并到 rAF 下一帧：每帧最多一次全文解析+setState
-                    if (offlineStreamFrameRef.current) return;
-                    offlineStreamFrameRef.current = window.requestAnimationFrame(() => {
-                        offlineStreamFrameRef.current = 0;
+                    scheduleStreamPreview(offlineStreamFrameRef, () => {
                         if (!isCurrentOfflineRun()) return;
                         const parsed = parseOfflineResponse(offlineStreamAccumRef.current, "summary");
                         // 流式碎片阶段 XML 标签可能未闭合：content 提取不到时，剥掉开标签残片直接显示原文
@@ -4341,10 +4350,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
             const onOfflineDelta = (delta: string) => {
                 if (!isCurrentOfflineRun()) return;
                 offlineStreamAccumRef.current += delta;
-                // 线下预览解析合并到 rAF 下一帧：每帧最多一次全文解析+setState（与首次发送路径对齐）
-                if (offlineStreamFrameRef.current) return;
-                offlineStreamFrameRef.current = window.requestAnimationFrame(() => {
-                    offlineStreamFrameRef.current = 0;
+                scheduleStreamPreview(offlineStreamFrameRef, () => {
                     if (!isCurrentOfflineRun()) return;
                     const parsed = parseOfflineResponse(offlineStreamAccumRef.current, "summary");
                     // 流式碎片阶段 XML 标签可能未闭合：content 提取不到时，剥掉开标签残片直接显示原文
