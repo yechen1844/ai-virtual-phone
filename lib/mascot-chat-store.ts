@@ -23,7 +23,15 @@ const MASCOT_DB_VERSION = 2;
 const MASCOT_CHAT_STORE = "chat";
 const MASCOT_MESSAGES_KEY = "messages"; // 旧版单会话键，仅用于迁移
 const MASCOT_STATE_KEY = "state";
-const MAX_STORED_MASCOT_MESSAGES = 50;
+// 以下是本地 IndexedDB 的存储上限，仅影响本地存储体积。
+// 它不影响喂给模型的上下文：上下文窗口由 mascot-engine.ts 的 history.slice(-40)
+// 与 MAX_TOOL_CONTEXT_IMAGES = 4 决定，因此放大存储上限不会增加 token 消耗，
+// 只是让 IndexedDB 变大、能留住更多历史。
+// 真实对话（role 为 user / mascot）的存储上限：只统计非 tool 的消息，工具消息不占用此配额。
+const MAX_STORED_MASCOT_MESSAGES = 400;
+// 工具消息（role === "tool"）的独立存储上限：以「连续 tool 消息段（工具链）」为单位保留，
+// 与真实对话各算各的配额，工具消息再多也不会挤占真实对话。
+const MAX_STORED_MASCOT_TOOL_MESSAGES = 60;
 const MAX_MASCOT_SESSIONS = 30;
 
 export type MascotSession = {
@@ -101,8 +109,90 @@ function withTimestamp(msg: MascotMsg): MascotMsg {
     return msg.createdAt ? msg : { ...msg, createdAt: new Date().toISOString() };
 }
 
+// 存储裁剪：真实对话与工具消息各算各的配额。
+// - 真实对话（role 非 tool）：只保留最近 MAX_STORED_MASCOT_MESSAGES 条。
+// - 工具消息（role === tool）：以「连续 tool 消息段（工具链）」为单位，
+//   从最近一段往前累计，累计条数 ≤ MAX_STORED_MASCOT_TOOL_MESSAGES 的段保留，超配额整段丢弃
+//   （绝不从中间截断）；最近的一段即使超配额也整段保留，以保护正在跑的那一轮。
+// - 保序：最终按原数组下标顺序输出。
+// - 防悬挂：被丢弃的 tool 结果，其 toolCallId 会从对应 mascot 消息的 toolCalls 中剔除。
 function normalizeMessages(nextMessages: MascotMsg[]): MascotMsg[] {
-    return nextMessages.map(withTimestamp).slice(-MAX_STORED_MASCOT_MESSAGES);
+    const timestamped = nextMessages.map(withTimestamp);
+    const total = timestamped.length;
+    if (total === 0) return [];
+
+    // 真实对话窗口左边界：从后往前数第 MAX_STORED_MASCOT_MESSAGES 条真实消息（role !== "tool"）。
+    // 计数时跳过 tool 消息，因此该下标一定落在真实消息上，不会切开工具链。
+    let realSeen = 0;
+    let realWindowStart = 0;
+    for (let i = total - 1; i >= 0; i -= 1) {
+        if (timestamped[i].role === "tool") continue;
+        realSeen += 1;
+        realWindowStart = i;
+        if (realSeen >= MAX_STORED_MASCOT_MESSAGES) break;
+    }
+    // 真实消息不足上限时，窗口覆盖全部消息，不丢弃任何真实消息。
+    if (realSeen < MAX_STORED_MASCOT_MESSAGES) realWindowStart = 0;
+
+    // 收集「连续 tool 消息段（工具链）」的起止下标。
+    const toolSegments: Array<{ start: number; end: number }> = [];
+    for (let i = 0; i < total; i += 1) {
+        if (timestamped[i].role !== "tool") continue;
+        const start = i;
+        let end = i;
+        while (end + 1 < total && timestamped[end + 1].role === "tool") end += 1;
+        toolSegments.push({ start, end });
+        i = end;
+    }
+
+    // 先决定保留集合：真实消息保留窗口内的，tool 消息默认不保留。
+    const keep = new Array<boolean>(total).fill(false);
+    for (let i = realWindowStart; i < total; i += 1) {
+        if (timestamped[i].role !== "tool") keep[i] = true;
+    }
+
+    // tool 消息配额：从最近一段往前累计，超配额整段丢弃；最近一段整段保留。
+    let toolBudget = 0;
+    for (let s = toolSegments.length - 1; s >= 0; s -= 1) {
+        const seg = toolSegments[s];
+        // realWindowStart 落在真实消息上，因此工具段要么整体在窗口内、要么整体在窗口外。
+        if (seg.start < realWindowStart) break;
+        const segSize = seg.end - seg.start + 1;
+        const isNewestSegment = s === toolSegments.length - 1;
+        if (isNewestSegment || toolBudget + segSize <= MAX_STORED_MASCOT_TOOL_MESSAGES) {
+            for (let i = seg.start; i <= seg.end; i += 1) keep[i] = true;
+            toolBudget += segSize;
+        } else {
+            break;
+        }
+    }
+
+    // 收集「确实被丢弃」的 tool 结果的 toolCallId，用于剔除对应 mascot 消息上悬挂的 toolCalls。
+    // 只有真正被丢弃的 tool 结果才会进入集合；尚未写入结果的在途 assistant 不受影响。
+    const droppedToolCallIds = new Set<string>();
+    for (let i = 0; i < total; i += 1) {
+        if (keep[i]) continue;
+        const msg = timestamped[i];
+        if (msg.role === "tool" && msg.toolCallId) droppedToolCallIds.add(msg.toolCallId);
+    }
+
+    const result: MascotMsg[] = [];
+    for (let i = 0; i < total; i += 1) {
+        if (!keep[i]) continue;
+        const msg = timestamped[i];
+        if (msg.role === "mascot" && msg.toolCalls?.length && droppedToolCallIds.size > 0) {
+            const cleaned = removeToolCallsFromMascotMessage(msg, droppedToolCallIds);
+            if (!cleaned.cleaned) {
+                result.push(msg);
+            } else if (cleaned.message) {
+                result.push(cleaned.message);
+            }
+            // cleaned.message === null：剔除后既无 toolCalls 又无可见内容，整条丢弃。
+            continue;
+        }
+        result.push(msg);
+    }
+    return result;
 }
 
 export type ClearMascotToolHistoryResult = {
