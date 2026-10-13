@@ -205,6 +205,45 @@ function getCurrentUserInput(history: ChatMessage[]): string {
         .join("\n");
 }
 
+/**
+ * 提取「角色上一轮整体」{{lastCharRound}}：取本会话最后一条 assistant 消息，
+ * 用它的 responseRoundId（群聊优先）或 responseBatchId 归组同一轮的全部气泡，
+ * 按历史顺序换行拼接。拿不到 batch/round id（老数据、单条回复）时，
+ * 退化为最后一条 assistant 消息的 content。历史已按时间升序，故 filter 保序。
+ */
+function getLastCharRoundText(history: ChatMessage[], roleOf: (m: ChatMessage) => string): string {
+    let last: ChatMessage | undefined;
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+        if (roleOf(history[i]) === "assistant") { last = history[i]; break; }
+    }
+    if (!last) return "";
+    const roundId = last.responseRoundId;
+    const batchId = last.responseBatchId;
+    const groupId = roundId ?? batchId;
+    if (groupId) {
+        const grouped = history.filter(m =>
+            roleOf(m) === "assistant"
+            && (roundId ? m.responseRoundId === roundId : m.responseBatchId === batchId),
+        );
+        if (grouped.length > 0) {
+            return grouped.map(m => (m.content || "").trim()).filter(Boolean).join("\n");
+        }
+    }
+    return (last.content || "").trim();
+}
+
+/**
+ * {{silenceMinutes}}：距本会话最后一条消息过去的整数分钟（向下取整）。
+ * 无法判断（无消息 / createdAt 非法）时返回 "0"。
+ */
+function getSilenceMinutes(history: ChatMessage[]): string {
+    const last = history[history.length - 1];
+    if (!last?.createdAt) return "0";
+    const t = new Date(last.createdAt).getTime();
+    if (!Number.isFinite(t)) return "0";
+    return String(Math.max(0, Math.floor((Date.now() - t) / 60000)));
+}
+
 function formatPhotoDirective(msg: ChatMessage, prefix = ""): string {
     const description = msg.mediaData?.label?.trim() || "图片";
     const mode = msg.mediaData?.useReferenceImage === true ? "使用参考图" : "不使用参考图";
@@ -734,6 +773,9 @@ export function assemblePromptPayload(input: AssemblerInput): LLMMessage[] {
         engine.lastCharMessage = history.filter(m => m.role === "assistant").pop()?.content ?? "";
         engine.lastMessage = history.length > 0 ? history[history.length - 1].content : "";
         engine.currentInput = getCurrentUserInput(history);
+        engine.lastCharRound = getLastCharRoundText(history, m => m.role);
+        engine.lastUserRound = engine.currentInput;
+        engine.silenceMinutes = getSilenceMinutes(history);
         engine.description = character.persona ?? "";
         engine.personality = character.personality ?? "";
         engine.persona = userIdentity?.bio ?? "";
@@ -843,7 +885,7 @@ export function assemblePromptPayload(input: AssemblerInput): LLMMessage[] {
 
             if (!isPromptEnabled(p, preset!.prompt_order)) continue;
 
-            // Tag-based filtering: entry's tags must ALL be present in activeTags
+            // Tag-based filtering: 条目 tag 必须是当前激活范围的子集（预设路径口径，与群聊路径一致）。
             if (filterEnabled && !p.marker) {
                 const entryTags = getPromptTags(p);
                 if (entryTags && !entryTags.every(t => activeTags.includes(t))) continue;
@@ -1982,6 +2024,9 @@ export function assembleGroupPromptPayload(input: GroupAssemblerInput): LLMMessa
         engine.lastCharMessage = history.filter(msg => resolveHistoryPromptRole(msg) === "assistant").pop()?.content ?? "";
         engine.lastMessage = history.length > 0 ? history[history.length - 1].content : "";
         engine.currentInput = getCurrentUserInput(history);
+        engine.lastCharRound = getLastCharRoundText(history, resolveHistoryPromptRole);
+        engine.lastUserRound = engine.currentInput;
+        engine.silenceMinutes = getSilenceMinutes(history);
         engine.customStickerNames = input.customStickerNames ?? "";
         engine.customStickerExample = input.customStickerExample ?? "";
         engine.musicLocal = input.musicLocal ?? "";
@@ -2111,6 +2156,9 @@ export function assembleGroupPromptPayload(input: GroupAssemblerInput): LLMMessa
         groupEngine.lastCharMessage = history.filter(msg => resolveHistoryPromptRole(msg) === "assistant").pop()?.content ?? "";
         groupEngine.lastMessage = history.length > 0 ? history[history.length - 1].content : "";
         groupEngine.currentInput = getCurrentUserInput(history);
+        groupEngine.lastCharRound = getLastCharRoundText(history, resolveHistoryPromptRole);
+        groupEngine.lastUserRound = groupEngine.currentInput;
+        groupEngine.silenceMinutes = getSilenceMinutes(history);
         groupEngine.customStickerNames = input.customStickerNames ?? "";
         groupEngine.customStickerExample = input.customStickerExample ?? "";
         groupEngine.musicLocal = input.musicLocal ?? "";

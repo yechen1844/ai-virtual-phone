@@ -13,9 +13,9 @@
 import type { LlmToolDefinition } from "./llm-provider-adapter";
 import type { ToolCall, ToolResult } from "./tool-executor";
 import type { MascotPageContext } from "./mascot-context";
-import type { Prompt } from "./settings-types";
+import type { PresetConfig, Prompt } from "./settings-types";
 import type { ChatMessage } from "./chat-storage";
-import { CHARACTER_CARD_PROMPT, CHARACTER_WORLD_PROMPT, WORLDBOOK_PROMPT, PRESET_PROMPT, GENERAL_PRESET_PROMPT, REGEX_PROMPT, CSS_PROMPT, WIDGET_PROMPT, MIXOLOGY_PROMPT } from "./mascot-prompts";
+import { CHARACTER_CARD_PROMPT, CHARACTER_WORLD_PROMPT, WORLDBOOK_PROMPT, PRESET_PROMPT, GENERAL_PRESET_PROMPT, PRESET_SYNC_PROMPT, REGEX_PROMPT, CSS_PROMPT, WIDGET_PROMPT, MIXOLOGY_PROMPT } from "./mascot-prompts";
 import {
     buildCssAssetNineSliceCss,
     calibrateCssAssetNineSlice,
@@ -45,6 +45,13 @@ export type MascotToolPackage = {
     subTools: MascotSubTool[];
     usageGuide?: string; // 文本协议下，展开时额外的写作指南
 };
+
+// 聊天记录读取条数：单次默认取最近 60 条，最多 2000 条。
+// 这里只放宽「请求条数」上限（防止一次拉太多导致无意义的 O(n) 扫描/内存放大），
+// 真正保护模型上下文、避免爆 token 的是下面的 CHATLOG_TOTAL_CHAR_LIMIT（总字符预算），
+// 所以提到 2000 不会破坏既有的上下文裁剪逻辑。
+const CHATLOG_DEFAULT_LIMIT = 60;
+const CHATLOG_MAX_LIMIT = 2000;
 
 // ── 工具参数 Schema 定义 ────────────────────────────────
 
@@ -511,6 +518,42 @@ const UPDATE_PRESET_INFO_SCHEMA = {
     additionalProperties: false,
 };
 
+// 预设对比 / 逐条同步：入参用「预设名或 id」，内部先按 id、再按名字精确、最后模糊匹配。
+const COMPARE_PRESETS_SCHEMA = {
+    type: "object",
+    properties: {
+        presetA: { type: "string", description: "第一个预设：预设名或预设 id（如「主用的那份」）" },
+        presetB: { type: "string", description: "第二个预设：预设名或预设 id（如「备份的那份」）" },
+    },
+    required: ["presetA", "presetB"],
+    additionalProperties: false,
+};
+
+const SYNC_PRESET_ENTRY_SCHEMA = {
+    type: "object",
+    properties: {
+        sourcePreset: { type: "string", description: "源预设（从这里取内容）：预设名或 id" },
+        targetPreset: { type: "string", description: "目标预设（写入这里）：预设名或 id；不能与源预设相同" },
+        identifiers: {
+            type: "array",
+            description: "要同步的条目列表：写 identifier（找不到时按 name 匹配）。用「对比预设」的结果确定要同步哪些",
+            items: { type: "string" },
+        },
+        syncEnabled: { type: "boolean", description: "是否连带把 enabled 状态也同步过去，默认 false（只同步内容）" },
+        hunks: {
+            type: "array",
+            description: "【按变更块合并，可选】只把源条目里这些「变更块」应用到目标条目，其余内容原样保留；用于把「A 改了一处、B 改了另一处」合并进同一条，而不是整条二选一。编号取自「对比预设」输出里该条目下的 #1 #2 …（对同一对源/目标内容，编号稳定不变）。元素有两种写法：\n· 数字（如 1、3）→ 该块取「源侧」（即对比里的 A 侧、同步里的 sourcePreset）；\n· 字符串「编号:侧」（如 \"1:A\"、\"2:B\"）→ 该块显式取指定侧：A = 对比时的 presetA（源侧），B = presetB（目标侧）。取目标侧 B = 本处保留目标、等于不改。\n例：[\"1:B\",\"2:A\"] 表示 #1 保留目标侧(B)、#2 采用源侧(A)；[1,3] 表示 #1、#3 都取源侧。\n【反直觉点，务必记住】对「仅目标侧有」的块取源侧(A) = 删掉那段（源侧本无这段）；对「仅源侧有」的块取目标侧(B) = 跳过、不添加。与 content 互斥；不传则整条覆盖。",
+            items: { type: ["number", "string"] },
+        },
+        content: {
+            type: "string",
+            description: "【直接写入，可选】当你已自己判断出合并后的完整内容时，直接把它写入目标条目的对应 identifier（目标缺失则新增）。用于两边改动交错、需要你综合判断的场景。与 hunks 互斥；不传则按整条/按块同步。",
+        },
+    },
+    required: ["sourcePreset", "targetPreset", "identifiers"],
+    additionalProperties: false,
+};
+
 // ── 正则工具 ──
 const LIST_REGEX_GROUPS_SCHEMA = {
     type: "object",
@@ -928,7 +971,7 @@ const READ_CHATLOG_SCHEMA = {
     type: "object",
     properties: {
         target: { type: "string", description: "角色名或群聊名（可用「列出聊天会话」查到）" },
-        limit: { type: "number", description: "最多返回多少条（默认 60，上限 300），只取最近的" },
+        limit: { type: "number", description: `最多返回多少条（默认 ${CHATLOG_DEFAULT_LIMIT}，上限 ${CHATLOG_MAX_LIMIT}），只取最近的` },
         keyword: { type: "string", description: "可选：只返回内容含该关键词的消息" },
         after: { type: "string", description: "可选：ISO 时间，只取该时刻之后的消息" },
         before: { type: "string", description: "可选：ISO 时间，只取该时刻之前的消息" },
@@ -1042,7 +1085,7 @@ export const MASCOT_TOOL_PACKAGES: MascotToolPackage[] = [
         description: "查看 user 与角色/群聊的真实聊天记录。写世界书、补人设、确认「角色实际经历过什么」时，先读真实对话再下笔，避免凭空编造。",
         subTools: [
             { name: "列出聊天会话", description: "列出全部单聊/群聊会话（会话名、消息条数、最后一条时间）。先用它确认目标名，再用「读取聊天记录」。可传 keyword 过滤。", parameterSchema: LIST_CHATLOG_SCHEMA },
-            { name: "读取聊天记录", description: "读取某角色/群聊的聊天记录，按时间返回「[时间] 说话人：内容」。默认取最近 60 条；对话长时用 keyword / after / before 收窄，避免一次拉太多。语音转成其文字，表情包转成名称，图片标为 [图片]。", parameterSchema: READ_CHATLOG_SCHEMA },
+            { name: "读取聊天记录", description: `读取某角色/群聊的聊天记录，按时间返回「[时间] 说话人：内容」。默认取最近 ${CHATLOG_DEFAULT_LIMIT} 条（可传 limit，上限 ${CHATLOG_MAX_LIMIT}）；对话长时用 keyword / after / before 收窄，避免一次拉太多。语音转成其文字，表情包转成名称，图片标为 [图片]。`, parameterSchema: READ_CHATLOG_SCHEMA },
             { name: "搜索聊天记录", description: "按关键词搜索聊天记录，返回命中消息 + 前后各几条上下文。适合「找某件事发生在哪次对话里」。", parameterSchema: SEARCH_CHATLOG_SCHEMA },
         ],
         usageGuide: [
@@ -1050,7 +1093,7 @@ export const MASCOT_TOOL_PACKAGES: MascotToolPackage[] = [
             "用途：查看 user 与角色/群聊的真实对话，作为写世界书 / 补人设 / 梳理时间线的事实依据，不要凭印象编。",
             "工作流：",
             "1. 不确定会话名字，先「列出聊天会话」；",
-            "2. 「读取聊天记录」拿某段对话原文（默认最近 60 条）；",
+            `2. 「读取聊天记录」拿某段对话原文（默认最近 ${CHATLOG_DEFAULT_LIMIT} 条）；`,
             "3. 只想定位某件事，用「搜索聊天记录」，它会带前后上下文。",
             "返回格式：每行「[月-日 时:分] 说话人：内容」。",
             "媒体说明：语音 → 它的文字内容；表情包 → 表情名；图片 → [图片]（你看不到画面，只知道发过图）。",
@@ -1113,6 +1156,16 @@ export const MASCOT_TOOL_PACKAGES: MascotToolPackage[] = [
             { name: "删除连接器", description: "按名字删除一个连接器。", parameterSchema: MIX_DELETE_CONNECTOR_SCHEMA },
         ],
         usageGuide: MIXOLOGY_PROMPT,
+    },
+    {
+        id: "preset_sync_pack",
+        label: "预设对比同步套件",
+        description: "逐条对比两份预设的差异，并把选定条目的内容从一份同步到另一份：可整条覆盖，也可只合并「内容不同」条目里指定编号的变更块（写入前自动备份目标预设）。用于处理「改错了备份 / 两份预设分叉」的场景，只逐条同步，不整体覆盖。",
+        subTools: [
+            { name: "对比预设", description: "逐条对比两份预设（各传一个预设名或 id），输出：概览（条目数/名称/id）、仅 A 有 / 仅 B 有、两边都有但内容不同（每个变更块会编号 #1 #2 …，带逐行 -/+ diff、方向标注，并给出「取哪侧」的写法提示）、顺序不同、enabled 状态不同。这些块号可用于「同步预设条目」的 hunks 参数。对齐优先用 identifier，无 identifier 时用 name 兜底。改预设前先用它看清差异。", parameterSchema: COMPARE_PRESETS_SCHEMA },
+            { name: "同步预设条目", description: "把源预设里指定 identifier 的条目同步到目标预设的对应条目（目标没有则新增）。默认整条内容覆盖；传 hunks 则按块合并——每个块可指定取源侧（数字，如 1）或取指定侧（\"1:A\" 取源侧 / \"2:B\" 取目标侧），把 A/B 各自改的部分并到一起；传 content 则直接写入你已判断好的完整内容。写入前自动把目标预设另存一份带时间戳的备份；返回会列出「更新/新增/跳过」及逐块合并明细。", parameterSchema: SYNC_PRESET_ENTRY_SCHEMA },
+        ],
+        usageGuide: PRESET_SYNC_PROMPT,
     },
 ];
 
@@ -1266,6 +1319,8 @@ const MASCOT_NATIVE_TOOL_NAMES: Record<string, string> = {
     "添加预设条目": "mascot_add_preset_prompt",
     "更新预设条目": "mascot_update_preset_prompt",
     "更新预设信息": "mascot_update_preset_info",
+    "对比预设": "mascot_compare_presets",
+    "同步预设条目": "mascot_sync_preset_entry",
     "列出正则组": "mascot_list_regex_groups",
     "读取正则组": "mascot_read_regex_group",
     "创建正则组": "mascot_create_regex_group",
@@ -1290,6 +1345,7 @@ const MASCOT_NATIVE_LOADER_NAMES: Record<string, string> = {
     character_world_pack: "mascot_load_character_world_pack",
     worldbook_pack: "mascot_load_worldbook_pack",
     preset_pack: "mascot_load_preset_pack",
+    preset_sync_pack: "mascot_load_preset_sync_pack",
     regex_pack: "mascot_load_regex_pack",
     status_bar_pack: "mascot_load_status_bar_pack",
     widget_pack: "mascot_load_widget_pack",
@@ -1485,7 +1541,7 @@ async function handleReadChatLog(args: Record<string, unknown>): Promise<ToolRes
     const row = findChatLogSession(rows, target);
     if (!row) return { name: "读取聊天记录", success: false, error: `找不到会话「${target}」，先用「列出聊天会话」查看可用名称` };
 
-    const limit = Math.min(Math.max(1, Number(args.limit) || 60), 300);
+    const limit = Math.min(Math.max(1, Number(args.limit) || CHATLOG_DEFAULT_LIMIT), CHATLOG_MAX_LIMIT);
     const keyword = typeof args.keyword === "string" ? args.keyword.trim() : "";
     const after = typeof args.after === "string" ? args.after.trim() : "";
     const before = typeof args.before === "string" ? args.before.trim() : "";
@@ -1609,6 +1665,8 @@ export async function executeMascotToolCall(call: ToolCall, ctx: MascotToolConte
             case "添加预设条目": return await handleAddPresetPrompt(call.args);
             case "更新预设条目": return await handleUpdatePresetPrompt(call.args);
             case "更新预设信息": return await handleUpdatePresetInfo(call.args);
+            case "对比预设": return await handleComparePresets(call.args);
+            case "同步预设条目": return await handleSyncPresetEntry(call.args);
 
             // ─── 聊天记录 ───
             case "列出聊天会话": return await handleListChatLogSessions(call.args);
@@ -2721,6 +2779,625 @@ async function handleUpdatePresetInfo(args: Record<string, unknown>): Promise<To
     presets[idx] = preset;
     await savePresetsAsync(presets);
     return { name: "更新预设信息", success: true, data: `已更新预设 ${preset.name}` };
+}
+
+// ── 预设对比 / 逐条同步 ─────────────────────────
+
+type PresetEntryView = {
+    key: string;
+    identifier: string;
+    name: string;
+    content: string;
+    enabled: boolean;
+    prompt: Prompt;
+};
+
+/** 按「预设名或 id」定位预设：先精确匹配 id，再精确匹配 name，最后 name 模糊包含。 */
+function resolvePresetIndex(presets: PresetConfig[], selector: string): number {
+    const s = (selector || "").trim();
+    if (!s) return -1;
+    let idx = presets.findIndex((p) => p.id === s);
+    if (idx >= 0) return idx;
+    idx = presets.findIndex((p) => p.name === s);
+    if (idx >= 0) return idx;
+    return presets.findIndex((p) => (p.name || "").includes(s));
+}
+
+/**
+ * 把预设展开成「有序条目视图」：
+ * · 顺序以 prompt_order 为准，不在 order 表里的条目按数组顺序补在末尾；
+ * · enabled 也优先取 prompt_order（与界面/组装器读的是同一份顺序表）；
+ * · 对齐 key 优先用 identifier，没有 identifier 时退化为 name（重名时追加 #序号 去重）。
+ */
+function resolvePresetEntries(preset: PresetConfig): PresetEntryView[] {
+    const prompts = preset.prompts || [];
+    const order = preset.prompt_order && preset.prompt_order.length ? preset.prompt_order : null;
+    const byId = new Map(prompts.map((p) => [p.identifier, p]));
+    const ordered: Prompt[] = [];
+    const used = new Set<Prompt>();
+    if (order) {
+        for (const o of order) {
+            const p = byId.get(o.identifier);
+            if (p && !used.has(p)) { ordered.push(p); used.add(p); }
+        }
+    }
+    for (const p of prompts) if (!used.has(p)) { ordered.push(p); used.add(p); }
+
+    const orderEnabled = new Map((preset.prompt_order || []).map((o) => [o.identifier, o.enabled]));
+    const keyCount = new Map<string, number>();
+    return ordered.map((p) => {
+        let key = p.identifier || p.name || "(未命名)";
+        const seen = keyCount.get(key) || 0;
+        keyCount.set(key, seen + 1);
+        if (seen > 0) key = `${key}#${seen + 1}`;
+        return {
+            key,
+            identifier: p.identifier || "",
+            name: p.name || "",
+            content: p.content || "",
+            enabled: orderEnabled.has(p.identifier) ? orderEnabled.get(p.identifier) === true : p.enabled === true,
+            prompt: p,
+        };
+    });
+}
+
+/**
+ * 轻量逐行 diff（不引入任何依赖）：基于 LCS 求最长公共子序列，输出操作序列：
+ *   " " 未变（上下文）、"-" 仅旧(源 A)、"+" 仅新(目标 B)。
+ * 为控制成本，任一侧行数超过 MAX_DIFF_LINES 时降级为「裁掉公共前后缀、中间整块对比」。
+ */
+type DiffOp = { type: " " | "-" | "+"; text: string };
+
+function computeLineOps(oldText: string, newText: string): DiffOp[] {
+    const split = (t: string) => (t || "").replace(/\r\n?/g, "\n").split("\n");
+    const A = split(oldText);
+    const B = split(newText);
+    const MAX_DIFF_LINES = 1500;
+
+    if (A.length > MAX_DIFF_LINES || B.length > MAX_DIFF_LINES) {
+        let start = 0;
+        while (start < A.length && start < B.length && A[start] === B[start]) start += 1;
+        let endA = A.length - 1;
+        let endB = B.length - 1;
+        while (endA >= start && endB >= start && A[endA] === B[endB]) { endA -= 1; endB -= 1; }
+        const ops: DiffOp[] = [];
+        for (let k = 0; k < start; k += 1) ops.push({ type: " ", text: A[k] });
+        for (let k = start; k <= endA; k += 1) ops.push({ type: "-", text: A[k] });
+        for (let k = start; k <= endB; k += 1) ops.push({ type: "+", text: B[k] });
+        for (let k = endA + 1; k < A.length; k += 1) ops.push({ type: " ", text: A[k] });
+        return ops;
+    }
+
+    const n = A.length;
+    const m = B.length;
+    const dp: Uint32Array[] = [];
+    for (let i = 0; i <= n; i += 1) dp.push(new Uint32Array(m + 1));
+    for (let i = n - 1; i >= 0; i -= 1) {
+        for (let j = m - 1; j >= 0; j -= 1) {
+            dp[i][j] = A[i] === B[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+        }
+    }
+    const ops: DiffOp[] = [];
+    let i = 0;
+    let j = 0;
+    while (i < n && j < m) {
+        if (A[i] === B[j]) { ops.push({ type: " ", text: A[i] }); i += 1; j += 1; }
+        else if (dp[i + 1][j] >= dp[i][j + 1]) { ops.push({ type: "-", text: A[i] }); i += 1; }
+        else { ops.push({ type: "+", text: B[j] }); j += 1; }
+    }
+    while (i < n) { ops.push({ type: "-", text: A[i] }); i += 1; }
+    while (j < m) { ops.push({ type: "+", text: B[j] }); j += 1; }
+    return ops;
+}
+
+/** 变更块归属方向：source=仅源侧(A)有、target=仅目标侧(B)有、both=两侧都不同。 */
+type DiffHunkDirection = "source" | "target" | "both";
+
+/** 一个变更块：diff 里连续的一段 "-"/"+" 操作（被未变行隔开即为两块）。 */
+type DiffHunk = {
+    /** 1 起的编号；对同一对 (源, 目标) 内容重复计算得到相同编号，稳定。 */
+    index: number;
+    /** 只在源侧(A)存在的行（diff 里的 "-"）。 */
+    removed: string[];
+    /** 只在目标侧(B)存在的行（diff 里的 "+"）。 */
+    added: string[];
+    direction: DiffHunkDirection;
+    /** 在 ops 中的区间 [opStart, opEnd)。 */
+    opStart: number;
+    opEnd: number;
+};
+
+/** 把逐行操作序列切成变更块：连续的非上下文操作算一块。 */
+function opsToHunks(ops: DiffOp[]): DiffHunk[] {
+    const hunks: DiffHunk[] = [];
+    let i = 0;
+    while (i < ops.length) {
+        if (ops[i].type === " ") { i += 1; continue; }
+        const start = i;
+        const removed: string[] = [];
+        const added: string[] = [];
+        while (i < ops.length && ops[i].type !== " ") {
+            if (ops[i].type === "-") removed.push(ops[i].text);
+            else added.push(ops[i].text);
+            i += 1;
+        }
+        const direction: DiffHunkDirection = removed.length > 0 && added.length > 0 ? "both" : removed.length > 0 ? "source" : "target";
+        hunks.push({ index: hunks.length + 1, removed, added, direction, opStart: start, opEnd: i });
+    }
+    return hunks;
+}
+
+/** 对两份内容算变更块（旧=源 A，新=目标 B）。 */
+function computeDiffHunks(oldText: string, newText: string): DiffHunk[] {
+    return opsToHunks(computeLineOps(oldText, newText));
+}
+
+function diffHunkDirectionLabel(direction: DiffHunkDirection): string {
+    if (direction === "source") return "仅 A（源）有";
+    if (direction === "target") return "仅 B（目标）有";
+    return "A/B 两侧不同";
+}
+
+/** 某个变更块取哪一侧：A=源侧（对比里的 presetA / 同步里的 sourcePreset），B=目标侧（presetB / targetPreset）。 */
+type HunkSide = "A" | "B";
+
+/** 一个「取侧」选择：编号 + 取哪一侧。数字写法（hunks:[1]）等价于 { index:1, side:"A" }。 */
+type HunkSpec = { index: number; side: HunkSide };
+
+/**
+ * 解析 hunks 参数（向后兼容）：
+ * · 数字（如 1）→ 取源侧 A（保持原有语义）；
+ * · 字符串 "编号:侧"（如 "1:A" / "2:B"，大小写皆可、允许 # 前缀与空白）→ 取指定侧。
+ * 返回错误信息（合法时 error 为空）。同一编号被指定成互相矛盾的侧时报错。
+ */
+function parseHunkSpecs(raw: unknown[]): { specs: HunkSpec[]; error?: string } {
+    const specs: HunkSpec[] = [];
+    const sideByIndex = new Map<number, HunkSide>();
+    for (const item of raw) {
+        let index: number;
+        let side: HunkSide;
+        if (typeof item === "number") {
+            if (!Number.isInteger(item) || item < 1) {
+                return { specs, error: `hunks 里的数字必须是从 1 开始的整数变更块编号，收到：${JSON.stringify(item)}` };
+            }
+            index = item;
+            side = "A";
+        } else if (typeof item === "string") {
+            const m = /^#?(\d+)\s*[:：]\s*([AaBb])$/.exec(item.trim());
+            if (!m) {
+                return { specs, error: `hunks 里的字符串要写成「编号:侧」（如 "1:A" 取源侧、"2:B" 取目标侧），收到：${JSON.stringify(item)}` };
+            }
+            index = parseInt(m[1], 10);
+            if (index < 1) return { specs, error: `变更块编号必须从 1 开始，收到：${JSON.stringify(item)}` };
+            side = m[2].toUpperCase() as HunkSide;
+        } else {
+            return { specs, error: `hunks 的元素只能是数字（取源侧，如 1）或字符串（如 "1:B"），收到：${JSON.stringify(item)}` };
+        }
+        const prev = sideByIndex.get(index);
+        if (prev && prev !== side) {
+            return { specs, error: `变更块 #${index} 被指定了冲突的两侧（${prev} 与 ${side}），请只保留一个` };
+        }
+        sideByIndex.set(index, side);
+        specs.push({ index, side });
+    }
+    return { specs };
+}
+
+/** 一个被选中块的最终去向（用于展示明细）。 */
+type HunkEffect = "use-source" | "delete" | "keep-target" | "skip";
+type HunkOutcome = {
+    index: number;
+    side: HunkSide;
+    direction: DiffHunkDirection;
+    effect: HunkEffect;
+    removed: string[];
+    added: string[];
+};
+
+type HunkApplyResult = {
+    ok: boolean;
+    error?: string;
+    content: string;
+    applied: DiffHunk[];
+    warnings: string[];
+    totalHunks: number;
+    outcomes: HunkOutcome[];
+};
+
+/**
+ * 按变更块把「源内容」的改动合并进「目标内容」（以目标为底稿）：
+ * · 重新对 (源内容, 目标内容) 算一次 diff（不复用历史行号），编号与「对比预设」一致；
+ * · 未选中的块：原样保留目标内容（等价于取目标侧）；
+ * · 取源侧 A：该块有源侧行（"-"）→ 用源侧行；该块只在目标侧（"+"）→ 删除该段（源侧本无这段）；
+ * · 取目标侧 B：该块保留目标侧行（"+"）→ 等于不改；该块只在源侧（"-"）→ 跳过、不添加。
+ * 输出文本里绝不残留 "-"/"+" 前缀。
+ */
+function applySelectedHunks(sourceContent: string, targetContent: string, specs: HunkSpec[]): HunkApplyResult {
+    const ops = computeLineOps(sourceContent, targetContent);
+    const hunks = opsToHunks(ops);
+    const total = hunks.length;
+    if (total === 0) {
+        return { ok: false, error: "两侧内容其实相同，没有可应用的变更块（如需直接写入完整内容，请改用 content）", content: targetContent, applied: [], warnings: [], totalHunks: 0, outcomes: [] };
+    }
+    const sideByIndex = new Map<number, HunkSide>();
+    for (const s of specs) sideByIndex.set(s.index, s.side);
+    const uniq = [...sideByIndex.keys()].sort((a, b) => a - b);
+    const outOfRange = uniq.filter((n) => n < 1 || n > total);
+    if (outOfRange.length > 0) {
+        return { ok: false, error: `变更块编号越界：${outOfRange.map((n) => `#${n}`).join("、")}（该条目共 ${total} 块）`, content: targetContent, applied: [], warnings: [], totalHunks: total, outcomes: [] };
+    }
+    const hunkByStart = new Map(hunks.map((h) => [h.opStart, h]));
+    const outLines: string[] = [];
+    const applied: DiffHunk[] = [];
+    const warnings: string[] = [];
+    const outcomes: HunkOutcome[] = [];
+    for (let i = 0; i < ops.length;) {
+        const op = ops[i];
+        if (op.type === " ") { outLines.push(op.text); i += 1; continue; }
+        const hunk = hunkByStart.get(i)!;
+        const side = sideByIndex.get(hunk.index);
+        if (side === undefined) {
+            // 未选中：保留目标侧内容
+            outLines.push(...hunk.added);
+        } else if (side === "A") {
+            if (hunk.removed.length > 0) {
+                // 取源侧：用源侧行（替换本处；源侧独有时即插入）
+                outLines.push(...hunk.removed);
+                applied.push(hunk);
+                outcomes.push({ index: hunk.index, side, direction: hunk.direction, effect: "use-source", removed: hunk.removed, added: hunk.added });
+            } else {
+                // 仅目标侧存在的块，取源侧 = 删除这段（源侧本无）
+                applied.push(hunk);
+                outcomes.push({ index: hunk.index, side, direction: hunk.direction, effect: "delete", removed: hunk.removed, added: hunk.added });
+            }
+        } else {
+            // 取目标侧：保留目标侧行
+            outLines.push(...hunk.added);
+            if (hunk.added.length > 0) {
+                outcomes.push({ index: hunk.index, side, direction: hunk.direction, effect: "keep-target", removed: hunk.removed, added: hunk.added });
+            } else {
+                outcomes.push({ index: hunk.index, side, direction: hunk.direction, effect: "skip", removed: hunk.removed, added: hunk.added });
+                warnings.push(`#${hunk.index} 只在源侧存在：取了目标侧，等于跳过、不添加这段`);
+            }
+        }
+        i = hunk.opEnd;
+    }
+    return { ok: true, content: outLines.join("\n"), applied, warnings, totalHunks: total, outcomes };
+}
+
+function hunkSideLabel(side: HunkSide): string {
+    return side === "A" ? "源侧 A" : "目标侧 B";
+}
+
+function describeHunkEffect(o: HunkOutcome): string {
+    switch (o.effect) {
+        case "use-source": return o.added.length > 0 ? "用源侧行替换本处" : "插入源侧行";
+        case "delete": return "删除目标侧这段（源侧本无）";
+        case "keep-target": return "保留目标侧行（本处不改）";
+        case "skip": return "跳过（源侧独有，选择不引入）";
+    }
+}
+
+/** 渲染「按变更块合并」的执行明细：条目 → 每个选中块取哪侧、什么效果 → 关键差异。 */
+function renderHunkMergeReport(entry: PresetEntryView, res: HunkApplyResult): string {
+    const out: string[] = [];
+    out.push(`· 条目「${entry.name || "(未命名)"}」(identifier: ${entry.identifier || entry.key})：按变更块合并`);
+    const changed = res.outcomes.filter((o) => o.effect === "use-source" || o.effect === "delete");
+    out.push(`    已改动块：${changed.map((o) => `#${o.index}`).join("、") || "（无，全部保留目标）"}（该条目共 ${res.totalHunks} 块）`);
+    if (res.outcomes.length > 0) {
+        out.push("    逐块选择：");
+        for (const o of res.outcomes) {
+            out.push(`    #${o.index} 取${hunkSideLabel(o.side)}  [${diffHunkDirectionLabel(o.direction)}] → ${describeHunkEffect(o)}`);
+            if (o.effect === "use-source") {
+                for (const t of o.added) out.push(`        - ${t}   ← 目标原有`);
+                for (const t of o.removed) out.push(`        + ${t}   ← 源侧，已采用`);
+            } else if (o.effect === "delete") {
+                for (const t of o.added) out.push(`        - ${t}   ← 已删除（取源侧＝源侧本无这段）`);
+            }
+        }
+    }
+    for (const w of res.warnings) out.push(`    ⚠ ${w}`);
+    return out.join("\n");
+}
+
+/**
+ * 把一个「内容不同」的条目渲染成带编号的变更块列表（供「对比预设」使用）：
+ * · 每块给出编号、归属方向与 -/+ 行（"-"=仅 A 有，"+ "=仅 B 有）；
+ * · maxBodyLines 控住逐行展示总量；被省略正文的块仍会打印编号与方向，便于用户按号选择。
+ */
+function renderNumberedEntryDiff(entry: PresetEntryView, other: PresetEntryView, maxBodyLines: number): { lines: string[]; chars: number } {
+    const hunks = computeDiffHunks(entry.content, other.content);
+    const out: string[] = [];
+    out.push(`◆ 条目「${entry.name || "(未命名)"}」(identifier: ${entry.identifier || entry.key})  内容不同：`);
+    if (hunks.length === 0) {
+        out.push("  （两侧内容其实相同）");
+        return { lines: out, chars: out.join("\n").length };
+    }
+    let usedBody = 0;
+    for (const hunk of hunks) {
+        const dir = diffHunkDirectionLabel(hunk.direction);
+        const body: string[] = [];
+        for (const t of hunk.removed) body.push(`      - ${t}`);
+        for (const t of hunk.added) body.push(`      + ${t}`);
+        const overflow = usedBody >= maxBodyLines;
+        out.push(`  #${hunk.index}  [${dir}]${overflow ? `（本块 ${body.length} 行，正文省略；块号仍可用）` : ""}`);
+        out.push(`      ${diffHunkChoiceHint(hunk.index, hunk.direction)}`);
+        if (!overflow) { out.push(...body); usedBody += body.length; }
+    }
+    return { lines: out, chars: out.join("\n").length };
+}
+
+/** 为某个变更块给出「取哪一侧」的写法提示（供小卷按号选择）。 */
+function diffHunkChoiceHint(index: number, direction: DiffHunkDirection): string {
+    if (direction === "both") return `（可选：取 A（源）用 "${index}:A"，取 B（目标）用 "${index}:B"）`;
+    if (direction === "source") return `（可选：加进来用 "${index}:A"；不添加用 "${index}:B"）`;
+    return `（可选：保留用 "${index}:B"；删掉用 "${index}:A"）`;
+}
+
+async function handleComparePresets(args: Record<string, unknown>): Promise<ToolResult> {
+    const { loadPresets } = await loadPresetStorage();
+    const presets = loadPresets();
+    const aSel = typeof args.presetA === "string" ? args.presetA : "";
+    const bSel = typeof args.presetB === "string" ? args.presetB : "";
+    const aIdx = resolvePresetIndex(presets, aSel);
+    const bIdx = resolvePresetIndex(presets, bSel);
+    if (aIdx < 0) return { name: "对比预设", success: false, error: `找不到预设 A：${aSel}` };
+    if (bIdx < 0) return { name: "对比预设", success: false, error: `找不到预设 B：${bSel}` };
+    const A = presets[aIdx];
+    const B = presets[bIdx];
+    const entriesA = resolvePresetEntries(A);
+    const entriesB = resolvePresetEntries(B);
+    const mapA = new Map(entriesA.map((e) => [e.key, e]));
+    const mapB = new Map(entriesB.map((e) => [e.key, e]));
+
+    const onlyA = entriesA.filter((e) => !mapB.has(e.key));
+    const onlyB = entriesB.filter((e) => !mapA.has(e.key));
+    const common = entriesA.filter((e) => mapB.has(e.key));
+    const contentDiff = common.filter((e) => e.content !== mapB.get(e.key)!.content);
+    const enabledDiff = common.filter((e) => e.enabled !== mapB.get(e.key)!.enabled);
+    const orderA = common.map((e) => e.key);
+    const orderB = entriesB.filter((e) => mapA.has(e.key)).map((e) => e.key);
+    const orderSame = orderA.join("\u0001") === orderB.join("\u0001");
+
+    const lines: string[] = [];
+    lines.push("===== 预设对比 =====");
+    lines.push(`A「${A.name}」 id=${A.id} · 条目 ${entriesA.length} 条（启用 ${entriesA.filter((e) => e.enabled).length}）`);
+    lines.push(`B「${B.name}」 id=${B.id} · 条目 ${entriesB.length} 条（启用 ${entriesB.filter((e) => e.enabled).length}）`);
+    lines.push("对齐口径：优先 identifier，无 identifier 时用 name 兜底。");
+
+    lines.push("");
+    lines.push(`【仅 A 有】${onlyA.length} 条`);
+    if (onlyA.length === 0) lines.push("· （无）");
+    else for (const e of onlyA) lines.push(`· ${e.identifier || e.name} — ${e.name || "(未命名)"}`);
+
+    lines.push("");
+    lines.push(`【仅 B 有】${onlyB.length} 条`);
+    if (onlyB.length === 0) lines.push("· （无）");
+    else for (const e of onlyB) lines.push(`· ${e.identifier || e.name} — ${e.name || "(未命名)"}`);
+
+    lines.push("");
+    lines.push(`【两边都有但内容不同】${contentDiff.length} 条`);
+    if (contentDiff.length === 0) {
+        lines.push("· （无）");
+    } else {
+        // 为避免一次输出把上下文撑爆：最多逐块展示 30 条 / 约 12000 字，其余只列 identifier。
+        // 每条内容里的每个变更块都会编号（#1 #2 …）；被省略正文的块也会保留编号，方便后续按号合并。
+        const DIFF_DETAIL_MAX = 30;
+        const DIFF_CHAR_BUDGET = 12000;
+        const PER_ENTRY_BODY_LINES = 80;
+        let usedChars = 0;
+        let shown = 0;
+        const omitted: string[] = [];
+        for (const e of contentDiff) {
+            if (shown >= DIFF_DETAIL_MAX || usedChars >= DIFF_CHAR_BUDGET) { omitted.push(e.identifier || e.name || e.key); continue; }
+            const r = renderNumberedEntryDiff(e, mapB.get(e.key)!, PER_ENTRY_BODY_LINES);
+            lines.push(...r.lines);
+            lines.push("");
+            usedChars += r.chars;
+            shown += 1;
+        }
+        if (omitted.length > 0) lines.push(`· （另有 ${omitted.length} 条内容不同，为省 token 未逐块展示：${omitted.join(", ")}）`);
+    }
+
+    lines.push("");
+    lines.push("【顺序不同】");
+    if (orderSame) {
+        lines.push("· 两边共有条目的相对顺序一致。");
+    } else {
+        lines.push(`· 两边共有 ${orderA.length} 条，相对顺序不一致。`);
+        lines.push(`  A 顺序：${orderA.join(" → ")}`);
+        lines.push(`  B 顺序：${orderB.join(" → ")}`);
+        const posA = new Map(orderA.map((k, i) => [k, i]));
+        const posB = new Map(orderB.map((k, i) => [k, i]));
+        const moved = orderA.filter((k) => posA.get(k) !== posB.get(k));
+        lines.push("  位置变化的条目（A位置 → B位置，均从 1 起）：");
+        for (const k of moved.slice(0, 80)) lines.push(`    · ${k}：A#${(posA.get(k) ?? 0) + 1} → B#${(posB.get(k) ?? 0) + 1}`);
+        if (moved.length > 80) lines.push(`    ·（另有 ${moved.length - 80} 条省略）`);
+    }
+
+    lines.push("");
+    lines.push(`【启用状态不同】${enabledDiff.length} 条`);
+    if (enabledDiff.length === 0) lines.push("· （无）");
+    else for (const e of enabledDiff) {
+        const b = mapB.get(e.key)!;
+        lines.push(`· ${e.identifier || e.name} — ${e.name || "(未命名)"}：A=${e.enabled ? "启用" : "停用"}，B=${b.enabled ? "启用" : "停用"}`);
+    }
+
+    return { name: "对比预设", success: true, data: lines.join("\n") };
+}
+
+function formatPresetBackupStamp(ts: number): string {
+    const d = new Date(ts);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function makeUniquePresetName(presets: PresetConfig[], base: string): string {
+    if (!presets.some((p) => p.name === base)) return base;
+    let counter = 2;
+    while (presets.some((p) => p.name === `${base}(${counter})`)) counter += 1;
+    return `${base}(${counter})`;
+}
+
+async function handleSyncPresetEntry(args: Record<string, unknown>): Promise<ToolResult> {
+    const { loadPresets, savePresetsAsync } = await loadPresetStorage();
+    const presets = loadPresets();
+    const srcSel = typeof args.sourcePreset === "string" ? args.sourcePreset : "";
+    const tgtSel = typeof args.targetPreset === "string" ? args.targetPreset : "";
+    const srcIdx = resolvePresetIndex(presets, srcSel);
+    const tgtIdx = resolvePresetIndex(presets, tgtSel);
+    if (srcIdx < 0) return { name: "同步预设条目", success: false, error: `找不到源预设：${srcSel}` };
+    if (tgtIdx < 0) return { name: "同步预设条目", success: false, error: `找不到目标预设：${tgtSel}` };
+    if (srcIdx === tgtIdx) return { name: "同步预设条目", success: false, error: "源预设与目标预设不能是同一个" };
+
+    const requested = Array.isArray(args.identifiers)
+        ? args.identifiers.filter((x): x is string => typeof x === "string" && x.trim().length > 0).map((x) => x.trim())
+        : [];
+    if (requested.length === 0) return { name: "同步预设条目", success: false, error: "identifiers 不能为空（要同步的条目 identifier 列表）" };
+    const syncEnabled = args.syncEnabled === true;
+
+    // 三种写入模式：
+    // · 默认（不传 hunks/content）：整条内容覆盖（原有行为）；
+    // · hunks：按变更块合并——每个选中块可单独指定取源侧(A，数字写法默认)或取目标侧(B，"n:B")，其余未选中的块原样保留；
+    // · content：直接写入指定条目（小卷自己综合出完整内容时用）。hunks 与 content 互斥。
+    const hunksArg = args.hunks;
+    const wantHunks = Array.isArray(hunksArg) && hunksArg.length > 0;
+    const wantContent = typeof args.content === "string";
+    const mergeMode = wantHunks || wantContent;
+    if (wantHunks && wantContent) {
+        return { name: "同步预设条目", success: false, error: "hunks 与 content 互斥：hunks 是「按变更块合并」，content 是「直接写入完整内容」，一次只能用其中一个" };
+    }
+    if (Array.isArray(hunksArg) && hunksArg.length === 0) {
+        return { name: "同步预设条目", success: false, error: "hunks 不能是空数组（要应用的变更块编号，例如 [1,3] 或 [\"1:B\",\"2:A\"]）" };
+    }
+    let hunkSpecs: HunkSpec[] = [];
+    if (wantHunks) {
+        const parsed = parseHunkSpecs(hunksArg as unknown[]);
+        if (parsed.error) return { name: "同步预设条目", success: false, error: parsed.error };
+        hunkSpecs = parsed.specs;
+    }
+    const contentArg = wantContent ? (args.content as string) : "";
+
+    const source = presets[srcIdx];
+    const target = presets[tgtIdx];
+    const srcEntries = resolvePresetEntries(source);
+    const srcByKey = new Map(srcEntries.map((e) => [e.key, e]));
+    const srcByName = new Map<string, PresetEntryView>();
+    for (const e of srcEntries) if (e.name && !srcByName.has(e.name)) srcByName.set(e.name, e);
+
+    // 目标条目视图：key → prompt（用于判断某 identifier 目标里是否已存在）
+    const targetPrompts = [...(target.prompts || [])];
+    const tgtByKey = new Map(resolvePresetEntries(target).map((e) => [e.key, e]));
+
+    const updated: string[] = [];
+    const added: string[] = [];
+    const skipped: string[] = [];
+    const enabledOverride = new Map<string, boolean>();
+    const mergeModeErrors: string[] = [];
+    const mergeReports: string[] = [];
+
+    for (const req of requested) {
+        const srcEntry = srcByKey.get(req) ?? srcByName.get(req);
+        if (!srcEntry) {
+            if (mergeMode) mergeModeErrors.push(`「${req}」：源预设里没有这个条目`);
+            else skipped.push(`${req}（源预设里没有）`);
+            continue;
+        }
+        const existing = tgtByKey.get(srcEntry.key);
+        const idx = existing ? targetPrompts.indexOf(existing.prompt) : -1;
+        if (existing && idx < 0) {
+            if (mergeMode) mergeModeErrors.push(`「${req}」：无法定位目标条目`);
+            else skipped.push(`${req}（无法定位目标条目）`);
+            continue;
+        }
+
+        let desiredContent = srcEntry.content;
+        if (wantHunks) {
+            if (!existing) {
+                mergeModeErrors.push(`「${req}」：目标预设里没有这个条目，无法按变更块合并（若要整条新增，请不传 hunks；或用 content）`);
+                continue;
+            }
+            const before = targetPrompts[idx].content || "";
+            const res = applySelectedHunks(srcEntry.content, before, hunkSpecs);
+            if (!res.ok) { mergeModeErrors.push(`「${req}」：${res.error}`); continue; }
+            desiredContent = res.content;
+            if (res.outcomes.length > 0) mergeReports.push(renderHunkMergeReport(srcEntry, res));
+            else for (const w of res.warnings) mergeReports.push(`· 条目「${srcEntry.name || "(未命名)"}」：${w}`);
+        } else if (wantContent) {
+            desiredContent = contentArg;
+        }
+
+        if (existing) {
+            const prev = targetPrompts[idx];
+            const changedParts: string[] = [];
+            if ((prev.content || "") !== desiredContent) changedParts.push("内容");
+            const next = { ...prev, content: desiredContent };
+            if (syncEnabled && prev.enabled !== srcEntry.enabled) {
+                next.enabled = srcEntry.enabled;
+                enabledOverride.set(next.identifier, srcEntry.enabled);
+                changedParts.push("启用状态");
+            }
+            targetPrompts[idx] = next;
+            if (changedParts.length > 0) updated.push(`${srcEntry.key}（${srcEntry.name || "(未命名)"}，${changedParts.join("+")}）`);
+            else skipped.push(`${req}（已一致）`);
+        } else {
+            const clone: Prompt = { ...srcEntry.prompt, content: desiredContent };
+            if (syncEnabled) clone.enabled = srcEntry.enabled;
+            targetPrompts.push(clone);
+            tgtByKey.set(srcEntry.key, {
+                key: srcEntry.key,
+                identifier: clone.identifier || "",
+                name: clone.name || "",
+                content: clone.content || "",
+                enabled: clone.enabled === true,
+                prompt: clone,
+            });
+            added.push(`${srcEntry.key}（${clone.name || "(未命名)"}）`);
+        }
+    }
+
+    // 合并 / 直接写入模式下，任何一个 identifier 校验失败都不写盘（保证原子性），并一次性回报所有问题。
+    if (mergeModeErrors.length > 0) {
+        return { name: "同步预设条目", success: false, error: `未做任何改动（按变更块合并 / 直接写入校验失败）：\n· ${mergeModeErrors.join("\n· ")}` };
+    }
+
+    if (updated.length === 0 && added.length === 0) {
+        const tail = skipped.length ? `\n· 跳过：${skipped.join("、")}` : "";
+        const mergeTail = mergeReports.length ? `\n${mergeReports.join("\n")}` : "";
+        return { name: "同步预设条目", success: true, data: `没有需要改动的条目（目标预设已与源一致）。${tail}${mergeTail}` };
+    }
+
+    // 写入前先把目标预设整份另存为一份带时间戳的副本，供用户回滚。
+    const now = Date.now();
+    const backup = JSON.parse(JSON.stringify(target)) as PresetConfig;
+    backup.id = `preset_${now}_bak`;
+    backup.name = makeUniquePresetName(presets, `${target.name} · 同步前备份 ${formatPresetBackupStamp(now)}`);
+    backup.builtIn = false;
+    (backup as Record<string, unknown>).builtInVersion = undefined;
+    backup.createdAt = now;
+    backup.updatedAt = now;
+
+    let order = rebuildPresetPromptOrder(targetPrompts, target.prompt_order);
+    if (syncEnabled && enabledOverride.size > 0) {
+        order = order.map((o) => enabledOverride.has(o.identifier)
+            ? { identifier: o.identifier, enabled: enabledOverride.get(o.identifier) === true }
+            : o);
+    }
+    const nextTarget: PresetConfig = { ...target, prompts: targetPrompts, prompt_order: order, updatedAt: now };
+
+    presets[tgtIdx] = nextTarget;
+    presets.push(backup);
+    await savePresetsAsync(presets);
+
+    const lines: string[] = [];
+    lines.push(`已从「${source.name}」同步到「${target.name}」：`);
+    if (updated.length) lines.push(`· 更新 ${updated.length} 条：${updated.join("、")}`);
+    if (added.length) lines.push(`· 新增 ${added.length} 条：${added.join("、")}`);
+    if (skipped.length) lines.push(`· 跳过 ${skipped.length} 条：${skipped.join("、")}`);
+    if (mergeReports.length) { lines.push(""); lines.push("· 按变更块合并 / 直接写入的明细："); lines.push(mergeReports.join("\n")); }
+    if (!syncEnabled) lines.push("· （未同步 enabled 状态；如需一并同步，请传 syncEnabled=true 重来一次）");
+    lines.push(`· 已把目标预设备份为「${backup.name}」（id=${backup.id}）；如需回滚可在预设列表中找到它。`);
+    return { name: "同步预设条目", success: true, data: lines.join("\n") };
 }
 
 // ── Regex Handlers ────────────────────────────

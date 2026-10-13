@@ -15,6 +15,10 @@ export class MacroEngine {
     lastCharMessage: string = "";
     lastMessage: string = "";
     currentInput: string = "";
+    // 轮次级 / 时长宏（新增；不改动上方"条级"宏的取值）
+    lastCharRound: string = "";
+    lastUserRound: string = "";
+    silenceMinutes: string = "0";
     // Character card fields
     description: string = "";
     personality: string = "";
@@ -175,6 +179,11 @@ export class MacroEngine {
 
         // input
         if (body === "input") return this.currentInput;
+
+        // 轮次级 / 时长宏（新增；与上方 input / lastXMessage 各自独立，互不改变取值）
+        if (body === "lastCharRound") return this.lastCharRound;
+        if (body === "lastUserRound") return this.lastUserRound;
+        if (body === "silenceMinutes") return this.silenceMinutes || "0";
 
         // Character card fields
         if (body === "description") return this.description;
@@ -397,6 +406,7 @@ export const STATIC_MACRO_NAMES: ReadonlySet<string> = new Set([
     "trim", "char", "user",
     // 消息
     "lastUserMessage", "lastCharMessage", "lastMessage", "input",
+    "lastCharRound", "lastUserRound", "silenceMinutes",
     // 角色卡
     "description", "personality", "persona", "group",
     // 应用级

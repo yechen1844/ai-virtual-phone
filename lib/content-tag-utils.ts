@@ -12,6 +12,8 @@ const EXTRA_TAG_LABELS: Record<string, string> = {
     offline: "线下",
     followup: "追发",
     timed_wake: "稍后主动联系",
+    idle_wake: "冷场重连",
+    user_timed_wake: "用户定时唤醒",
     period_care: "经期关心",
     text: "文字",
     voice: "语音",
