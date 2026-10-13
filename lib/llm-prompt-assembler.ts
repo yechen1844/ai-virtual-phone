@@ -210,26 +210,60 @@ function getCurrentUserInput(history: ChatMessage[]): string {
  * 用它的 responseRoundId（群聊优先）或 responseBatchId 归组同一轮的全部气泡，
  * 按历史顺序换行拼接。拿不到 batch/round id（老数据、单条回复）时，
  * 退化为最后一条 assistant 消息的 content。历史已按时间升序，故 filter 保序。
+ *
+ * 退化（绝不展开成空串）：角色末条气泡经常没有可见文本——表情包 / 图片 / 位置 /
+ * 拍一拍等富媒体气泡 content 为空、原生工具轮的空白载体 content 也为空、仅状态面板的
+ * 静默回复同样为空。若只认「最后一条 assistant 消息」，这类末条会让整轮归组拼出空串
+ * （用户侧 {{input}}/{{lastUserRound}} 只走 user 消息，不受影响，故表现为「一边有一边空」）。
+ * 因此锚点改为「最近一条有文本的 assistant 消息」，再按它所属轮次归组；只要历史里出现过
+ * 任何一句角色文本，{{lastCharRound}} 就不会展开成空。
  */
 function getLastCharRoundText(history: ChatMessage[], roleOf: (m: ChatMessage) => string): string {
     let last: ChatMessage | undefined;
+    let lastWithText: ChatMessage | undefined;
     for (let i = history.length - 1; i >= 0; i -= 1) {
-        if (roleOf(history[i]) === "assistant") { last = history[i]; break; }
+        const msg = history[i];
+        if (roleOf(msg) !== "assistant") continue;
+        if (!last) last = msg;
+        if (!lastWithText && (msg.content || "").trim()) lastWithText = msg;
     }
     if (!last) return "";
-    const roundId = last.responseRoundId;
-    const batchId = last.responseBatchId;
-    const groupId = roundId ?? batchId;
-    if (groupId) {
+    // 优先按「末条角色气泡」所属轮次归组；该轮若无任何可拼接文本，则向前回退到
+    // 「最近一条有文本的角色气泡」再归组，避免因末条是纯富媒体/空载体而返回空串。
+    return collectAssistantRoundText(history, roleOf, lastWithText ?? last);
+}
+
+/**
+ * 按锚点消息的轮次标识（responseRoundId 优先，其次 responseBatchId）归组同一轮的
+ * assistant 气泡并换行拼接；拿不到标识（老数据 / 单条回复）或归组后无文本时，
+ * 退化为锚点自身的 content。历史已按时间升序，故 filter 保序。
+ */
+function collectAssistantRoundText(history: ChatMessage[], roleOf: (m: ChatMessage) => string, anchor: ChatMessage): string {
+    const roundId = anchor.responseRoundId;
+    const batchId = anchor.responseBatchId;
+    if (roundId || batchId) {
         const grouped = history.filter(m =>
             roleOf(m) === "assistant"
             && (roundId ? m.responseRoundId === roundId : m.responseBatchId === batchId),
         );
-        if (grouped.length > 0) {
-            return grouped.map(m => (m.content || "").trim()).filter(Boolean).join("\n");
-        }
+        const joined = grouped
+            .map(m => (m.content || "").trim())
+            .filter(Boolean)
+            .join("\n");
+        if (joined) return joined;
     }
-    return (last.content || "").trim();
+    return (anchor.content || "").trim();
+}
+
+/** 角色「最后一条有文本的回复」：末条气泡常常是空 content（表情/图片/占位/静默），
+ *  直接取末条会得到空串，故向前找到最近一条真正有文本的。 */
+function getLastCharMessageText(history: ChatMessage[], roleOf: (m: ChatMessage) => string): string {
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+        const msg = history[i];
+        if (roleOf(msg) !== "assistant") continue;
+        if ((msg.content || "").trim()) return msg.content || "";
+    }
+    return "";
 }
 
 /**
@@ -770,7 +804,7 @@ export function assemblePromptPayload(input: AssemblerInput): LLMMessage[] {
         const engine = new MacroEngine(character.name, resolvedUserName);
         applyTimeContextToMacroEngine(engine, promptTimeContext);
         engine.lastUserMessage = history.filter(m => m.role === "user").pop()?.content ?? "";
-        engine.lastCharMessage = history.filter(m => m.role === "assistant").pop()?.content ?? "";
+        engine.lastCharMessage = getLastCharMessageText(history, m => m.role);
         engine.lastMessage = history.length > 0 ? history[history.length - 1].content : "";
         engine.currentInput = getCurrentUserInput(history);
         engine.lastCharRound = getLastCharRoundText(history, m => m.role);
@@ -2021,7 +2055,7 @@ export function assembleGroupPromptPayload(input: GroupAssemblerInput): LLMMessa
         engine.persona = userIdentity?.bio ?? "";
         engine.stateStr = formatStateValuesForPrompt(m.currentStateValues);
         engine.lastUserMessage = history.filter(msg => resolveHistoryPromptRole(msg) === "user").pop()?.content ?? "";
-        engine.lastCharMessage = history.filter(msg => resolveHistoryPromptRole(msg) === "assistant").pop()?.content ?? "";
+        engine.lastCharMessage = getLastCharMessageText(history, resolveHistoryPromptRole);
         engine.lastMessage = history.length > 0 ? history[history.length - 1].content : "";
         engine.currentInput = getCurrentUserInput(history);
         engine.lastCharRound = getLastCharRoundText(history, resolveHistoryPromptRole);
@@ -2153,7 +2187,7 @@ export function assembleGroupPromptPayload(input: GroupAssemblerInput): LLMMessa
         applyTimeContextToMacroEngine(groupEngine, groupTimeContext);
         groupEngine.group = groupName || "";
         groupEngine.lastUserMessage = history.filter(msg => resolveHistoryPromptRole(msg) === "user").pop()?.content ?? "";
-        groupEngine.lastCharMessage = history.filter(msg => resolveHistoryPromptRole(msg) === "assistant").pop()?.content ?? "";
+        groupEngine.lastCharMessage = getLastCharMessageText(history, resolveHistoryPromptRole);
         groupEngine.lastMessage = history.length > 0 ? history[history.length - 1].content : "";
         groupEngine.currentInput = getCurrentUserInput(history);
         groupEngine.lastCharRound = getLastCharRoundText(history, resolveHistoryPromptRole);
