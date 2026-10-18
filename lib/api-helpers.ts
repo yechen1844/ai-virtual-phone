@@ -127,7 +127,7 @@ export async function simpleLLMCall(
     config: ApiConfig,
     messages: { role: string; content: string }[],
     options?: { temperature?: number; max_tokens?: number; signal?: AbortSignal; label?: string; noThinking?: boolean },
-): Promise<{ content: string | null; error?: string; finishReason?: string; wasTruncated?: boolean }> {
+): Promise<{ content: string | null; error?: string; finishReason?: string; wasTruncated?: boolean; usedReasoningFallback?: boolean }> {
     const baseUrl = determineBaseUrl(config);
     if (!baseUrl || !config.apiKey) {
         return { content: null, error: "API 地址或密钥无效" };
@@ -231,7 +231,11 @@ export async function simpleLLMCall(
         const data = await res.json();
 
         // Extract content — try multiple response formats for maximum compatibility
-        const content = extractLLMContent(data, config.provider);
+        // meta.usedReasoningFallback 仅用于标记「正文实际来自 reasoning_content」，
+        // 供记忆总结链路拒绝把思维链当正文入库；默认返回行为不变。
+        const extractMeta: LLMContentExtractionMeta = {};
+        const content = extractLLMContent(data, config.provider, extractMeta);
+        const usedReasoningFallback = extractMeta.usedReasoningFallback === true;
         const finishReason = extractFinishReason(data);
         const wasTruncated = isTruncationFinishReason(finishReason);
         pushApiLog({
@@ -246,10 +250,10 @@ export async function simpleLLMCall(
         if (!content) {
             console.warn("[simpleLLMCall] Empty response. Keys:", JSON.stringify(Object.keys(data || {})),
                 "Full:", JSON.stringify(data).slice(0, 500));
-            return { content: null, error: describeEmptyLLMResponse(data, finishReason, wasTruncated, config), finishReason, wasTruncated };
+            return { content: null, error: describeEmptyLLMResponse(data, finishReason, wasTruncated, config), finishReason, wasTruncated, usedReasoningFallback };
         }
 
-        return { content, finishReason, wasTruncated };
+        return { content, finishReason, wasTruncated, usedReasoningFallback };
     } catch (err) {
         console.warn("[simpleLLMCall] fetch error:", err);
         pushApiLog({
@@ -415,7 +419,16 @@ function extractGeminiVisibleText(parts: unknown): string | null {
     return visible || null;
 }
 
-export function extractLLMContent(data: Record<string, unknown>, provider?: string): string | null {
+export type LLMContentExtractionMeta = {
+    /** 正文为空、实际回退使用了 reasoning_content。 */
+    usedReasoningFallback?: boolean;
+};
+
+export function extractLLMContent(
+    data: Record<string, unknown>,
+    provider?: string,
+    meta?: LLMContentExtractionMeta,
+): string | null {
     if (!data) return null;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -445,7 +458,13 @@ export function extractLLMContent(data: Record<string, unknown>, provider?: stri
     // Last resort: reasoning models (DeepSeek-R1 / v4-pro) put their output in
     // reasoning_content and may leave content empty when max_tokens is exhausted
     // mid-thought. Surface the reasoning rather than reporting an empty response.
-    if (!raw) { const reasoning = d?.choices?.[0]?.message?.reasoning_content; if (reasoning) raw = String(reasoning).trim(); }
+    if (!raw) {
+        const reasoning = d?.choices?.[0]?.message?.reasoning_content;
+        if (reasoning) {
+            raw = String(reasoning).trim();
+            if (meta) meta.usedReasoningFallback = true;
+        }
+    }
 
     if (!raw) return null;
 

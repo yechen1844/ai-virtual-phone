@@ -12,6 +12,7 @@ import {
   acquireGenerationLock,
   releaseGenerationLock,
 } from "./config";
+import { validateSummaryOutput } from "./output-guard";
 import { renderMemoryPrompt, DEFAULT_PROMPTS } from "./prompts";
 import {
   getCurrentCoreView,
@@ -38,34 +39,21 @@ export function sanitizeCoreEntryText(text: string, banList: string[]): boolean 
 
 type ParsedCoreEntry = { text: string; category: CoreCategory };
 
-function parseCoreEntriesJson(text: string): ParsedCoreEntry[] | null {
-  const cleaned = text
-    .replace(/^```[a-zA-Z]*\s*/g, "")
-    .replace(/\s*```$/g, "")
-    .trim();
+function parseCoreEntriesFromJson(json: unknown): ParsedCoreEntry[] | null {
   // 兼容两种输出：裸数组 [ {...}, ... ] 或对象 { entries: [ {...}, ... ] }（部分模型偏好后者）
-  const arrStart = cleaned.indexOf("[");
-  const arrEnd = cleaned.lastIndexOf("]");
-  if (arrStart < 0 || arrEnd <= arrStart) return null;
-  try {
-    const raw = cleaned.slice(arrStart, arrEnd + 1);
-    const parsed: unknown = JSON.parse(raw);
-    const arr = Array.isArray(parsed)
-      ? parsed
-      : (parsed as { entries?: unknown[] })?.entries;
-    if (!Array.isArray(arr)) return null;
-    const out: ParsedCoreEntry[] = [];
-    for (const item of arr) {
-      const o = (item ?? {}) as Record<string, unknown>;
-      const textVal = typeof o.text === "string" ? o.text.trim() : "";
-      if (!textVal) continue;
-      const cat = CORE_CATEGORIES.includes(o.category as CoreCategory) ? (o.category as CoreCategory) : "principle";
-      out.push({ text: textVal, category: cat });
-    }
-    return out.length > 0 ? out : null;
-  } catch {
-    return null;
+  const arr = Array.isArray(json)
+    ? json
+    : (json as { entries?: unknown[] } | null)?.entries;
+  if (!Array.isArray(arr)) return null;
+  const out: ParsedCoreEntry[] = [];
+  for (const item of arr) {
+    const o = (item ?? {}) as Record<string, unknown>;
+    const textVal = typeof o.text === "string" ? o.text.trim() : "";
+    if (!textVal) continue;
+    const cat = CORE_CATEGORIES.includes(o.category as CoreCategory) ? (o.category as CoreCategory) : "principle";
+    out.push({ text: textVal, category: cat });
   }
+  return out.length > 0 ? out : null;
 }
 
 function getCharacter(characterId: string): { name: string; persona: string } {
@@ -187,9 +175,15 @@ async function generateCoreEntries(
     model: apiConfig.defaultModel,
   });
   if (!result.content) return { success: false, error: result.error || "LLM 返回空内容" };
-  if (result.wasTruncated) return { success: false, error: "核心记忆生成疑似被截断，已取消入库" };
 
-  const parsed = parseCoreEntriesJson(result.content);
+  // 门卫：拒答/过短/非 JSON/截断/纯思维链一律拒绝入库。
+  const guard = validateSummaryOutput(result.content, "core", {
+    fromReasoning: result.usedReasoningFallback === true,
+    wasTruncated: result.wasTruncated === true,
+  });
+  if (!guard.ok) return { success: false, error: guard.reason };
+
+  const parsed = parseCoreEntriesFromJson(guard.json);
   if (!parsed || parsed.length === 0) {
     return { success: false, error: "核心记忆条目标解析失败（需输出条目数组 JSON）" };
   }
@@ -301,7 +295,12 @@ export async function splitLegacyCoreMemory(
       label: `复杂记忆·核心拆条·${characterName}`,
     });
     if (!result.content) return { success: false, error: result.error || "LLM 返回空内容" };
-    const parsed = parseCoreEntriesJson(result.content);
+    const guard = validateSummaryOutput(result.content, "core", {
+      fromReasoning: result.usedReasoningFallback === true,
+      wasTruncated: result.wasTruncated === true,
+    });
+    if (!guard.ok) return { success: false, error: guard.reason };
+    const parsed = parseCoreEntriesFromJson(guard.json);
     if (!parsed || parsed.length === 0) {
       return { success: false, error: "核心拆条解析失败，请重试" };
     }

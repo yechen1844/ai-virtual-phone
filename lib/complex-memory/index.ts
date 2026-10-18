@@ -8,6 +8,8 @@ export * from "./prompts";
 export * from "./storage";
 export * from "./ring-buffer";
 export * from "./event-generator";
+export * from "./event-audit";
+export * from "./output-guard";
 export * from "./mirror";
 export * from "./guard";
 export * from "./voltage";

@@ -12,7 +12,11 @@ import {
   loadComplexMemoryConfig,
   getRingBuffer,
   updateRingBuffer,
+  markFailedEventRange,
+  clearCoveredEventFailures,
+  clearAllEventFailures,
 } from "./config";
+import { validateSummaryOutput } from "./output-guard";
 import { buildGenerationContext } from "./context-builder";
 import { ensureWatermarkAnchored } from "./watermark";
 import { loadSourceTimeline } from "./source";
@@ -27,33 +31,26 @@ function clampNum(v: unknown, min: number, max: number, fallback: number): numbe
   return typeof v === "number" && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback;
 }
 
-function parseEventJson(
-  text: string,
+function parseEventFields(
+  json: unknown,
 ): { content: string; emotion: EmotionVector; importanceScore: number } | null {
-  const cleaned = text
-    .replace(/^```[a-zA-Z]*\s*/g, "")
-    .replace(/\s*```$/g, "")
-    .trim();
-  const start = cleaned.indexOf("{");
-  const end = cleaned.lastIndexOf("}");
-  if (start < 0 || end <= start) return null;
-  try {
-    const obj = JSON.parse(cleaned.slice(start, end + 1)) as Record<string, unknown>;
-    const content = typeof obj.content === "string" ? obj.content.trim() : "";
-    if (!content) return null;
-    const emotionRaw = (obj.emotion ?? {}) as Record<string, unknown>;
-    return {
-      content,
-      emotion: {
-        valence: clampNum(emotionRaw.valence, -1, 1, 0),
-        arousal: clampNum(emotionRaw.arousal, 0, 1, 0.5),
-      },
-      importanceScore: clampNum(obj.importanceScore, 0, 1, 0.5),
-    };
-  } catch {
-    return null;
-  }
+  if (!json || typeof json !== "object") return null;
+  const obj = json as Record<string, unknown>;
+  const content = typeof obj.content === "string" ? obj.content.trim() : "";
+  if (!content) return null;
+  const emotionRaw = (obj.emotion ?? {}) as Record<string, unknown>;
+  return {
+    content,
+    emotion: {
+      valence: clampNum(emotionRaw.valence, -1, 1, 0),
+      arousal: clampNum(emotionRaw.arousal, 0, 1, 0.5),
+    },
+    importanceScore: clampNum(obj.importanceScore, 0, 1, 0.5),
+  };
 }
+
+/** 单次运行最多处理的窗口批次数，防止历史积压无限循环。 */
+const MAX_EVENT_BATCHES = 20;
 
 export async function runEventGeneration(
   characterId: string,
@@ -75,33 +72,45 @@ export async function runEventGeneration(
     ensureWatermarkAnchored(characterId);
 
     const ring = getRingBuffer(characterId);
-    const afterTimestamp = ring.watermarkTimestamp ?? undefined;
+    // full: true 忽略旧版「每会话最近 1500 条」截断，确保水位之后更早的未总结消息不会被静默跳过。
     const allEntries = loadSourceTimeline(characterId, {
-      afterTimestamp: afterTimestamp ?? undefined,
+      full: true,
+      afterTimestamp: ring.watermarkTimestamp ?? undefined,
     });
 
     if (allEntries.length < 4) {
       updateRingBuffer(characterId, { pendingCount: 0 });
+      clearAllEventFailures(characterId);
       return { success: false, error: "事件不足 4 条" };
     }
 
     // 分窗生成：超过窗口上限按窗切分，逐窗生成一条事件、逐窗推进水位线。
     // 整段在互斥锁内串行执行，避免中途被打断造成窗口漏读。
-    // 窗口条数 = 配置 eventWindowMaxEntries（加载时已钳制到 [20, 5000]，此处直接用配置值）。
+    // 单次最多 MAX_EVENT_BATCHES 窗，超限记录「待续」，下次继续。
     const windowSize = config.eventWindowMaxEntries;
-    const windows = sliceWindows(allEntries, windowSize);
+    const totalWindows = Math.ceil(allEntries.length / windowSize);
+    const batchLimit = Math.min(totalWindows, MAX_EVENT_BATCHES);
     let generated = 0;
+    let lastError: string | undefined;
 
-    for (const windowEntries of windows) {
-      const event = await generateEventForWindow(
+    for (let i = 0; i < batchLimit; i++) {
+      const windowEntries = allEntries.slice(i * windowSize, (i + 1) * windowSize);
+      const win = await generateEventForWindow(
         characterId,
         characterName,
         config.eventTargetLength,
         windowEntries,
       );
-      if (!event) {
-        // 某一窗失败即停：已成功的前序窗已随各自水位线持久化，断点续跑天然成立
-        console.warn(`[ComplexMemory] 第 ${generated + 1} 窗事件生成失败，停止后续窗口`);
+      if (!win.event) {
+        lastError = win.error ?? "事件窗口生成失败";
+        // 记录失败时段：从当前窗口第一条到最后一条，供用户手动补总结。
+        markFailedEventRange(characterId, {
+          startTs: windowEntries[0].timestamp,
+          endTs: allEntries[allEntries.length - 1].timestamp,
+          count: allEntries.length - i * windowSize,
+          reason: lastError,
+        });
+        console.warn(`[ComplexMemory] 第 ${i + 1} 窗事件生成失败，停止后续窗口: ${lastError}`);
         break;
       }
 
@@ -114,14 +123,34 @@ export async function runEventGeneration(
     }
 
     if (generated === 0) {
-      // 生成失败但素材充足：不再重置 pendingCount。
-      // 否则失败一次就把计数清零，用户聊得再多也只显示很小的值，且 wm 不推进、今天永远无法被总结。
-      return { success: false, error: "事件生成失败（无任何窗口产出）" };
+      // 生成失败但素材充足：不清零 pendingCount，避免失败一次就把计数抹平。
+      return { success: false, error: lastError ?? "事件生成失败（无任何窗口产出）" };
     }
 
-    updateRingBuffer(characterId, { pendingCount: 0 });
+    const consumed = Math.min(allEntries.length, generated * windowSize);
+    const remaining = Math.max(0, allEntries.length - consumed);
+    updateRingBuffer(characterId, { pendingCount: remaining });
+    // 水位线已越过的失败记录自动清掉（后来成功总结了）。
+    clearCoveredEventFailures(characterId);
+
+    if (!lastError && remaining > 0) {
+      // 达到单次批数上限：不算失败，但留下「待续」记录，下次继续。
+      const next = allEntries[consumed];
+      markFailedEventRange(characterId, {
+        startTs: next.timestamp,
+        endTs: allEntries[allEntries.length - 1].timestamp,
+        count: remaining,
+        reason: `本次已达单次上限（${MAX_EVENT_BATCHES} 批），剩余 ${remaining} 条待下次继续`,
+        nextCursorTs: next.timestamp,
+      });
+    }
+
+    if (lastError) {
+      return { success: false, error: lastError };
+    }
+
     console.log(
-      `[ComplexMemory] 事件生成成功: ${allEntries.length} 条时间线 → ${generated} 条事件记忆（${windows.length} 窗）`,
+      `[ComplexMemory] 事件生成成功: ${allEntries.length} 条时间线 → ${generated} 条事件记忆（${totalWindows} 窗，本次 ${batchLimit} 窗）`,
     );
     return { success: true };
   } finally {
@@ -147,17 +176,17 @@ function prevDateStr(dateStr: string): string {
   return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
 }
 
-/** 对单个窗口执行：格式化 → LLM → 解析 → 向量化 → 入库 → 镜像 float。失败返回 null。 */
+/** 对单个窗口执行：格式化 → LLM → 校验 → 解析 → 向量化 → 入库 → 镜像 float。失败返回原因。 */
 async function generateEventForWindow(
   characterId: string,
   characterName: string,
   targetLength: number,
   windowEntries: NativeTimelineEntry[],
   opts?: { suppressMirror?: boolean; migrated?: boolean; contextDate?: string },
-): Promise<ComplexEvent | null> {
+): Promise<{ event: ComplexEvent | null; error?: string }> {
   const config = loadComplexMemoryConfig();
   const formatted = formatTimelineForSummarization(windowEntries);
-  if (!formatted) return null;
+  if (!formatted) return { event: null, error: "窗口素材为空，无法生成" };
 
   // 注入参考上下文：人设/规则/user人设/世界观 + 核心记忆 + 活跃周期 + 昨日日记（与正常生成机制一致）
   const ctx = buildGenerationContext(characterId);
@@ -192,7 +221,7 @@ async function generateEventForWindow(
   }, opts?.contextDate);
 
   const apiConfig = resolveAuxiliaryApiConfig("complexMemoryApiConfigId");
-  if (!apiConfig) return null;
+  if (!apiConfig) return { event: null, error: "未配置复杂记忆生成 API" };
 
   const result = await simpleLLMCall(
     apiConfig,
@@ -211,12 +240,21 @@ async function generateEventForWindow(
   });
   if (!result.content) {
     console.warn("[ComplexMemory] 事件生成 LLM 返回空:", result.error);
-    return null;
+    return { event: null, error: result.error || "LLM 返回空内容" };
   }
-  if (result.wasTruncated) return null;
 
-  const parsed = parseEventJson(result.content);
-  if (!parsed) return null;
+  // 门卫：拒答/过短/非 JSON/截断/纯思维链一律拒绝入库。
+  const guard = validateSummaryOutput(result.content, "event", {
+    fromReasoning: result.usedReasoningFallback === true,
+    wasTruncated: result.wasTruncated === true,
+  });
+  if (!guard.ok) {
+    console.warn("[ComplexMemory] 事件生成输出未通过校验:", guard.reason);
+    return { event: null, error: guard.reason };
+  }
+
+  const parsed = parseEventFields(guard.json);
+  if (!parsed) return { event: null, error: "事件 JSON 字段缺失，已拒绝入库" };
 
   let embedding: number[] | undefined;
   if (config.vectorRecallEnabled) {
@@ -265,15 +303,11 @@ async function generateEventForWindow(
     }
   }
 
-  return event;
+  return { event };
 }
 
-/**
- * 迁移用：按窗口索引生成单个事件窗口（全量时间线，从最早正向推进）。
- * 每窗一次 LLM 调用，返回下一窗索引与是否完成，天然支持断点续跑。
- * 迁移期间抑制 float 镜像，避免与既有 float 长期记忆重复。
- */
-/** 手动重新总结单条事件：基于该事件的原始素材重新提炼并替换内容（自选事件重新总结）。 */
+/** 手动重新总结单条事件：基于该事件的原始素材重新提炼并替换内容（自选事件重新总结）。
+ *  校验通过才覆盖原文；失败时保留原事件。 */
 export async function regenerateEvent(
   characterId: string,
   characterName: string,
@@ -289,7 +323,13 @@ export async function regenerateEvent(
     label: `复杂记忆·事件重写·${characterName}`,
   });
   if (!result.content) return { success: false, error: result.error || "LLM 返回空内容" };
-  const content = result.content.trim();
+  const guard = validateSummaryOutput(result.content, "event", {
+    requireJson: false,
+    fromReasoning: result.usedReasoningFallback === true,
+    wasTruncated: result.wasTruncated === true,
+  });
+  if (!guard.ok) return { success: false, error: guard.reason };
+  const content = guard.text;
   const updated: ComplexEvent = { ...event, content, lastAccessedAt: new Date().toISOString() };
   await saveEvent(updated);
   if (config.vectorRecallEnabled) {
@@ -373,7 +413,7 @@ export async function generateEventWindow(
   }
 
   const contextDate = opts?.date ?? dateFromTimestamp(windows[windowIndex][windows[windowIndex].length - 1]?.timestamp);
-  const event = await generateEventForWindow(
+  const win = await generateEventForWindow(
     characterId,
     characterName,
     config.eventTargetLength,
@@ -384,8 +424,8 @@ export async function generateEventWindow(
       contextDate,
     },
   );
-  if (!event) {
-    return { success: false, error: "事件窗口生成失败", totalWindows: windows.length, nextIndex: windowIndex, done: false };
+  if (!win.event) {
+    return { success: false, error: win.error ?? "事件窗口生成失败", totalWindows: windows.length, nextIndex: windowIndex, done: false };
   }
 
   const nextIndex = windowIndex + 1;

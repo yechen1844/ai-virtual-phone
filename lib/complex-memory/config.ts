@@ -7,11 +7,13 @@ import { loadCharacters } from "../character-storage";
 import type {
   CharacterRuntimeState,
   ComplexMemoryConfig,
+  FailedEventRange,
   MemoryPromptKey,
   MemoryPrompts,
   RingBufferState,
 } from "./types";
 import { DEFAULT_PROMPTS } from "./prompts";
+import { dateFromTimestamp } from "./utils";
 
 // ── 键名 ──
 export const COMPLEX_MEMORY_CONFIG_KEY = "ai_phone_complex_memory_config_v1";
@@ -275,6 +277,7 @@ export function loadCharacterState(characterId: string): CharacterRuntimeState {
     lastVoltageRunAt: null,
     lastDailyCheckDate: null,
     failedDailyDates: [],
+    failedEventRanges: [],
   };
   if (typeof window === "undefined") return fallback;
   try {
@@ -288,6 +291,26 @@ export function loadCharacterState(characterId: string): CharacterRuntimeState {
         ...fallback.ringBuffer,
         ...(parsed.ringBuffer ?? {}),
       },
+      failedEventRanges: Array.isArray(parsed.failedEventRanges)
+        ? parsed.failedEventRanges
+            .filter(
+              (f): f is FailedEventRange =>
+                !!f &&
+                typeof f === "object" &&
+                typeof (f as FailedEventRange).startTs === "string" &&
+                typeof (f as FailedEventRange).endTs === "string",
+            )
+            .map((f) => ({
+              id: typeof f.id === "string" ? f.id : `evtfail_${characterId}_${dateFromTimestamp(f.startTs)}`,
+              startTs: f.startTs,
+              endTs: f.endTs,
+              count: typeof f.count === "number" ? f.count : 0,
+              reason: typeof f.reason === "string" ? f.reason : "未知原因",
+              attempts: typeof f.attempts === "number" ? f.attempts : 1,
+              at: typeof f.at === "string" ? f.at : new Date().toISOString(),
+              nextCursorTs: typeof f.nextCursorTs === "string" ? f.nextCursorTs : undefined,
+            }))
+        : [],
     };
   } catch {
     return fallback;
@@ -319,6 +342,71 @@ export function markFailedDaily(characterId: string, date: string, reason: strin
 export function clearFailedDaily(characterId: string, date: string): void {
   const state = loadCharacterState(characterId);
   state.failedDailyDates = (state.failedDailyDates ?? []).filter((f) => f.date !== date);
+  saveCharacterState(state);
+}
+
+/** 记录事件生成失败/待续时段；同一「起始日期」只保留一条，合并次数与最后原因。 */
+export function markFailedEventRange(
+  characterId: string,
+  range: { startTs: string; endTs: string; count: number; reason: string; nextCursorTs?: string },
+): void {
+  if (typeof window === "undefined") return;
+  const state = loadCharacterState(characterId);
+  const list = state.failedEventRanges ?? [];
+  const dayKey = dateFromTimestamp(range.startTs);
+  const existing = list.find((f) => dateFromTimestamp(f.startTs) === dayKey);
+  const now = new Date().toISOString();
+  if (existing) {
+    existing.endTs = range.endTs;
+    existing.count = range.count;
+    existing.reason = range.reason;
+    existing.at = now;
+    existing.attempts = (existing.attempts ?? 1) + 1;
+    if (range.nextCursorTs) existing.nextCursorTs = range.nextCursorTs;
+  } else {
+    list.push({
+      id: `evtfail_${characterId}_${dayKey}`,
+      startTs: range.startTs,
+      endTs: range.endTs,
+      count: range.count,
+      reason: range.reason,
+      attempts: 1,
+      at: now,
+      nextCursorTs: range.nextCursorTs,
+    });
+  }
+  if (list.length > 30) list.splice(0, list.length - 30);
+  state.failedEventRanges = list;
+  saveCharacterState(state);
+}
+
+/** 清除单条事件失败记录（按 id）。 */
+export function clearFailedEventRange(characterId: string, id: string): void {
+  const state = loadCharacterState(characterId);
+  const list = state.failedEventRanges ?? [];
+  const next = list.filter((f) => f.id !== id);
+  if (next.length === list.length) return;
+  state.failedEventRanges = next;
+  saveCharacterState(state);
+}
+
+/** 清除已被水位线覆盖（即后来成功总结过）的事件失败记录。 */
+export function clearCoveredEventFailures(characterId: string): void {
+  const state = loadCharacterState(characterId);
+  const list = state.failedEventRanges ?? [];
+  const watermark = state.ringBuffer.watermarkTimestamp;
+  if (!watermark || list.length === 0) return;
+  const kept = list.filter((f) => f.endTs > watermark);
+  if (kept.length === list.length) return;
+  state.failedEventRanges = kept;
+  saveCharacterState(state);
+}
+
+/** 清空全部事件失败记录（素材不足 4 条、无需再补时调用）。 */
+export function clearAllEventFailures(characterId: string): void {
+  const state = loadCharacterState(characterId);
+  if (!state.failedEventRanges?.length) return;
+  state.failedEventRanges = [];
   saveCharacterState(state);
 }
 

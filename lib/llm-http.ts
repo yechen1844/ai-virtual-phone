@@ -6,7 +6,7 @@
 //  - 上游 429/5xx 与网络抖动自动退避重试（可在聊天设置里关闭），避免一次瞬时打满就整条回复失败。
 
 import type { LlmRequestPayload } from "./llm-provider-adapter";
-import { isLlmRetryEnabled } from "./chat-storage";
+import { getLlmRetryCount, isLlmRetryEnabled } from "./chat-storage";
 
 export type FetchLlmPayloadOptions = {
     signal?: AbortSignal;
@@ -14,9 +14,9 @@ export type FetchLlmPayloadOptions = {
 
 /** 上游瞬时故障：值得退避后重试的状态码 */
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
-/** 总尝试次数（首次 + 2 次重试） */
-const MAX_ATTEMPTS = 3;
 const BASE_RETRY_DELAY_MS = 1200;
+/** 单次退避等待上限，避免重试次数调大后等待过久 */
+const MAX_RETRY_DELAY_MS = 8000;
 
 function isAbortLike(error: unknown): boolean {
     return error instanceof DOMException
@@ -71,7 +71,8 @@ export async function fetchLlmPayload(
     payload: LlmRequestPayload,
     options: FetchLlmPayloadOptions = {},
 ): Promise<Response> {
-    const attempts = isLlmRetryEnabled() ? MAX_ATTEMPTS : 1;
+    // 每次请求时读取配置：总尝试次数 = 1 次首发 + 用户配置的重试次数（开关关闭则只发一次）
+    const attempts = isLlmRetryEnabled() ? 1 + getLlmRetryCount() : 1;
 
     for (let attempt = 1; ; attempt++) {
         const isLastAttempt = attempt >= attempts;
@@ -86,6 +87,9 @@ export async function fetchLlmPayload(
             if (isAbortLike(error) || isLastAttempt) throw error;
             console.warn(`[LLM] request failed, retry ${attempt}/${attempts - 1}`, error);
         }
-        await waitForRetry(BASE_RETRY_DELAY_MS * 2 ** (attempt - 1), options.signal);
+        await waitForRetry(
+            Math.min(BASE_RETRY_DELAY_MS * 2 ** (attempt - 1), MAX_RETRY_DELAY_MS),
+            options.signal,
+        );
     }
 }

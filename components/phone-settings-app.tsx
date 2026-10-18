@@ -26,7 +26,7 @@ import { PageShell } from "./ui/page-shell";
 import { CardGrid, FeaturedCard, type CardItem, type FeaturedCardItem } from "./ui/card-grid";
 import { GlassIcon } from "./ui/glass-icon";
 import { Toggle } from "./ui/form";
-import { loadChatAppSettings, saveChatAppSettings } from "@/lib/chat-storage";
+import { getLlmRetryCount, loadChatAppSettings, saveChatAppSettings } from "@/lib/chat-storage";
 import { loadKeepAlive, saveKeepAlive } from "@/lib/weixin-storage";
 import { BINDING_ACCENTS, CONTENT_APP_ACCENTS } from "@/lib/ui-accent-colors";
 
@@ -111,6 +111,7 @@ export function PhoneSettingsApp({ onClose, onNotice }: SettingsPageProps) {
     const [overrideBack, setOverrideBack] = useState<(() => void) | null>(null);
     const [timeAware, setTimeAware] = useState(true);
     const [llmRetryEnabled, setLlmRetryEnabled] = useState(true);
+    const [llmRetryCount, setLlmRetryCount] = useState(2);
     const [promptViewerEnabled, setPromptViewerEnabled] = useState(false);
     const [quickActionEnabled, setQuickActionEnabled] = useState(false);
     const [floatingDockEnabled, setFloatingDockEnabled] = useState(false);
@@ -232,6 +233,14 @@ export function PhoneSettingsApp({ onClose, onNotice }: SettingsPageProps) {
         setLlmRetryEnabled(next);
         saveChatAppSettings({ ...loadChatAppSettings(), llmRetryEnabled: next });
         onNotice(next ? "已开启请求自动重试" : "已关闭请求自动重试");
+    }, [onNotice]);
+
+    const handleLlmRetryCountChange = useCallback((next: number) => {
+        // 语义为「重试次数」（不含首发），钳制 0–10 的整数，非法值回退默认 2
+        const clamped = Number.isFinite(next) ? Math.max(0, Math.min(10, Math.round(next))) : 2;
+        setLlmRetryCount(clamped);
+        saveChatAppSettings({ ...loadChatAppSettings(), llmRetryCount: clamped });
+        onNotice(clamped === 0 ? "已关闭自动重试（次数为 0）" : `自动重试次数已设为 ${clamped} 次`);
     }, [onNotice]);
 
     const handlePromptViewerChange = useCallback((next: boolean) => {
@@ -359,6 +368,7 @@ export function PhoneSettingsApp({ onClose, onNotice }: SettingsPageProps) {
         const settings = loadChatAppSettings();
         setTimeAware(settings.timeAware !== false);
         setLlmRetryEnabled(settings.llmRetryEnabled !== false);
+        setLlmRetryCount(getLlmRetryCount());
         setPromptViewerEnabled(settings.promptViewerEnabled === true);
         setQuickActionEnabled(settings.quickActionEnabled === true);
         setFloatingDockEnabled(settings.floatingDockEnabled === true);
@@ -454,9 +464,35 @@ export function PhoneSettingsApp({ onClose, onNotice }: SettingsPageProps) {
                                 </span>
                                 <div className="card-featured-body">
                                     <div className="card-featured-label">请求自动重试</div>
-                                    <div className="card-featured-desc">上游返回 429/5xx 或网络抖动时自动退避重试（最多 2 次），避免一次瞬时故障就整条回复失败</div>
+                                    <div className="card-featured-desc">上游返回 429/5xx 或网络抖动时自动退避重试，避免一次瞬时故障就整条回复失败</div>
                                 </div>
                                 <Toggle checked={llmRetryEnabled} onChange={handleLlmRetryChange} className="settings-toggle-control" />
+                            </div>
+                            <div className="app-card card-featured settings-toggle-card">
+                                <span className="card-icon card-icon-glass">
+                                    <GlassIcon name="api" />
+                                </span>
+                                <div className="card-featured-body">
+                                    <div className="card-featured-label">自动重试次数</div>
+                                    <div className="card-featured-desc">单次请求失败后最多再试几次，不含首次请求（0 = 不重试；可填 0–10，默认 2）</div>
+                                </div>
+                                <input
+                                    type="number"
+                                    inputMode="numeric"
+                                    min={0}
+                                    max={10}
+                                    step={1}
+                                    value={llmRetryCount}
+                                    onChange={event => {
+                                        const raw = event.target.value;
+                                        if (raw === "") return;
+                                        const parsed = Number(raw);
+                                        if (Number.isFinite(parsed)) handleLlmRetryCountChange(parsed);
+                                    }}
+                                    className="ui-input settings-toggle-control"
+                                    style={{ width: 56, textAlign: "center" }}
+                                    aria-label="自动重试次数"
+                                />
                             </div>
                             <div className="app-card card-featured settings-toggle-card">
                                 <span className="card-icon card-icon-glass">

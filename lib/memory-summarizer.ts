@@ -21,6 +21,7 @@ import { generateEmbedding, resolveEmbeddingModel } from "./memory-embedding";
 import { simpleLLMCall } from "./api-helpers";
 import { maybeRunCoreMemoryPipeline } from "./core-memory-builder";
 import { isComplexMemoryEnabled } from "./complex-memory/config";
+import { validateSummaryOutput } from "./complex-memory/output-guard";
 
 /** Per-character lock to prevent concurrent summarization. */
 const summarizingSet = new Set<string>();
@@ -116,12 +117,18 @@ export async function runSummarizationPipeline(
         return { success: false, error: result.error || "LLM 返回了空内容" };
     }
 
-    if (result.wasTruncated) {
-        console.warn("[MemorySummarizer] Summary generation truncated:", result.finishReason);
-        return { success: false, error: "记忆总结结果疑似被截断，已取消入库，请稍后重试或提高模型输出上限" };
+    // 门卫：拒答/过短/截断/纯思维链一律拒绝入库。
+    const guard = validateSummaryOutput(result.content, "float", {
+        requireJson: false,
+        fromReasoning: result.usedReasoningFallback === true,
+        wasTruncated: result.wasTruncated === true,
+    });
+    if (!guard.ok) {
+        console.warn("[MemorySummarizer] Summary output rejected:", guard.reason);
+        return { success: false, error: guard.reason };
     }
 
-    const summary = result.content;
+    const summary = guard.text;
 
     // Generate embedding for the summary (only if vector recall is enabled)
     let embedding: number[] | undefined;

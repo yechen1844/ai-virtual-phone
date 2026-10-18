@@ -24,6 +24,7 @@ import {
   RefreshCw,
   RotateCcw,
   Save,
+  Search,
   Settings2,
   Sparkles,
   Trash2,
@@ -103,6 +104,7 @@ import {
 import { generateDaily, regenerateDaily, summarizeDailyRange } from "@/lib/complex-memory/daily-generator";
 import { distillPeriod, createPeriodManual } from "@/lib/complex-memory/period-distiller";
 import { runEventGeneration, regenerateEvent, uncoverEvent } from "@/lib/complex-memory/event-generator";
+import { auditEventCoverage, formatAuditRange, type EventAuditItem } from "@/lib/complex-memory/event-audit";
 import {
   getMigrationState,
   startMigration,
@@ -135,6 +137,7 @@ import type {
   ComplexEvent,
   ComplexPeriod,
   ComplexMemoryConfig,
+  FailedEventRange,
   MemoryPromptKey,
   MigrationState,
 } from "@/lib/complex-memory/types";
@@ -728,13 +731,15 @@ function DailyTab({ characterId, characterName, notify, refresh }: {
 
   const [failedDailies, setFailedDailies] = useState<{ date: string; reason: string; at: string }[]>(() => loadCharacterState(characterId).failedDailyDates ?? []);
   const handleRetryFailedDaily = async (date: string) => {
-    const res = await generateDaily(characterId, characterName, date);
+    // 用 regenerateDaily：旧日记存在时也能「成功后再替换」，失败时保留旧日记并继续留在失败清单。
+    const res = await regenerateDaily(characterId, characterName, date);
     if (res.success) {
       clearFailedDaily(characterId, date);
       setFailedDailies(loadCharacterState(characterId).failedDailyDates ?? []);
       void load();
       notify({ kind: "ok", text: `已重新生成 ${date} 日记` });
     } else {
+      setFailedDailies(loadCharacterState(characterId).failedDailyDates ?? []);
       notify({ kind: "err", text: `重生成失败：${res.error ?? "未知原因"}` });
     }
   };
@@ -781,6 +786,7 @@ function DailyTab({ characterId, characterName, notify, refresh }: {
     setBusy(true);
     const res = await regenerateDaily(characterId, characterName, d.date);
     setBusy(false);
+    setFailedDailies(loadCharacterState(characterId).failedDailyDates ?? []);
     if (res.success) {
       notify({ kind: "ok", text: `「${d.date}」日记已重新总结` });
       await load();
@@ -806,6 +812,7 @@ function DailyTab({ characterId, characterName, notify, refresh }: {
     setBusy(false);
     setSelectedDailies(new Set());
     setSelectMode(false);
+    setFailedDailies(loadCharacterState(characterId).failedDailyDates ?? []);
     await load();
     refresh();
     notify({ kind: ok > 0 ? "ok" : "err", text: `批量重新总结：成功 ${ok}，失败 ${fail}` });
@@ -818,6 +825,7 @@ function DailyTab({ characterId, characterName, notify, refresh }: {
     setRangeBusy(false);
     setRangeOpen(false);
     notify({ kind: "ok", text: `按日期总结完成：生成 ${res.generated} 篇${res.failedDates.length ? `，失败 ${res.failedDates.join("、")}` : ""}` });
+    setFailedDailies(loadCharacterState(characterId).failedDailyDates ?? []);
     await load();
     refresh();
   };
@@ -1503,10 +1511,15 @@ function EventTab({ characterId, characterName, notify, refresh }: {
   const [draft, setDraft] = useState("");
   const [selectMode, setSelectMode] = useState(false);
   const [selectedEvents, setSelectedEvents] = useState<Set<string>>(new Set());
+  const [auditItems, setAuditItems] = useState<EventAuditItem[]>([]);
+  const [auditChecked, setAuditChecked] = useState(false);
+  const [failedRanges, setFailedRanges] = useState<FailedEventRange[]>([]);
+  const [auditBusy, setAuditBusy] = useState(false);
 
   const load = useCallback(async () => {
     setEvents(await loadEvents(characterId));
     setSaveLog(loadEventSaveLog());
+    setFailedRanges(loadCharacterState(characterId).failedEventRanges ?? []);
   }, [characterId]);
 
   useEffect(() => {
@@ -1531,6 +1544,60 @@ function EventTab({ characterId, characterName, notify, refresh }: {
 
   const toggleSelectEvent = (id: string) =>
     setSelectedEvents((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+
+  // 审计只在用户点击时执行，避免历史很大时打开页面就卡。
+  const handleRunAudit = () => {
+    const items = auditEventCoverage(characterId);
+    setAuditItems(items);
+    setAuditChecked(true);
+    if (items.length === 0) notify({ kind: "ok", text: "没有发现漏掉的总结" });
+  };
+
+  // 补总结：复用现有事件生成入口，从当前水位线继续；成功后失败记录会按水位线自动清掉。
+  const handleRetryRange = async (label: string) => {
+    setAuditBusy(true);
+    try {
+      const res = await runEventGeneration(characterId, characterName);
+      if (res.success) {
+        notify({ kind: "ok", text: `${label} 已补上总结` });
+      } else {
+        notify({ kind: "err", text: `${label} 补总结失败：${res.error ?? "未知原因"}` });
+      }
+      await load();
+      if (auditChecked) setAuditItems(auditEventCoverage(characterId));
+      refresh();
+    } finally {
+      setAuditBusy(false);
+    }
+  };
+
+  const handleRetryAllAudit = async () => {
+    if (auditItems.length === 0) { notify({ kind: "err", text: "没有需要补的时段" }); return; }
+    setAuditBusy(true);
+    let ok = 0;
+    let fail = 0;
+    let lastError = "";
+    try {
+      // 单次生成有批数上限，这里最多连跑 10 轮把积压补完。
+      for (let round = 0; round < 10; round++) {
+        if (auditEventCoverage(characterId).length === 0) break;
+        const res = await runEventGeneration(characterId, characterName);
+        if (res.success) ok++;
+        else { fail++; lastError = res.error ?? "未知原因"; break; }
+      }
+      await load();
+      if (auditChecked) setAuditItems(auditEventCoverage(characterId));
+      refresh();
+      notify({
+        kind: ok > 0 ? "ok" : "err",
+        text: fail > 0
+          ? `补总结：成功 ${ok} 轮，未完成：${lastError}`
+          : `补总结完成：成功 ${ok} 轮，已没有遗漏时段`,
+      });
+    } finally {
+      setAuditBusy(false);
+    }
+  };
 
   const handleBulkRegenerateEvents = async () => {
     if (selectedEvents.size === 0) { notify({ kind: "err", text: "请先选择要重新总结的事件" }); return; }
@@ -1635,6 +1702,9 @@ function EventTab({ characterId, characterName, notify, refresh }: {
               <RefreshCw size={14} /> 多选重总结
             </button>
           )}
+          <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={handleRunAudit} disabled={busy} title="按现有水位线检查历史事件有没有漏掉的时段总结（历史较多时可能耗时）">
+            <Search size={14} /> 检查有没有漏掉的总结
+          </button>
           <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={handleGenerate} disabled={busy}>
             {busy ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} />} 立即压缩
           </button>
@@ -1643,6 +1713,55 @@ function EventTab({ characterId, characterName, notify, refresh }: {
           </button>
         </div>
       </div>
+
+      {auditChecked && auditItems.length === 0 && (
+        <div className="cm-meta-text" style={{ marginBottom: 10 }}>检查完成：没有发现漏掉的总结。</div>
+      )}
+
+      {auditItems.length > 0 && (
+        <div className="cm-card" style={{ borderColor: "var(--c-warning, #d08770)", marginBottom: 10 }}>
+          <div className="cm-config-label" style={{ color: "var(--c-warning, #d08770)", display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ flex: 1 }}>发现 {auditItems.length} 段没总结 → 一键补上</span>
+            <button type="button" className="ui-btn ui-btn-primary ts-12" onClick={() => void handleRetryAllAudit()} disabled={auditBusy || busy}>
+              {auditBusy ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} 一键全部补总结
+            </button>
+          </div>
+          {auditItems.filter((item) => item.source !== "failed").map((item) => (
+            <div key={item.id} className="cm-progress-row" style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6, flexWrap: "wrap" }}>
+              <span className="cm-tl-day">{formatAuditRange(item)}</span>
+              <span className="cm-meta-text">{item.count} 条</span>
+              <span style={{ flex: 1 }}>{item.reason}</span>
+              <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => void handleRetryRange(formatAuditRange(item))} disabled={auditBusy || busy}>
+                {auditBusy ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} 补上这段
+              </button>
+            </div>
+          ))}
+          {auditItems.some((item) => item.source === "failed") && (
+            <div className="cm-meta-text" style={{ marginTop: 6 }}>
+              其中 {auditItems.filter((item) => item.source === "failed").length} 段是失败记录，见下方「失败记录」。
+            </div>
+          )}
+        </div>
+      )}
+
+      {failedRanges.length > 0 && (
+        <div className="cm-card" style={{ borderColor: "var(--c-warning, #d08770)", marginBottom: 10 }}>
+          <div className="cm-config-label" style={{ color: "var(--c-warning, #d08770)" }}>
+            失败记录 · 生成失败/待续（点「重试」继续补）
+          </div>
+          {failedRanges.map((f) => (
+            <div key={f.id} className="cm-progress-row" style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6, flexWrap: "wrap" }}>
+              <span className="cm-tl-day">{formatAuditRange(f)}</span>
+              <span className="cm-meta-text">{f.count} 条</span>
+              <span style={{ flex: 1 }}>{f.reason}（已试 {f.attempts} 次）</span>
+              <button type="button" className="ui-btn ui-btn-outline ts-12" onClick={() => void handleRetryRange(formatAuditRange(f))} disabled={auditBusy || busy}>
+                <RefreshCw size={14} /> 重试
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {saveLog && saveLog.length > 0 && (
         <div className="cm-card" style={{ marginBottom: 10, padding: 8 }}>
           <div className="cm-meta-text" style={{ fontWeight: 600 }}>最近事件保存日志（排查覆盖问题）</div>

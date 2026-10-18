@@ -289,6 +289,7 @@ export type ChatAppSettings = {
     callVibrationEnabled?: boolean; // 语音/视频来电等待接听时循环振动（默认开；iOS 网页不支持振动则无效果）
     maxToolRounds?: number; // 单条消息的工具循环轮数上限（默认 5；每轮=一次模型请求，轮内调用条数不限）
     llmRetryEnabled?: boolean; // 上游返回 429/5xx 或网络抖动时自动退避重试（默认开）
+    llmRetryCount?: number; // 自动重试次数（不含首次请求，0 = 不重试；默认 2）
     floatingDockEnabled?: boolean; // 悬浮球贴边半隐藏收拢模式（默认关）
 };
 
@@ -302,6 +303,13 @@ export function getMaxToolRounds(): number {
 /** 上游 429/5xx / 网络抖动时是否自动退避重试（默认开） */
 export function isLlmRetryEnabled(): boolean {
     return loadChatAppSettings().llmRetryEnabled !== false;
+}
+
+/** 自动重试次数（不含首次请求；默认 2，夹在 0–10 的整数，非法值回退 2） */
+export function getLlmRetryCount(): number {
+    const raw = loadChatAppSettings().llmRetryCount;
+    if (typeof raw !== "number" || !Number.isFinite(raw)) return 2;
+    return Math.max(0, Math.min(10, Math.round(raw)));
 }
 
 /** 会话是否开启线上流式生成（默认关；按会话独立控制，单聊/群聊都生效） */
@@ -803,6 +811,7 @@ const DEFAULT_CHAT_APP_SETTINGS: ChatAppSettings = {
     quickActionEnabled: false,
     enterToSendEnabled: false,
     llmRetryEnabled: true,
+    llmRetryCount: 2,
     floatingDockEnabled: false,
 };
 

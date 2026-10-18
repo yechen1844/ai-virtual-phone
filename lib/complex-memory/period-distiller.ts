@@ -10,6 +10,7 @@ import {
   releaseGenerationLock,
   loadComplexMemoryConfig,
 } from "./config";
+import { validateSummaryOutput } from "./output-guard";
 import { renderMemoryPrompt, DEFAULT_PROMPTS } from "./prompts";
 import {
   getPeriod,
@@ -19,7 +20,7 @@ import {
   saveEvent,
   savePeriod,
 } from "./storage";
-import { getUserName, dateString, dateFromTimestamp, extractJsonObject, capSourceMaterials } from "./utils";
+import { getUserName, dateString, dateFromTimestamp, capSourceMaterials } from "./utils";
 import { pushFeedAudit } from "./feed-audit";
 import { runEraseScan } from "./voltage";
 import { fineTuneCoreMemory } from "./core-builder";
@@ -89,8 +90,15 @@ export async function distillPeriod(
     });
     if (!result.content) return { success: false, error: result.error || "LLM 返回空内容" };
 
-    const parsed = parsePeriodJson(result.content);
-    if (!parsed) return { success: false, error: "周期 JSON 解析失败" };
+    // 门卫：拒答/过短/非 JSON/截断/纯思维链一律拒绝入库。
+    const guard = validateSummaryOutput(result.content, "period", {
+      fromReasoning: result.usedReasoningFallback === true,
+      wasTruncated: result.wasTruncated === true,
+    });
+    if (!guard.ok) return { success: false, error: guard.reason };
+
+    const parsed = parsePeriodFields(guard.json);
+    if (!parsed) return { success: false, error: "周期 JSON 字段缺失" };
 
     const now = new Date().toISOString();
     const updated: ComplexPeriod = {
@@ -166,11 +174,10 @@ function buildPeriodCoverage(period: ComplexPeriod, dailies: ComplexDaily[]): st
   return [...set].sort();
 }
 
-function parsePeriodJson(text: string): { summary: string; timelineIndex: Record<string, string> } | null {
-  const json = extractJsonObject(text);
-  if (!json) return null;
+function parsePeriodFields(json: unknown): { summary: string; timelineIndex: Record<string, string> } | null {
+  if (!json || typeof json !== "object") return null;
   try {
-    const obj = JSON.parse(json) as Record<string, unknown>;
+    const obj = json as Record<string, unknown>;
     const summary = typeof obj.summary === "string" ? obj.summary.trim() : "";
     if (!summary) return null;
     const ti = (obj.timelineIndex ?? {}) as Record<string, unknown>;

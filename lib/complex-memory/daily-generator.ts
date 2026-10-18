@@ -13,7 +13,9 @@ import {
   saveCharacterState,
   setLastDailyCheckDate,
   markFailedDaily,
+  clearFailedDaily,
 } from "./config";
+import { validateSummaryOutput } from "./output-guard";
 import { renderMemoryPrompt, DEFAULT_PROMPTS } from "./prompts";
 import {
   getCurrentCoreView,
@@ -22,9 +24,8 @@ import {
   saveDaily,
   savePeriod,
   getDaily,
-  deleteDaily,
 } from "./storage";
-import { getUserName, dateString, dateFromTimestamp, extractJsonObject, clampNum, capSourceMaterials } from "./utils";
+import { getUserName, dateString, dateFromTimestamp, clampNum, capSourceMaterials } from "./utils";
 import { loadSourceTimeline } from "./source";
 import { pushFeedAudit } from "./feed-audit";
 import { buildGenerationContext } from "./context-builder";
@@ -107,12 +108,12 @@ export async function generateDaily(
   characterId: string,
   characterName: string,
   date: string,
-  opts?: { suppressChain?: boolean; migrated?: boolean },
+  opts?: { suppressChain?: boolean; migrated?: boolean; replaceExisting?: boolean },
 ): Promise<{ success: boolean; error?: string }> {
   const config = loadComplexMemoryConfig();
 
   const existing = await getDaily(characterId, date);
-  if (existing) return { success: false, error: "当日日记已存在（幂等）" };
+  if (existing && !opts?.replaceExisting) return { success: false, error: "当日日记已存在（幂等）" };
 
   if (!acquireGenerationLock(characterId, "daily")) {
     return { success: false, error: "已有生成任务进行中" };
@@ -177,8 +178,15 @@ export async function generateDaily(
     });
     if (!result.content) return { success: false, error: result.error || "LLM 返回空内容" };
 
-    const parsed = parseDailyJson(result.content);
-    if (!parsed) return { success: false, error: "日记 JSON 解析失败" };
+    // 门卫：拒答/过短/非 JSON/截断/纯思维链一律拒绝入库（旧日记保留）。
+    const guard = validateSummaryOutput(result.content, "daily", {
+      fromReasoning: result.usedReasoningFallback === true,
+      wasTruncated: result.wasTruncated === true,
+    });
+    if (!guard.ok) return { success: false, error: guard.reason };
+
+    const parsed = parseDailyFields(guard.json);
+    if (!parsed) return { success: false, error: "日记 JSON 字段缺失" };
 
     const periodResult = await applyPeriodCheck(characterId, date, parsed.periodCheck, activePeriods);
     await applyPeriodProgress(characterId, date, parsed.periodProgress);
@@ -252,11 +260,10 @@ export async function generateDaily(
   return outcome;
 }
 
-function parseDailyJson(text: string): DailyParseResult | null {
-  const json = extractJsonObject(text);
-  if (!json) return null;
+function parseDailyFields(json: unknown): DailyParseResult | null {
+  if (!json || typeof json !== "object") return null;
   try {
-    const obj = JSON.parse(json) as Record<string, unknown>;
+    const obj = json as Record<string, unknown>;
     const diary = typeof obj.diary === "string" ? obj.diary.trim() : "";
     if (!diary) return null;
     const emo = (obj.emotion ?? {}) as Record<string, unknown>;
@@ -306,15 +313,24 @@ function parseDailyJson(text: string): DailyParseResult | null {
   }
 }
 
-/** 手动重新总结某一天的日记：删除旧日记后按当日时间线重新生成（自选日期重新总结）。 */
+/** 手动重新总结某一天的日记：先生成并校验，成功后才一次性替换旧日记。
+ *  失败时保留旧日记，并把失败写进 failedDailyDates（供用户重试）。 */
 export async function regenerateDaily(
   characterId: string,
   characterName: string,
   date: string,
 ): Promise<{ success: boolean; error?: string }> {
-  const existing = await getDaily(characterId, date);
-  if (existing) await deleteDaily(existing.id);
-  return generateDaily(characterId, characterName, date, { suppressChain: true });
+  const res = await generateDaily(characterId, characterName, date, {
+    suppressChain: true,
+    replaceExisting: true,
+  });
+  if (res.success) {
+    clearFailedDaily(characterId, date);
+  } else if (!res.error?.includes("已有生成任务进行中")) {
+    // 互斥锁冲突不是生成失败，不写失败清单。
+    markFailedDaily(characterId, date, res.error ?? "重新生成失败");
+  }
+  return res;
 }
 
 /** 按日期范围总结：对范围内「有聊天记录」的每一天生成/重生成日记（用于按日期补生成缺失日记）。 */

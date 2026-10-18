@@ -116,6 +116,18 @@ export type RingBufferState = {
   lastCountedChatMessageId: string | null; // 主聊天已按 id 统计到哪条消息（精确计数，防重roll/漏加）
 };
 
+// ── 事件生成失败/待续记录（KV 持久化，按起始日期合并） ──
+export type FailedEventRange = {
+  id: string;              // evtfail_ 前缀
+  startTs: string;         // 未总结时段的起始时间
+  endTs: string;           // 未总结时段的结束时间
+  count: number;           // 该时段素材条数
+  reason: string;          // 最近一次失败/待续原因
+  attempts: number;        // 同一天累计失败次数
+  at: string;              // 最近一次失败时间
+  nextCursorTs?: string;   // 批次上限时的续跑游标（下次从这之后继续）
+};
+
 // ── 角色调度状态（KV 持久化） ──
 export type CharacterRuntimeState = {
   characterId: string;
@@ -125,6 +137,7 @@ export type CharacterRuntimeState = {
   lastVoltageRunAt: string | null;   // 电压落库时间
   lastDailyCheckDate: string | null;  // 跨天触发检查日：最新一天日记检查到哪天
   failedDailyDates: { date: string; reason: string; at: string }[]; // 生成失败的日记（供用户手动重新生成）
+  failedEventRanges?: FailedEventRange[];                            // 生成失败/待续的事件时段（供用户手动补总结）
   migration?: MigrationState;         // 迁移断点
   generationLock?: {
     kind: "event" | "daily" | "period" | "core" | "migration";
