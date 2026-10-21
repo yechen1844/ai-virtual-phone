@@ -10,7 +10,7 @@
 //   - 图像处理套件 (image_pack)       — 10 个子工具
 //   - 导航工具 (navigate)             — 1 个独立工具（直接暴露）
 
-import type { LlmToolDefinition } from "./llm-provider-adapter";
+import { sanitizeToolArgs, type LlmToolDefinition } from "./llm-provider-adapter";
 import type { ToolCall, ToolResult } from "./tool-executor";
 import type { MascotPageContext } from "./mascot-context";
 import type { PresetConfig, Prompt } from "./settings-types";
@@ -1373,7 +1373,8 @@ export function getMascotNativeToolDefinitions(expandedPackageIds: string[] = []
     defs.push({
         name: getMascotNativeToolName(MASCOT_NAVIGATE_TOOL.name),
         description: MASCOT_NAVIGATE_TOOL.description,
-        parameters: MASCOT_NAVIGATE_TOOL.parameterSchema,
+        // schema 里的 null 默认值/示例同样会进 protobuf，注册时一并剔除
+        parameters: sanitizeToolArgs(MASCOT_NAVIGATE_TOOL.parameterSchema),
     });
 
     // 每个套件先暴露一个 loader（除非已展开）
@@ -1385,7 +1386,7 @@ export function getMascotNativeToolDefinitions(expandedPackageIds: string[] = []
                 defs.push({
                     name: getMascotNativeToolName(tool.name),
                     description: tool.description,
-                    parameters: tool.parameterSchema,
+                    parameters: sanitizeToolArgs(tool.parameterSchema),
                 });
             }
         } else {

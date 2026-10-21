@@ -318,13 +318,31 @@ function asRecord(value: unknown): Record<string, unknown> {
 const MAX_TOOL_ARGS_DEPTH = 64;
 
 /**
+ * args 可能以 JSON 字符串形态出现（历史回放的旧数据、文本协议工具调用），
+ * 只对以 { / [ 开头的字符串尝试解析；解析失败返回 undefined（调用方原样保留/清空）。
+ */
+function parseToolArgsString(value: string): unknown {
+    const trimmed = value.trim();
+    if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return undefined;
+    try {
+        return JSON.parse(trimmed) as unknown;
+    } catch {
+        return undefined;
+    }
+}
+
+/**
  * 原生工具调用参数净化：递归剔除 null/undefined。
  * Gemini 用 protobuf Value 表达 functionCall.args，数组元素或对象字段为 null 时上游直接 400；
  * 历史回放里的旧工具调用同样会触发。只删 null/undefined，其余值（0/false/空串）原样保留，
  * 不做类型转换、不重排。通过 WeakSet（当前递归路径）+ 深度上限防环。
+ *
+ * args 是字符串时先 JSON.parse → 净化 → 归一成对象，交给各 provider 分支自行序列化
+ * （OpenAI 兼容分支 stringify，Gemini/Anthropic 直接用对象）；解析失败不抛错，返回空对象。
  */
-export function sanitizeToolArgs(args: Record<string, unknown>): Record<string, unknown> {
-    const sanitized = sanitizeToolArgsValue(args, new WeakSet<object>(), 0);
+export function sanitizeToolArgs(args: unknown): Record<string, unknown> {
+    const source = typeof args === "string" ? parseToolArgsString(args) : args;
+    const sanitized = sanitizeToolArgsValue(source, new WeakSet<object>(), 0);
     return sanitized && typeof sanitized === "object" && !Array.isArray(sanitized)
         ? sanitized as Record<string, unknown>
         : {};
@@ -560,7 +578,7 @@ function buildOpenAICompatibleRequest(
                         type: "function",
                         function: {
                             name: call.name,
-                            arguments: JSON.stringify(call.args),
+                            arguments: JSON.stringify(sanitizeToolArgs(call.args)),
                         },
                     })),
                 };
@@ -676,7 +694,7 @@ function anthropicContentBlocks(message: LlmRequestMessage): unknown[] {
                 type: "tool_use",
                 id: call.id,
                 name: call.name,
-                input: call.args,
+                input: sanitizeToolArgs(call.args),
             })),
         ];
     }
@@ -770,11 +788,14 @@ function geminiParts(message: LlmRequestMessage): unknown[] {
             ...(message.reasoning ? [{ thought: true, text: message.reasoning }] : []),
             ...(message.content ? [{ text: message.content }] : []),
             ...message.toolCalls.map((call) => {
-                const hasArgs = call.args && typeof call.args === "object" && Object.keys(call.args).length > 0;
+                // 兜底：即使消息不是经 buildProviderRequest 的净化链进来的（或 args 是字符串形态），
+                // functionCall.args 也不能带 null —— 上游 protobuf Value 会直接 400。
+                const args = sanitizeToolArgs(call.args);
+                const hasArgs = Object.keys(args).length > 0;
                 const part: Record<string, unknown> = {
                     functionCall: {
                         name: call.name,
-                        args: hasArgs ? call.args : { noop: "1" },
+                        args: hasArgs ? args : { noop: "1" },
                     },
                 };
                 if (call.thoughtSignature) part.thoughtSignature = call.thoughtSignature;

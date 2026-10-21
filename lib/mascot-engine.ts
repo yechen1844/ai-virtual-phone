@@ -18,6 +18,7 @@ import {
     buildProviderRequest,
     parseProviderResponse,
     parseProviderStreamDelta,
+    sanitizeToolArgs,
     stripHallucinatedTimestamps,
     type LlmRequestMessage,
     type LlmRequestPayload,
@@ -265,8 +266,13 @@ async function historyToNativeMessages(history: MascotMsg[]): Promise<LlmRequest
             }
         } else {
             // mascot 消息
-            const msg: LlmRequestMessage = m.toolCalls && m.toolCalls.length > 0
-                ? { role: "assistant", content: m.text, toolCalls: m.toolCalls, reasoning: m.reasoning, openRouterReasoningDetails: m.openRouterReasoningDetails }
+            // 历史里的 args 可能来自 IndexedDB 里的旧数据（JSON 字符串）或模型上一轮吐出的 null，
+            // 这里先净化，避免 null 原样进入 functionCall.args 被上游 400。
+            const replayedToolCalls = m.toolCalls && m.toolCalls.length > 0
+                ? m.toolCalls.map((call) => ({ ...call, args: sanitizeToolArgs(call.args) }))
+                : undefined;
+            const msg: LlmRequestMessage = replayedToolCalls && replayedToolCalls.length > 0
+                ? { role: "assistant", content: m.text, toolCalls: replayedToolCalls, reasoning: m.reasoning, openRouterReasoningDetails: m.openRouterReasoningDetails }
                 : { role: "assistant", content: m.text, reasoning: m.reasoning, openRouterReasoningDetails: m.openRouterReasoningDetails };
             out.push(msg);
         }
