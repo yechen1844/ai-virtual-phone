@@ -348,6 +348,22 @@ export function sanitizeToolArgs(args: unknown): Record<string, unknown> {
         : {};
 }
 
+/**
+ * 存储层净化（写入对话历史 / 载入后修复历史），语义与请求侧一致，但不做“必须收敛成对象”的强制转换：
+ * - 字符串且能解析成 JSON → 净化后重新序列化；解析失败原样保留；
+ * - 对象/数组 → 递归剔除 null/undefined；
+ * - 其它值原样返回；整体为 null/undefined 时返回 undefined（调用方自行兜底为空对象）。
+ */
+export function sanitizeToolArgsForStorage(value: unknown): unknown {
+    if (typeof value === "string") {
+        const parsed = parseToolArgsString(value);
+        if (parsed === undefined) return value;
+        const cleaned = sanitizeToolArgsValue(parsed, new WeakSet<object>(), 0);
+        return cleaned === undefined ? value : JSON.stringify(cleaned);
+    }
+    return sanitizeToolArgsValue(value, new WeakSet<object>(), 0);
+}
+
 function sanitizeToolArgsValue(value: unknown, seen: WeakSet<object>, depth: number): unknown {
     if (value === null || value === undefined) return undefined;
     if (typeof value !== "object") return value;

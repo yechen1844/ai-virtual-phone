@@ -5,6 +5,7 @@ import {
     type MascotMsg,
 } from "./mascot-engine";
 import { PAGE_GREETINGS } from "./mascot-prompts";
+import { sanitizeToolArgsForStorage } from "./llm-provider-adapter";
 import {
     buildMascotPackageSchemaPrompt,
     clearExpandedPackages,
@@ -109,6 +110,36 @@ function withTimestamp(msg: MascotMsg): MascotMsg {
     return msg.createdAt ? msg : { ...msg, createdAt: new Date().toISOString() };
 }
 
+function toolArgsEqual(before: unknown, after: unknown): boolean {
+    if (before === after) return true;
+    try {
+        return JSON.stringify(before) === JSON.stringify(after);
+    } catch {
+        return false;
+    }
+}
+
+// 存储层净化：mascot 消息的 toolCalls.args 里残留的 null/undefined 会被 Gemini 的
+// protobuf Value 拒绝（400），而历史回放会反复携带这条脏数据。写入与载入前都在这里清洗。
+// 无变化时返回原对象引用，便于调用方判断是否需要回写。
+function sanitizeMascotMessageToolArgs(msg: MascotMsg): MascotMsg {
+    if (msg.role !== "mascot" || !Array.isArray(msg.toolCalls) || msg.toolCalls.length === 0) return msg;
+    let changed = false;
+    const toolCalls = msg.toolCalls.map((call) => {
+        if (!call || typeof call !== "object") return call;
+        const sanitized = sanitizeToolArgsForStorage(call.args);
+        const nextArgs = (sanitized === undefined ? {} : sanitized) as Record<string, unknown>;
+        if (toolArgsEqual(call.args, nextArgs)) return call;
+        changed = true;
+        return { ...call, args: nextArgs };
+    });
+    return changed ? { ...msg, toolCalls } : msg;
+}
+
+function hasDirtyMascotToolArgs(nextMessages: MascotMsg[]): boolean {
+    return nextMessages.some((msg) => msg && sanitizeMascotMessageToolArgs(msg) !== msg);
+}
+
 // 存储裁剪：真实对话与工具消息各算各的配额。
 // - 真实对话（role 非 tool）：只保留最近 MAX_STORED_MASCOT_MESSAGES 条。
 // - 工具消息（role === tool）：以「连续 tool 消息段（工具链）」为单位，
@@ -183,14 +214,14 @@ function normalizeMessages(nextMessages: MascotMsg[]): MascotMsg[] {
         if (msg.role === "mascot" && msg.toolCalls?.length && droppedToolCallIds.size > 0) {
             const cleaned = removeToolCallsFromMascotMessage(msg, droppedToolCallIds);
             if (!cleaned.cleaned) {
-                result.push(msg);
+                result.push(sanitizeMascotMessageToolArgs(msg));
             } else if (cleaned.message) {
-                result.push(cleaned.message);
+                result.push(sanitizeMascotMessageToolArgs(cleaned.message));
             }
             // cleaned.message === null：剔除后既无 toolCalls 又无可见内容，整条丢弃。
             continue;
         }
-        result.push(msg);
+        result.push(sanitizeMascotMessageToolArgs(msg));
     }
     return result;
 }
@@ -520,9 +551,15 @@ export async function hydrateMascotChat(): Promise<void> {
                 stateGet.onsuccess = () => {
                     const state = stateGet.result as PersistedMascotState | undefined;
                     if (state && Array.isArray(state.sessions) && state.sessions.length > 0) {
-                        sessions = state.sessions
-                            .filter((session) => session && typeof session.id === "string" && Array.isArray(session.messages))
-                            .map((session) => ({ ...session, messages: normalizeMessages(session.messages) }))
+                        const rawSessions = state.sessions
+                            .filter((session) => session && typeof session.id === "string" && Array.isArray(session.messages));
+                        // 载入即修复：历史里若残留含 null 的工具参数，清洗后立刻回写一次。
+                        let needsRepair = false;
+                        sessions = rawSessions
+                            .map((session) => {
+                                if (hasDirtyMascotToolArgs(session.messages)) needsRepair = true;
+                                return { ...session, messages: normalizeMessages(session.messages) };
+                            })
                             .sort((a, b) => b.updatedAt - a.updatedAt)
                             .slice(0, MAX_MASCOT_SESSIONS);
                         activeSessionId = state.activeSessionId && sessions.some((session) => session.id === state.activeSessionId)
@@ -530,6 +567,7 @@ export async function hydrateMascotChat(): Promise<void> {
                             : sessions[0]?.id ?? null;
                         messages = sessions.find((session) => session.id === activeSessionId)?.messages ?? [];
                         hydrated = true;
+                        if (needsRepair) persistState();
                         emit();
                         req.result.close();
                         resolve();
