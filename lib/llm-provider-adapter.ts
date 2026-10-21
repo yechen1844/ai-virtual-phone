@@ -256,7 +256,7 @@ export function buildProviderRequest(
     // 图像识别关闭时的总闸：无论哪条路径塞入了 image_url part，一律降级为
     // "[图片]" 文本，避免不支持视觉的模型（如 DeepSeek）收到 multipart 返回 400。
     const guardedMessages = config.enableImageRecognition === true ? messages : stripVisionParts(messages);
-    const providerMessages = ensureProviderHasUserMessage(normalizeNativeToolMessageAdjacency(guardedMessages));
+    const providerMessages = sanitizeMessageToolCalls(ensureProviderHasUserMessage(normalizeNativeToolMessageAdjacency(guardedMessages)));
 
     if (providerKind === "anthropic") {
         return buildAnthropicRequest(config, preset, baseUrl, providerMessages, options);
@@ -313,6 +313,60 @@ function buildSamplingBody(preset: PresetConfig | null): Record<string, unknown>
 
 function asRecord(value: unknown): Record<string, unknown> {
     return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+const MAX_TOOL_ARGS_DEPTH = 64;
+
+/**
+ * 原生工具调用参数净化：递归剔除 null/undefined。
+ * Gemini 用 protobuf Value 表达 functionCall.args，数组元素或对象字段为 null 时上游直接 400；
+ * 历史回放里的旧工具调用同样会触发。只删 null/undefined，其余值（0/false/空串）原样保留，
+ * 不做类型转换、不重排。通过 WeakSet（当前递归路径）+ 深度上限防环。
+ */
+export function sanitizeToolArgs(args: Record<string, unknown>): Record<string, unknown> {
+    const sanitized = sanitizeToolArgsValue(args, new WeakSet<object>(), 0);
+    return sanitized && typeof sanitized === "object" && !Array.isArray(sanitized)
+        ? sanitized as Record<string, unknown>
+        : {};
+}
+
+function sanitizeToolArgsValue(value: unknown, seen: WeakSet<object>, depth: number): unknown {
+    if (value === null || value === undefined) return undefined;
+    if (typeof value !== "object") return value;
+    if (depth >= MAX_TOOL_ARGS_DEPTH) return value;
+    if (seen.has(value)) return undefined;
+    seen.add(value);
+    try {
+        if (Array.isArray(value)) {
+            const list: unknown[] = [];
+            for (const item of value) {
+                const cleaned = sanitizeToolArgsValue(item, seen, depth + 1);
+                if (cleaned !== undefined) list.push(cleaned);
+            }
+            return list;
+        }
+        const record = value as Record<string, unknown>;
+        const cleaned: Record<string, unknown> = {};
+        for (const key of Object.keys(record)) {
+            const item = sanitizeToolArgsValue(record[key], seen, depth + 1);
+            if (item !== undefined) cleaned[key] = item;
+        }
+        return cleaned;
+    } finally {
+        seen.delete(value);
+    }
+}
+
+/** 统一净化请求里所有 assistant 工具调用参数（新发起 + 历史回放），三家 provider 共用。 */
+function sanitizeMessageToolCalls(messages: LlmRequestMessage[]): LlmRequestMessage[] {
+    const next = messages.map((message) => {
+        if (message.role !== "assistant" || !message.toolCalls?.length) return message;
+        return {
+            ...message,
+            toolCalls: message.toolCalls.map((call) => ({ ...call, args: sanitizeToolArgs(call.args) })),
+        };
+    });
+    return next;
 }
 
 function shouldStringifyToolSchemaEnums(config: ApiConfig, baseUrl: string): boolean {
