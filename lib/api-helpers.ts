@@ -4,6 +4,7 @@
 
 import type { ApiConfig } from "./settings-types";
 import { pushApiLog } from "./api-log-store";
+import { loadApiConfigs } from "./settings-storage";
 
 const SIMPLE_ANTHROPIC_AUTO_MAX_TOKENS = 8192;
 /** simpleLLMCall 默认请求超时：LLM 挂起时终止并报错，避免生成任务无限等待。 */
@@ -126,8 +127,21 @@ export function isNativeGoogleApi(config: ApiConfig): boolean {
 export async function simpleLLMCall(
     config: ApiConfig,
     messages: { role: string; content: string }[],
-    options?: { temperature?: number; max_tokens?: number; signal?: AbortSignal; label?: string; noThinking?: boolean },
+    options?: {
+        temperature?: number;
+        max_tokens?: number;
+        signal?: AbortSignal;
+        label?: string;
+        noThinking?: boolean;
+        /** 显式指定 API 配置 id（覆盖 config）；id 不存在时仍使用 config，保证不传时行为不变。 */
+        apiConfigId?: string;
+    },
 ): Promise<{ content: string | null; error?: string; finishReason?: string; wasTruncated?: boolean; usedReasoningFallback?: boolean }> {
+    // 冒险 app 等场景可以按 id 绑定一份 API 配置；找不到绑定项时沿用调用方传入的 config。
+    if (options?.apiConfigId) {
+        const bound = loadApiConfigs().find(c => c.id === options.apiConfigId);
+        if (bound) config = bound;
+    }
     const baseUrl = determineBaseUrl(config);
     if (!baseUrl || !config.apiKey) {
         return { content: null, error: "API 地址或密钥无效" };

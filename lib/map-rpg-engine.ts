@@ -40,6 +40,18 @@ function formatDebugMessages(messages: Array<{ role: string; content: string }>,
   ].filter(Boolean).join("\n\n");
 }
 
+/** 冒险 app 绑定的 API 配置；未设置或已失效时返回 null（调用方保持原有回退链）。 */
+export function resolveAdventureApiConfig(): ApiConfig | null {
+  const id = loadAdventureInteractionConfig().apiConfigId?.trim();
+  if (!id) return null;
+  return loadApiConfigs().find(c => c.id === id) ?? null;
+}
+
+/** 有冒险绑定就用绑定配置，否则沿用调用方原本解析出的配置。 */
+function withAdventureApiConfig(apiConfig: ApiConfig): ApiConfig {
+  return resolveAdventureApiConfig() ?? apiConfig;
+}
+
 function buildAdventureCharacterBilingualInstruction(enabled: boolean, customPrompt?: string): string {
   return resolveBilingualPrompt(enabled, customPrompt, DEFAULT_ADVENTURE_BILINGUAL_PROMPT);
 }
@@ -367,10 +379,12 @@ export async function generateWorldSkeleton(
 
   const userMsg = `世界描述：${userDescription}\n\n同行角色：\n${companionDescriptions.map((d, i) => `${i + 1}. ${d}`).join("\n")}`;
 
+  // 冒险 app 若绑定了 API，优先使用该绑定（simpleLLMCall 按 id 覆盖）。
+  const adventureConfigId = resolveAdventureApiConfig()?.id;
   const result = await simpleLLMCall(apiConfig, [
     { role: "system", content: prompt },
     { role: "user", content: userMsg },
-  ]);
+  ], { apiConfigId: adventureConfigId });
 
   // Failures carry the raw LLM output so the UI can show it (like the check-phone error card).
   const failWorldGen = (reason: string, raw: string): never => {
@@ -733,6 +747,7 @@ ${ctx.declarations?.length ? `\n# 本轮声明\n${ctx.declarations.map(d => `${d
 }
 
 export async function dmScene(ctx: DMContext, apiConfig: ApiConfig): Promise<DMSceneResult> {
+  const effectiveConfig = withAdventureApiConfig(apiConfig);
   const userMsg = buildDMUserMsg(ctx);
   const scenePrompt = getActivePrompt("scene", DEFAULT_DM_SCENE_PROMPT);
   const playerName = dmPlayerName(ctx);
@@ -740,14 +755,14 @@ export async function dmScene(ctx: DMContext, apiConfig: ApiConfig): Promise<DMS
     { role: "system", content: renderUserNameMacro(scenePrompt, playerName) },
     { role: "user", content: renderUserNameMacro(userMsg, playerName) },
   ];
-  dmLog("DM场景·发送", formatDebugMessages(messages, apiConfig));
+  dmLog("DM场景·发送", formatDebugMessages(messages, effectiveConfig));
 
-  const result = await simpleLLMCall(apiConfig, messages, { temperature: 0.8 });
+  const result = await simpleLLMCall(effectiveConfig, messages, { temperature: 0.8 });
 
   dmLog("DM场景·返回", result.content ? `[${result.content.length}字] ${result.content}` : `[空] error=${result.error} finish=${result.finishReason} truncated=${result.wasTruncated}`);
 
   if (!result.content) {
-    throw new Error(`DM调用失败: ${result.error || "返回空内容"}（模型: ${apiConfig.defaultModel}，finish: ${result.finishReason || "unknown"}）`);
+    throw new Error(`DM调用失败: ${result.error || "返回空内容"}（模型: ${effectiveConfig.defaultModel}，finish: ${result.finishReason || "unknown"}）`);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -815,7 +830,8 @@ export async function characterReact(
     const regexes = (slot.regexIds || []).map(id => allRegexes.find(r => r.id === id)).filter(Boolean) as typeof allRegexes;
     const userIdentity = resolveUserIdentity(characterId, "adventure");
     const apiConfigs = loadApiConfigs();
-    const apiConfig = slot.apiConfigId ? apiConfigs.find(c => c.id === slot.apiConfigId) ?? _apiConfigFallback : _apiConfigFallback;
+    const apiConfig = resolveAdventureApiConfig()
+      ?? (slot.apiConfigId ? apiConfigs.find(c => c.id === slot.apiConfigId) ?? _apiConfigFallback : _apiConfigFallback);
     const adventureConfig = loadAdventureInteractionConfig();
 
     // Build context for the character
@@ -1011,7 +1027,8 @@ async function buildCompanionDeclarePromptPayload(
   const apiConfigs = loadApiConfigs();
   const globalApiConfig = globalSlot.apiConfigId ? apiConfigs.find(c => c.id === globalSlot.apiConfigId) ?? null : null;
   const fallback = apiConfigFallback ?? globalApiConfig ?? apiConfigs.find(c => c.apiKey) ?? apiConfigs[0] ?? null;
-  const apiConfig = slot.apiConfigId ? apiConfigs.find(c => c.id === slot.apiConfigId) ?? fallback : fallback;
+  const apiConfig = resolveAdventureApiConfig()
+    ?? (slot.apiConfigId ? apiConfigs.find(c => c.id === slot.apiConfigId) ?? fallback : fallback);
   if (!apiConfig) throw new Error("未找到可用的 API 配置");
   const adventureConfig = loadAdventureInteractionConfig();
 
@@ -1131,6 +1148,7 @@ export const DEFAULT_DM_RESOLVE_PROMPT = `你是RPG世界的DM。这是裁定阶
 {"narration":"火光在墙上跳了两下，照得每个人的神情都忽明忽暗。\\n\\n队伍各自的行动在同一刻撞在一起，让原本僵持的局势突然松动。\\n\\n门外传来的脚步声，说明新的变化已经逼近。","npc_lines":[{"speaker":"NPC名","text":"台词"}],"situation":"新局势描述","choices":[{"label":"保持警惕前进","stat_check":{"stat":"per"}},{"label":"{{user}}优雅地周旋","stat_check":{"stat":"cha","who":"{{user}}"}},{"label":"直接离开"}],"journal":"日志","gained":["获得物品"],"lost":["失去物品"],"advance":false,"ending":false,"move_to":"节点名 或 {\"{{user}}\":\"节点名\",\"角色名\":\"节点名\"}","world_events":["世界各处事件"]}`;
 
 async function dmResolve(ctx: DMContext, apiConfig: ApiConfig): Promise<DMSceneResult> {
+  const effectiveConfig = withAdventureApiConfig(apiConfig);
   const userMsg = buildDMUserMsg(ctx);
   const resolvePrompt = getActivePrompt("resolve", DEFAULT_DM_RESOLVE_PROMPT);
   const playerName = dmPlayerName(ctx);
@@ -1138,9 +1156,9 @@ async function dmResolve(ctx: DMContext, apiConfig: ApiConfig): Promise<DMSceneR
     { role: "system", content: renderUserNameMacro(resolvePrompt, playerName) },
     { role: "user", content: renderUserNameMacro(userMsg, playerName) },
   ];
-  dmLog("DM裁决·发送", formatDebugMessages(messages, apiConfig));
+  dmLog("DM裁决·发送", formatDebugMessages(messages, effectiveConfig));
 
-  const result = await simpleLLMCall(apiConfig, messages, { temperature: 0.8 });
+  const result = await simpleLLMCall(effectiveConfig, messages, { temperature: 0.8 });
 
   dmLog("DM裁决·返回", result.content ? `[${result.content.length}字] ${result.content}` : `[空] error=${result.error}`);
 
@@ -1357,7 +1375,7 @@ HP：${agent.hp}/${agent.maxHp}
 最近行动：${context.recentAgentJournal.slice(-3).join("；") || "刚开始冒险"}`;
 
   try {
-    const result = await simpleLLMCall(apiConfig, [
+    const result = await simpleLLMCall(withAdventureApiConfig(apiConfig), [
       { role: "system", content: AGENT_DECISION_PROMPT },
       { role: "user", content: userMsg },
     ], { max_tokens: 500 });
@@ -1478,6 +1496,7 @@ export type EndingResult = {
 };
 
 export async function generateEnding(ctx: DMContext, apiConfig: ApiConfig): Promise<EndingResult> {
+  const effectiveConfig = withAdventureApiConfig(apiConfig);
   const userMsg = buildDMUserMsg(ctx);
   const endingPrompt = getActivePrompt("ending", DEFAULT_DM_ENDING_PROMPT);
   const playerName = dmPlayerName(ctx);
@@ -1486,9 +1505,9 @@ export async function generateEnding(ctx: DMContext, apiConfig: ApiConfig): Prom
     { role: "user", content: renderUserNameMacro(userMsg, playerName) },
   ];
 
-  dmLog("DM结局·发送", formatDebugMessages(messages, apiConfig));
+  dmLog("DM结局·发送", formatDebugMessages(messages, effectiveConfig));
 
-  const result = await simpleLLMCall(apiConfig, messages, { temperature: 0.8 });
+  const result = await simpleLLMCall(effectiveConfig, messages, { temperature: 0.8 });
 
   dmLog("DM结局·返回", result.content || "(空)");
 
@@ -1546,7 +1565,7 @@ export async function generateAdventureSummary(
   const journalText = save.journal.map(j => `[${j.timestamp}] ${j.locationName}: ${j.text}`).join("\n");
   const summaryUserName = resolveAdventureSummaryUserName(save);
 
-  const result = await simpleLLMCall(apiConfig, [
+  const result = await simpleLLMCall(withAdventureApiConfig(apiConfig), [
     { role: "system", content: prompt },
     { role: "user", content: `世界：${worldName}\n玩家天数：第${save.gameDay}天\n\n日志：\n${journalText}` },
   ], { temperature: 0.5 });

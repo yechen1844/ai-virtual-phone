@@ -29,7 +29,7 @@ import { generateWorldSkeleton, DEFAULT_WORLD_GEN_PROMPT, DEFAULT_DM_SCENE_PROMP
 import { generateMap, type GeoJSONData } from "@/lib/map-engine";
 import { loadApiConfigs, loadBindingConfig, resolveBinding } from "@/lib/settings-storage";
 import type { MapWorld, GameSave } from "@/lib/map-types";
-import { Toggle } from "@/components/ui/form";
+import { Toggle, Select } from "@/components/ui/form";
 
 type Props = {
   onClose: () => void;
@@ -91,6 +91,7 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
   const [selectedCharIds, setSelectedCharIds] = useState<string[]>([]);
 
   const characters = useMemo(() => loadCharacters(), []);
+  const apiConfigs = useMemo(() => loadApiConfigs(), []);
   const promptSections: Array<{ key: PromptEditorKey; label: string; helper: string; placeholder: string; value: string; onChange: (value: string) => void; minHeight?: number }> = [
     {
       key: "scene",
@@ -571,6 +572,25 @@ export default function MapLobby({ onClose, onStartGame }: Props) {
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <div style={{ ...S.card, marginBottom: 0 }}>
               <div style={{ ...S.label }}>运行参数</div>
+
+              <div style={{ padding: "2px 0 12px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+                <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(255,255,255,0.3)", marginBottom: 8, letterSpacing: "0.1em" }}>API 配置</div>
+                <Select
+                  value={adventureConfig.apiConfigId || ""}
+                  onChange={e => setAdventureConfig(prev => ({ ...prev, apiConfigId: e.target.value || undefined }))}
+                  style={{ width: "100%" }}
+                >
+                  <option value="">跟随全局默认</option>
+                  {apiConfigs.map(config => (
+                    <option key={config.id} value={config.id}>
+                      {config.name || config.defaultModel || config.provider || "未命名配置"}
+                    </option>
+                  ))}
+                </Select>
+                <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(255,255,255,0.3)", marginTop: 6, lineHeight: 1.6 }}>
+                  世界生成、DM 场景/裁决/结局、角色发言、冒险总结都使用这份配置；不选则跟随全局默认
+                </div>
+              </div>
 
               <div style={{ padding: "2px 0 12px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
                 <div style={{ fontSize: "calc(10px*var(--app-text-scale,1))", color: "rgba(255,255,255,0.3)", marginBottom: 8, letterSpacing: "0.1em" }}>DM 上下文截断（Token）</div>

@@ -264,6 +264,8 @@ export type AdventureInteractionConfig = {
   bilingualTranslationEnabled: boolean;
   collapseBilingualTranslation: boolean;
   bilingualTranslationPrompt: string;
+  /** 冒险 app 绑定的 API 配置 id。空/未设置 = 跟随全局默认（保持旧行为）。 */
+  apiConfigId?: string;
 };
 
 export const DEFAULT_ADVENTURE_INTERACTION_CONFIG: AdventureInteractionConfig = {
