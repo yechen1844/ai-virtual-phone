@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useSyncExternalStore, useMemo, useCallback, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type CSSProperties } from "react";
 import { getDebugChatState, getDebugPromptSnapshot, subscribeDebugChatState, subscribeDebugPromptSnapshot, type DebugPromptSnapshot } from "@/lib/debug-store";
 import { previewPromptRequestSnapshot, ChatEngineError } from "@/lib/chat-engine";
-import { previewGroupPromptRequestSnapshot } from "@/lib/group-chat-engine";
+import { previewGroupPromptRequestSnapshot, previewGroupSerialPromptSnapshot } from "@/lib/group-chat-engine";
 import { FileText, Tags, X } from "lucide-react";
 import {
     getFloatingDockState,
@@ -57,7 +57,7 @@ import type { CoCreateMode } from "@/lib/cocreate-types";
 import type { MapWorld, GameSave } from "@/lib/map-types";
 
 
-type CoreDebugMode = "chat" | "moments" | "calendar" | "story" | "vn";
+type CoreDebugMode = "chat" | "group" | "moments" | "calendar" | "story" | "vn";
 type DebugMode = CoreDebugMode | ExtraPromptAppId;
 
 type UnifiedMessage = {
@@ -117,6 +117,7 @@ export function DebugPromptPanel() {
     const floatingDragRef = useRef<FloatingDragState | null>(null);
     const suppressFloatingClickRef = useRef(false);
     const [selectedChatSessionId, setSelectedChatSessionId] = useState("");
+    const [serialPreviewCharacterId, setSerialPreviewCharacterId] = useState("");
     const [followUpMode, setFollowUpMode] = useState(false);
     const [offlinePreviewMode, setOfflinePreviewMode] = useState(false);
     const [offlinePendingText, setOfflinePendingText] = useState("");
@@ -225,9 +226,25 @@ export function DebugPromptPanel() {
             });
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [enabled, chatState?.session?.id, sessionsVersion, collapsed]);
-    const activeChatSession = chatSessionOptions.find(option => option.session.id === selectedChatSessionId)?.session
-        ?? chatState?.session
+    // 聊天标签只看单聊，群聊标签只看群；两边各自记忆自己选中的会话
+    const sessionOptions = useMemo(
+        () => chatSessionOptions.filter(option => (mode === "group" ? option.session.isGroup : !option.session.isGroup)),
+        [chatSessionOptions, mode],
+    );
+    const activeChatSession = sessionOptions.find(option => option.session.id === selectedChatSessionId)?.session
+        ?? (mode === "group"
+            ? (chatState?.session?.isGroup ? chatState.session : null)
+            : (chatState?.session && !chatState.session.isGroup ? chatState.session : null))
         ?? null;
+    // 群成员下拉（逐个角色模式用来指定预览哪个角色的提示词）
+    const groupMemberOptions = useMemo(() => {
+        if (!activeChatSession?.isGroup) return [] as { id: string; name: string }[];
+        const names = new Map(loadCharacters().map(char => [char.id, char.name]));
+        return (activeChatSession.participantIds || [])
+            .filter(id => names.has(id))
+            .map(id => ({ id, name: names.get(id)! }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeChatSession?.id, sessionsVersion]);
     const activeChatSnapshot: DebugPromptSnapshot | null = (() => {
         if (!activeChatSession) return null;
         if (!promptSnapshot) return null;
@@ -255,12 +272,23 @@ export function DebugPromptPanel() {
     }, [activeChatSession?.id, mode, extraAppId, readingMode]);
 
     useEffect(() => {
-        if (selectedChatSessionId && chatSessionOptions.some(option => option.session.id === selectedChatSessionId)) return;
-        const nextSessionId = chatState?.session?.id
-            ?? chatSessionOptions[0]?.session.id
-            ?? "";
+        if (selectedChatSessionId && sessionOptions.some(option => option.session.id === selectedChatSessionId)) return;
+        // 优先保持"当前正在看的会话"，其次退回该类会话的第一条
+        const preferred = chatState?.session?.id
+            && sessionOptions.some(option => option.session.id === chatState.session!.id)
+            ? chatState.session.id
+            : "";
+        const nextSessionId = preferred || sessionOptions[0]?.session.id || "";
         if (nextSessionId !== selectedChatSessionId) setSelectedChatSessionId(nextSessionId);
-    }, [chatSessionOptions, chatState?.session?.id, selectedChatSessionId]);
+    }, [sessionOptions, selectedChatSessionId, chatState?.session?.id]);
+
+    // 逐个角色模式：选中会话变化时，默认预览第一个在场角色
+    useEffect(() => {
+        if (!activeChatSession?.isGroup || activeChatSession.groupReplyMode !== "serial") return;
+        if (serialPreviewCharacterId && groupMemberOptions.some(item => item.id === serialPreviewCharacterId)) return;
+        const next = groupMemberOptions[0]?.id ?? "";
+        if (next !== serialPreviewCharacterId) setSerialPreviewCharacterId(next);
+    }, [activeChatSession?.id, activeChatSession?.groupReplyMode, groupMemberOptions, serialPreviewCharacterId]);
 
     const handleClosePanel = useCallback(() => {
         setCollapsed(true);
@@ -301,7 +329,7 @@ export function DebugPromptPanel() {
     }, [collapsed, handleClosePanel]);
 
     useEffect(() => {
-        if (mode !== "chat" || !activeChatSnapshot) return;
+        if ((mode !== "chat" && mode !== "group") || !activeChatSnapshot) return;
         setError(null);
         setExpandedIdx(new Set()); setBadgesShownIdx(new Set());
         requestAnimationFrame(() => { scrollRef.current?.scrollTo(0, 0); });
@@ -403,7 +431,12 @@ export function DebugPromptPanel() {
             } else {
                 const latestMessages = loadChatMessages(activeChatSession.id);
                 if (activeChatSession.isGroup) {
-                    await previewGroupPromptRequestSnapshot(activeChatSession, latestMessages);
+                    // 逐个角色模式：真实链路是每个角色各调一次，这里预览选中角色那一次
+                    if (activeChatSession.groupReplyMode === "serial") {
+                        await previewGroupSerialPromptSnapshot(activeChatSession, latestMessages, serialPreviewCharacterId);
+                    } else {
+                        await previewGroupPromptRequestSnapshot(activeChatSession, latestMessages);
+                    }
                 } else {
                     // 星露谷会话按真实发送给模型的参数预览（appId=stardew），否则会按默认 chat 预览导致提示词不对
                     const isStardewSession = activeChatSession.id?.startsWith("sess_stardew_");
@@ -788,7 +821,8 @@ export function DebugPromptPanel() {
     const estimatedTokens = Math.round(totalChars / 2);
 
     const debugTabs: [DebugMode, string][] = [
-        ["chat", activeChatSession?.isGroup ? "群聊" : "聊天"],
+        ["chat", "聊天"],
+        ["group", "群聊"],
         ["moments", "朋友圈"],
         ["calendar", "日历"],
         ["story", "剧情"],
@@ -1133,22 +1167,35 @@ export function DebugPromptPanel() {
 
             {/* Toolbar */}
             <div className="pv-toolbar">
-                {mode === "chat" && (
+                {(mode === "chat" || mode === "group") && (
                     <>
                         <select
                             value={activeChatSession?.id || ""}
                             onChange={e => setSelectedChatSessionId(e.target.value)}
                             className="pv-select"
                         >
-                            <option value="">选择聊天...</option>
-                            {chatSessionOptions.map(option => (
+                            <option value="">{mode === "group" ? "选择群聊..." : "选择聊天..."}</option>
+                            {sessionOptions.map(option => (
                                 <option key={option.session.id} value={option.session.id}>{option.label}</option>
                             ))}
                         </select>
+                        {mode === "group" && activeChatSession?.isGroup && activeChatSession.groupReplyMode === "serial" && (
+                            <select
+                                value={serialPreviewCharacterId}
+                                onChange={e => setSerialPreviewCharacterId(e.target.value)}
+                                className="pv-select"
+                                title="逐个角色模式下，每个角色各调一次接口，这里选择要预览的角色"
+                            >
+                                <option value="">选择角色...</option>
+                                {groupMemberOptions.map(item => (
+                                    <option key={item.id} value={item.id}>{item.name}</option>
+                                ))}
+                            </select>
+                        )}
                         <button onClick={handleChatPreview} disabled={loading || !activeChatSession} className="pv-btn pv-btn-primary">
                             {loading ? "加载中..." : "预览 Prompt"}
                         </button>
-                        {activeChatSession && !activeChatSession.isGroup && (
+                        {activeChatSession && mode === "chat" && !activeChatSession.isGroup && (
                             <button onClick={() => setFollowUpMode(f => !f)} className="pv-toggle" {...(followUpMode ? { "data-active": "" } : {})}>
                                 {followUpMode ? "追发 ON" : "追发 OFF"}
                             </button>
@@ -1279,6 +1326,12 @@ export function DebugPromptPanel() {
                             ? (activeChatSession
                                 ? (offlinePreviewMode ? "点击「预览 Prompt」查看线下模式的真实提示词（含 <content> 与摘要 XML）" : "点击「预览 Prompt」查看下一轮会发送的真实提示词")
                                 : "选择聊天对象后点击「预览 Prompt」")
+                            : mode === "group"
+                                ? (activeChatSession?.isGroup
+                                    ? (activeChatSession.groupReplyMode === "serial"
+                                        ? "逐个角色模式：选中角色后点击「预览 Prompt」，查看该角色这一轮真正会收到的请求"
+                                        : "点击「预览 Prompt」查看一次全员模式的真实提示词")
+                                    : "选择群聊后点击「预览 Prompt」")
                             : mode === "moments" ? "选择角色后点击「预览」查看朋友圈 Prompt"
                             : mode === "calendar" ? "选择角色与日期后点击「预览」"
                             : mode === "vn" ? "选择角色后点击「预览」查看漫卷 Prompt"

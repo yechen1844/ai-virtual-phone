@@ -3811,6 +3811,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                 }, {
                     signal: generationRun.controller.signal,
                     appTags: theaterMode ? ["group_chat"] : undefined,
+                    // 串行模式：每个角色生成完立即经 onTextPart 落库，本函数返回空数组
+                    persistViaTextPart: true,
                 });
                 if (!isCurrentGeneration()) return;
                 if (streamedImageReplacementTasks.length > 0) {

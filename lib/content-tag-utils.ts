@@ -18,6 +18,7 @@ const EXTRA_TAG_LABELS: Record<string, string> = {
     text: "文字",
     voice: "语音",
     video: "视频",
+    poll: "轮询",
     post: "发帖",
     generate: "生成",
     comment: "评论",
@@ -120,6 +121,7 @@ export const CONTENT_SCOPE_TAG_GROUPS: TagGroupProfile[] = [
             commonMinor("group_chat", ["group_chat"]),
             profile("group_chat", "text", "文字", ["group_chat", "text"]),
             profile("group_chat", "offline", "线下", ["group_chat", "offline"]),
+            profile("group_chat", "poll", "轮询", ["group_chat", "poll"]),
         ],
     },
     {

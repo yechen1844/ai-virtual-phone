@@ -146,6 +146,8 @@ export interface AssemblerInput {
     cocreateChapterIndex?: string;
     cocreateArchivedChapterContext?: string;
     cocreateWriterNotebook?: string;
+    /** 群聊串行模式的「群聊背景」系统块：放在历史之前的系统区，不放 prompt 末尾 */
+    groupBackground?: string;
 }
 
 type PromptBlock = {
@@ -1038,6 +1040,17 @@ export function assemblePromptPayload(input: AssemblerInput): LLMMessage[] {
             });
         });
 
+    }
+
+    // --- 群聊背景（串行模式）：系统区、历史之前，绝不放在 prompt 末尾 ---
+    if (input.groupBackground?.trim()) {
+        blocks.push({
+            text: input.groupBackground.trim(),
+            role: "system",
+            depth: resolveBeforeHistoryDepth(history.length, input.unifiedRecentItems?.length),
+            order: Number.MAX_SAFE_INTEGER - 1000,
+            marker: "群聊背景",
+        });
     }
 
     // --- CHAT HISTORY / SHORT-TERM MEMORY ---

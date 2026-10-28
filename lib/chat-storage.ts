@@ -80,6 +80,8 @@ export type ChatSession = {
     groupMutes?: Record<string, string>; // (characterId | "self") → mute expiry ISO
     allowAdminActionsOnUser?: boolean; // characters may kick/mute the user (default off)
     isSpectator?: boolean; // 围观群：用户不在群内，只能生成/线下
+    /** 群聊回复方式：all=一次全员（原模式，默认）；serial=逐个角色串行（每个角色各调一次接口） */
+    groupReplyMode?: "all" | "serial";
 };
 
 export type ChatMessageStatus = "sending" | "sent" | "read" | "failed";

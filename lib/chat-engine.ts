@@ -339,7 +339,7 @@ export type DebugPromptRequestOptions = {
     debugSessionId?: string;
 };
 
-type ChatPromptBuildOptions = {
+export type ChatPromptBuildOptions = {
     followUpCount?: number;
     followUpDelay?: number;
     timedWakeElapsedMinutes?: number;
@@ -350,6 +350,10 @@ type ChatPromptBuildOptions = {
     appTags?: string[];
     attachedImages?: string[];
     excludeOfflineSessionId?: string;
+    /** 排除指定群会话的短期记忆投影（群聊串行模式复用单聊链路时，避免当前群历史被重复注入） */
+    excludeGroupSessionId?: string;
+    /** 额外注入的「群聊背景」系统块（群聊串行模式用；放在历史之前的系统区） */
+    groupBackground?: string;
     promptProfile?: CustomAppPromptProfile;
     extraWorldBookIds?: string[];
     worldBookActivationContext?: string;
@@ -1953,6 +1957,7 @@ export async function buildChatPromptMessages(
         includeDirectChatEntries: isOfflineMode,
         includeNativeToolHistory: usesNativeActions,
         excludeOfflineSessionId: options?.excludeOfflineSessionId,
+        excludeGroupSessionId: options?.excludeGroupSessionId,
         promptTimestampOptions,
         maxShortTermEntries: isComplexMemoryEnabled(character.id) ? loadComplexMemoryConfig().fixedShortTermEntries : undefined,
     });
@@ -2108,6 +2113,7 @@ export async function buildChatPromptMessages(
         offlineBilingualInstruction,
         offlineSummaryTag: preset?.story_summary_tag?.trim() || "summary",
         nativeToolHistory: usesNativeActions,
+        groupBackground: options?.groupBackground,
     });
     if (promptProfile?.output === "plain_text") {
         llmMessages.push({

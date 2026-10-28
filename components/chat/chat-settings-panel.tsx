@@ -537,6 +537,7 @@ export function ChatSettingsPanel({
     const [mutePickerKey, setMutePickerKey] = useState<string | null>(null);
     const [showInvitePicker, setShowInvitePicker] = useState(false);
     const [allowAdminOnUser, setAllowAdminOnUser] = useState(session.allowAdminActionsOnUser === true);
+    const [groupReplyMode, setGroupReplyMode] = useState<"all" | "serial">(session.groupReplyMode === "serial" ? "serial" : "all");
     if (session.isGroup) pruneExpiredGroupMutes(session);
     const userName = userIdentity?.name || "用户";
     const ownerKey = session.isGroup ? getGroupOwnerKey(session) : "";
@@ -924,6 +925,31 @@ export function ChatSettingsPanel({
                                 </div>
                             </div>
                         )}
+                        <div className="menu-item" style={{ cursor: "default", flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+                            <div className="flex items-center gap-3">
+                                <ChatInfoIcon icon={Users} color={BINDING_ACCENTS.preset} />
+                                <div className="menu-label-group">
+                                    <span className="menu-label">群聊回复方式</span>
+                                    <span className="menu-desc">逐个角色：每个角色各调一次接口，按焦虑度从高到低依次发言；一次全员：原模式</span>
+                                </div>
+                            </div>
+                            <div className="flex gap-2">
+                                <button
+                                    type="button"
+                                    className={`ui-btn flex-1 ${groupReplyMode === "all" ? "ui-btn-primary" : "ui-btn-soft-action"}`}
+                                    onClick={() => { setGroupReplyMode("all"); updateSession({ groupReplyMode: "all" }); }}
+                                >
+                                    一次全员（原模式）
+                                </button>
+                                <button
+                                    type="button"
+                                    className={`ui-btn flex-1 ${groupReplyMode === "serial" ? "ui-btn-primary" : "ui-btn-soft-action"}`}
+                                    onClick={() => { setGroupReplyMode("serial"); updateSession({ groupReplyMode: "serial" }); }}
+                                >
+                                    逐个角色（新模式）
+                                </button>
+                            </div>
+                        </div>
                         {!session.isSpectator && ownerKey !== GROUP_SELF_KEY && (
                             <button className="menu-item" onClick={reclaimOwnership}>
                                 <ChatInfoIcon icon={Users} color="var(--c-danger)" />

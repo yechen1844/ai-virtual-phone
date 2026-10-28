@@ -33,6 +33,8 @@ import {
     touchNativeExpandedToolSource,
     appendEmptyGenerateGuardMessage,
     applyCustomPromptProfileToPreset,
+    generateChatCompletion,
+    previewPromptRequestSnapshot,
     stripOnlineThinkingTag,
     stripPresetTexts,
     type ChatCompletionCallbacks,
@@ -78,7 +80,7 @@ import { findEnabledToolForSchema, getEnabledTools } from "./tool-storage";
 import { formatToolsForPrompt, formatGroupToolsForPrompt, formatToolSchema } from "./tool-prompt";
 import { parseToolCalls, parseToolFetches, executeToolCalls, formatToolResults, type ToolCall } from "./tool-executor";
 import { stripStateAndInnerForPrompt } from "./prompt-sanitizer";
-import { buildGroupRosterMacro } from "./group-admin";
+import { buildGroupRosterMacro, isGroupMuted } from "./group-admin";
 import { parseOfflineResponse, extractThinkingTag, type ParsedOfflineResponse } from "./chat-offline-storage";
 import { buildProviderRequest, nativeToolProtocolForConfig, toLlmRequestMessages, type LlmRequestMessage, type LlmToolCall } from "./llm-provider-adapter";
 import type { DebugPromptSnapshot } from "./debug-store";
@@ -822,6 +824,232 @@ async function runNativeGroupToolLoop(params: {
     return finalRawOutput;
 }
 
+// ── 群聊「逐个角色」串行模式 ──────────────────────────────────────────────
+// 每个在场角色各调一次 API（复用单聊组装/请求/解析/落库），A 说完写入历史后 B 再生成。
+
+/** 串行模式每个角色那次调用的激活范围：单聊条目 + 群聊条目 + 轮询条目。
+ *  读取的始终是该角色「自己单聊绑定的预设」，不读取任何其它预设。
+ *  第 1 个 tag 为应用大类，其余为次级范围（OR 匹配）。 */
+const GROUP_CHAT_SERIAL_APP_TAGS = ["chat", "text", "group_chat", "poll"];
+
+/** 串行模式实际激活范围；围观群追加 spectator，与一次全员模式保持一致。 */
+function resolveSerialAppTags(session: ChatSession): string[] {
+    return session.isSpectator
+        ? [...GROUP_CHAT_SERIAL_APP_TAGS, "spectator"]
+        : GROUP_CHAT_SERIAL_APP_TAGS;
+}
+
+type SerialGroupGenerationOptions = GroupChatPromptBuildOptions & {
+    signal?: AbortSignal;
+    skipMemorySummarization?: boolean;
+    /** true：每个角色说完立即经 onTextPart 落库（由调用方处理）；false：汇总 results 交由调用方统一落库 */
+    persistViaTextPart?: boolean;
+};
+
+/** 群成员名单（只陈述事实）：都有谁、[名字]: 表示谁说的。与预设无关，单独注入。 */
+function buildSerialGroupRosterBlock(actorName: string, memberNames: string[]): string {
+    const rosterNames = memberNames.map(name => (name === actorName ? `${name}（你）` : name));
+    return `【群】${rosterNames.join("、")}\n记录里 [名字] 开头，表示这句话是谁说的。`;
+}
+
+/** 焦虑度（键名含「焦虑」或 anxiety）从高到低；任一成员缺失/不可解析则整轮随机 */
+function resolveSerialSpeakerOrder(memberIds: string[]): string[] {
+    const scored = memberIds.map(id => {
+        const values = getLatestCharacterStateValues(id) || [];
+        const hit = values.find(item => /焦虑|anxiety/i.test(item.name || ""));
+        const score = hit ? Number(hit.value) : NaN;
+        return { id, score: Number.isFinite(score) ? score : null };
+    });
+    if (scored.every(item => item.score !== null)) {
+        return scored
+            .slice()
+            .sort((a, b) => (b.score as number) - (a.score as number))
+            .map(item => item.id);
+    }
+    const shuffled = memberIds.slice();
+    for (let i = shuffled.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled;
+}
+
+/**
+ * 视角映射：
+ * - 其他角色说过的话 → system，正文带 "[名字]: " 前缀
+ * - 当前角色自己说过的话 → assistant
+ * - 用户消息 → user（原样）
+ */
+function buildSerialPerspectiveHistory(
+    history: ChatMessage[],
+    actorId: string,
+    actorName: string,
+    participantIds: string[],
+    userName: string,
+): ChatMessage[] {
+    const annotated = annotateGroupHistory(history, participantIds, userName);
+    const selfPrefix = `[${actorName}]: `;
+    return annotated.map((msg, index) => {
+        const original = history[index];
+        if (msg.role === "user") {
+            return { ...msg, content: original.content || msg.content };
+        }
+        if (msg.role !== "assistant") return msg;
+        const isSelf = original.senderCharacterId === actorId || original.senderName === actorName;
+        if (isSelf) {
+            return {
+                ...msg,
+                content: msg.content.startsWith(selfPrefix) ? msg.content.slice(selfPrefix.length) : original.content,
+            };
+        }
+        return { ...msg, role: "system" as const };
+    });
+}
+
+async function generateGroupChatSerialCompletion(
+    session: ChatSession,
+    history: ChatMessage[],
+    callbacks: ChatCompletionCallbacks | undefined,
+    options: SerialGroupGenerationOptions | undefined,
+): Promise<{ characterId: string; characterName: string; responseText: string }[]> {
+    const chars = loadCharacters();
+    const charMap = new Map(chars.map(character => [character.id, character]));
+    const participantIds = (session.participantIds || []).filter(id => charMap.has(id));
+    if (participantIds.length === 0) throw new ChatEngineError("No valid group members found.");
+
+    const userName = resolveUserIdentity(undefined, "group_chat")?.name ?? "用户";
+    const orderedIds = resolveSerialSpeakerOrder(participantIds);
+    const memberNames = participantIds.map(id => charMap.get(id)!.name);
+    const responseRoundId = createResponseRoundId();
+    const workingHistory = history.slice();
+    const results: { characterId: string; characterName: string; responseText: string }[] = [];
+    let successCount = 0;
+
+    for (const characterId of orderedIds) {
+        throwIfAborted(options?.signal);
+        const member = charMap.get(characterId);
+        if (!member) continue;
+        if (isGroupMuted(session, characterId)) continue;
+
+        // 当前角色视角：其他角色 → system（带 [名字]:），自己 → assistant，用户 → user
+        const perspectiveHistory = buildSerialPerspectiveHistory(workingHistory, member.id, member.name, participantIds, userName);
+        // 复用单聊链路：contactId 指向当前角色、isGroup=false（单聊预设 / 单聊条目）
+        const singleSession: ChatSession = {
+            ...session,
+            contactId: member.id,
+            isGroup: false,
+            participantIds: [],
+        };
+        const groupBackground = buildSerialGroupRosterBlock(member.name, memberNames);
+
+        let roleText = "";
+        let roleStreamStarted = false;
+        const adapter: ChatCompletionCallbacks = {
+            onReasoning: callbacks?.onReasoning,
+            onStreamDelta: (delta) => {
+                // 群聊预览按 [名字]: 切段；每个角色首段补一次前缀（onTextPart 落库后会重置累积）
+                const prefix = roleStreamStarted ? "" : `[${member.name}]: `;
+                roleStreamStarted = true;
+                callbacks?.onStreamDelta?.(prefix + delta);
+            },
+            onTextPart: async (text) => {
+                if (!text.trim()) return;
+                roleText = roleText ? `${roleText}\n\n${text}` : text;
+                if (!options?.persistViaTextPart) return;
+                await callbacks?.onTextPart?.(text, {
+                    characterId: member.id,
+                    characterName: member.name,
+                    responseRoundId,
+                    editableResponseText: `[${member.name}]: ${text}`,
+                }, {
+                    responseBatchId: createResponseBatchId(),
+                    rawResponseText: text,
+                });
+            },
+            onToolNotice: callbacks?.onToolNotice,
+            onToolResult: callbacks?.onToolResult,
+            onToolAssistantTurn: callbacks?.onToolAssistantTurn,
+            onToolExecution: callbacks?.onToolExecution,
+            onNativeToolAssistantTurn: callbacks?.onNativeToolAssistantTurn,
+            onNativeToolResult: callbacks?.onNativeToolResult,
+        };
+
+        try {
+            await generateChatCompletion(singleSession, perspectiveHistory, {
+                appId: "chat",
+                // 读取的仍是该角色自己单聊绑定的预设；这里只是让同一份预设里
+                // 标了「群聊·文字 / 群聊·轮询」的条目也能命中，不被大类过滤掉。
+                appTags: resolveSerialAppTags(session),
+                excludeGroupSessionId: session.id,
+                groupBackground,
+                signal: options?.signal,
+            }, adapter);
+        } catch (err) {
+            throwIfAborted(options?.signal);
+            // 失败隔离：该角色跳过，其余继续（请求内部已按用户配置重试过）
+            console.warn(`[GroupChat] 串行模式：${member.name} 本轮生成失败，已跳过`, err);
+            continue;
+        }
+        throwIfAborted(options?.signal);
+
+        const spoken = stripStateAndInnerForPrompt(roleText).trim();
+        if (!spoken) continue;
+        successCount += 1;
+        results.push({ characterId: member.id, characterName: member.name, responseText: roleText });
+        // A 说完写入历史，B 基于含 A 的最新历史生成
+        workingHistory.push({
+            id: `_serial_${Date.now()}_${member.id}`,
+            sessionId: session.id,
+            role: "assistant",
+            content: spoken,
+            status: "sent",
+            createdAt: new Date().toISOString(),
+            responseRoundId,
+            senderCharacterId: member.id,
+            senderName: member.name,
+        });
+    }
+
+    if (!options?.skipMemorySummarization) {
+        scheduleGroupMemorySummarization(participantIds, chars, history, successCount);
+    }
+    // 已逐角色落库：返回空数组，避免调用方再走一遍整轮落库
+    return options?.persistViaTextPart ? [] : results;
+}
+
+/**
+ * 提示词查看器：预览「逐个角色」模式下某个角色这一轮真正会收到的请求。
+ * 与真实链路一致——读该角色自己单聊绑定的预设，别人的话 → system，自己的话 → assistant。
+ */
+export async function previewGroupSerialPromptSnapshot(
+    session: ChatSession,
+    history: ChatMessage[],
+    characterId: string,
+): Promise<DebugPromptSnapshot> {
+    const chars = loadCharacters();
+    const charMap = new Map(chars.map(character => [character.id, character]));
+    const participantIds = (session.participantIds || []).filter(id => charMap.has(id));
+    const member = charMap.get(characterId) ?? participantIds.map(id => charMap.get(id)).find(Boolean);
+    if (!member) throw new ChatEngineError("群内没有可用角色。");
+
+    const userName = resolveUserIdentity(undefined, "group_chat")?.name ?? "用户";
+    const memberNames = participantIds.map(id => charMap.get(id)!.name);
+    const perspectiveHistory = buildSerialPerspectiveHistory(history, member.id, member.name, participantIds, userName);
+    const singleSession: ChatSession = {
+        ...session,
+        contactId: member.id,
+        isGroup: false,
+        participantIds: [],
+    };
+
+    return previewPromptRequestSnapshot(singleSession, perspectiveHistory, {
+        appId: "chat",
+        appTags: resolveSerialAppTags(session),
+        excludeGroupSessionId: session.id,
+        groupBackground: buildSerialGroupRosterBlock(member.name, memberNames),
+    });
+}
+
 /**
  * Single API call group chat generation.
  * All characters' data is assembled into one prompt, AI responds as all characters.
@@ -830,8 +1058,12 @@ export async function generateGroupChatCompletion(
     session: ChatSession,
     history: ChatMessage[],
     callbacks?: ChatCompletionCallbacks,
-    options?: GroupChatPromptBuildOptions & { signal?: AbortSignal; skipMemorySummarization?: boolean },
+    options?: GroupChatPromptBuildOptions & { signal?: AbortSignal; skipMemorySummarization?: boolean; persistViaTextPart?: boolean },
 ): Promise<{ characterId: string; characterName: string; responseText: string }[]> {
+    // 逐个角色串行模式：完全不碰原「一次全员」链路，缺字段/为 all 时行为不变
+    if (session.groupReplyMode === "serial") {
+        return generateGroupChatSerialCompletion(session, history, callbacks, options);
+    }
     const { llmMessages, config, preset, regexes, nameToId, memberNames, enabledTools, userName, appTags } = await buildGroupChatPromptMessages(session, history, {
         appTags: options?.appTags,
         disableTools: options?.disableTools,
