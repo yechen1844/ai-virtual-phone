@@ -337,7 +337,7 @@ export function DebugPromptPanel() {
 
     // Get unified messages for display.
     const displayMessages: UnifiedMessage[] = (() => {
-        if (mode === "chat" && activeChatSnapshot) {
+        if ((mode === "chat" || mode === "group") && activeChatSnapshot) {
             return activeChatSnapshot.messages.map(m => ({
                 role: m.role,
                 content: m.content,
@@ -392,7 +392,7 @@ export function DebugPromptPanel() {
         return [];
     })();
 
-    const resultMeta = mode === "chat"
+    const resultMeta = (mode === "chat" || mode === "group")
         ? activeChatSnapshot
         : mode === "moments"
             ? momentsResult
