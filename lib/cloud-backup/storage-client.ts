@@ -145,6 +145,48 @@ export async function getObject(config: CloudBackupConfig, path: string, onBytes
   });
 }
 
+/** 只读对象开头的少量字节，确认对象「存在且可读」。用于备份后的轻量校验：
+ *  Range 请求只取 probeBytes（默认 1KB）；即使服务端忽略 Range，也会在读满
+ *  第一块后立刻断开，绝不会把整个分片（最大 40MB）拉下来。 */
+export async function probeObject(
+  config: CloudBackupConfig,
+  path: string,
+  probeBytes = 1024,
+): Promise<{ exists: boolean; bytesRead: number; totalBytes: number | null }> {
+  const creds = resolveCreds(config);
+  if (!creds) throw new Error("未配置 Supabase 地址或 key。");
+  return withRetries(async () => {
+    const rangeEnd = Math.max(0, Math.min(probeBytes, 1024 * 1024) - 1);
+    const res = await fetchWithTimeout(
+      objectUrl(creds, path),
+      { headers: { ...authHeaders(creds.key), Range: `bytes=0-${rangeEnd}` }, cache: "no-store" },
+      DOWNLOAD_HEADER_TIMEOUT_MS,
+      "校验",
+    );
+    if (res.status === 404) return { exists: false, bytesRead: 0, totalBytes: null };
+    if (!res.ok) {
+      const error = await describeError(res);
+      if (res.status === 400 && /object not found|not found/i.test(error)) return { exists: false, bytesRead: 0, totalBytes: null };
+      throw new Error(error);
+    }
+    // Content-Range: "bytes 0-1023/12345678" → 对象总大小（可用于日志，不参与判断）
+    const contentRange = res.headers.get("Content-Range");
+    const rangeTotal = contentRange && /\/(\d+)\s*$/.test(contentRange) ? Number(contentRange.replace(/^.*\//, "")) : null;
+    const lengthHeader = res.headers.get("Content-Length");
+    const totalBytes = rangeTotal ?? (lengthHeader && /^\d+$/.test(lengthHeader) ? Number(lengthHeader) : null);
+    if (!res.body) return { exists: true, bytesRead: 0, totalBytes };
+    const reader = res.body.getReader();
+    let bytesRead = 0;
+    try {
+      const first = await reader.read();
+      if (!first.done && first.value) bytesRead = first.value.byteLength;
+    } finally {
+      reader.cancel().catch(() => undefined);
+    }
+    return { exists: true, bytesRead, totalBytes };
+  });
+}
+
 /** 删除并返回是否由本次调用真正删掉（200）。404 = 已被别处取走，视为未认领。
  *  现实桥收件箱用它做「删除即认领」互斥：谁删掉谁处理，防止重复触发与双端抢单。 */
 export async function claimObject(config: CloudBackupConfig, path: string): Promise<boolean> {

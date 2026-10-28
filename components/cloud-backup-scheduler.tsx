@@ -34,8 +34,12 @@ export function CloudBackupScheduler() {
 
       const state = loadCloudBackupState();
       const dueMs = config.intervalHours * 3600_000;
-      const last = state.lastCreatedAt ? Date.parse(state.lastCreatedAt) : 0;
-      if (Number.isFinite(last) && last > 0 && Date.now() - last < dueMs) return;
+      // 上次「成功备份」和上次「检查完成（数据没变）」都算有效时间戳：
+      // 取较新的一个，保证数据没变时不会每 5 分钟重跑一遍检查。
+      const lastCreated = state.lastCreatedAt ? Date.parse(state.lastCreatedAt) : 0;
+      const lastChecked = state.lastCheckedAt ? Date.parse(state.lastCheckedAt) : 0;
+      const last = Math.max(Number.isFinite(lastCreated) ? lastCreated : 0, Number.isFinite(lastChecked) ? lastChecked : 0);
+      if (last > 0 && Date.now() - last < dueMs) return;
 
       runWhenIdle(async () => {
         if (cancelled || backupRunning) return;

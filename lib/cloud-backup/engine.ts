@@ -5,7 +5,7 @@ import type { DataModuleId, ModulePayload } from "../data-management/types";
 import { kvGet, kvSet, registerKvMigration } from "../kv-db";
 import { sha256BlobHex, sha256TextHex } from "../sha256-stream";
 import type { CloudBackupConfig } from "./config";
-import { ensureBucket, getObject, listObjects, putObject, removeObject } from "./storage-client";
+import { ensureBucket, getObject, listObjects, probeObject, putObject, removeObject } from "./storage-client";
 
 /**
  * Source-level incremental cloud backup.
@@ -91,6 +91,9 @@ export type CloudBackupManifest = {
 export type CloudBackupState = {
   lastManifestName?: string;
   lastCreatedAt?: string;
+  /** 最近一次检查完成的时间（含"数据没变、未新建备份"的情况）。
+   *  调度器据此计算下次检查时间，避免数据没变时每 5 分钟重复整套检查。 */
+  lastCheckedAt?: string;
   lastTotalBytes?: number;
   lastTotalRecords?: number;
   lastCombinedHash?: string;
@@ -340,8 +343,9 @@ async function latestHealthyManifest(config: CloudBackupConfig): Promise<CloudBa
   return null;
 }
 
-/** 备份提交后回读验证：确认刚写入的清单可解析、内容一致、且至少能确定一个
- *  数据分片在云端确实可读。防止“上传被静默吞掉 / 对象损坏”时仍报告成功。 */
+/** 备份提交后回读验证：确认刚写入的清单可解析、内容一致，且至少能确定一个
+ *  数据分片在云端确实可读。防止“上传被静默吞掉 / 对象损坏”时仍报告成功。
+ *  分片只探测开头 1KB（probeObject），结论与整片下载一致，但不再消耗整片流量。 */
 async function verifyBackup(config: CloudBackupConfig, manifest: CloudBackupManifest, manifestName: string): Promise<void> {
   const reread = await loadManifest(config, manifestName);
   if (!reread) {
@@ -355,8 +359,8 @@ async function verifyBackup(config: CloudBackupConfig, manifest: CloudBackupMani
     ? (largestModule.sources?.find((s) => s.parts.length > 0)?.parts[0] ?? largestModule.parts[0])
     : undefined;
   if (!partPath) return; // 没有任何数据分片（纯元数据备份），仅清单验证即可
-  const blob = await getObject(config, partPath);
-  if (!blob || blob.size === 0) {
+  const probe = await probeObject(config, partPath);
+  if (!probe.exists || probe.bytesRead === 0) {
     throw new Error(`回读验证失败：数据分片 ${partPath} 在云端不可读。`);
   }
 }
@@ -569,7 +573,12 @@ async function runCloudBackupInternal(
   // (With streaming, unchanged modules were already reused from the cloud — no
   // uploads happened — so skipping here leaves no orphan objects.)
   if (!options.force && state.lastCombinedHash && state.lastCombinedHash === combinedHash && uploadedModuleIds.size === 0) {
-    saveCloudBackupState({ ...state, lastResult: "skipped", lastError: undefined });
+    saveCloudBackupState({
+      ...state,
+      lastCheckedAt: new Date().toISOString(),
+      lastResult: "skipped",
+      lastError: undefined,
+    });
     return { status: "skipped", uploadedModules: 0, totalBytes, totalRecords, manifestName: state.lastManifestName ?? "", warnings: moduleWarnings };
   }
 
